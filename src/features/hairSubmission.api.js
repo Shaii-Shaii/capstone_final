@@ -96,6 +96,10 @@ const aiScreeningSelect = `
   improvement_recommendation:Improvement_Recommendation,
   decision:Decision,
   summary:Summary,
+  length_assessment:Length_Assessment,
+  donation_readiness_note:Donation_Readiness_Note,
+  history_assessment:History_Assessment,
+  analysis_result:Analysis_Result,
   created_at:Created_At
 `;
 
@@ -283,6 +287,56 @@ const normalizeFlowKey = (value = '') => (
     .toLowerCase()
     .replace(/[_\s-]+/g, '')
 );
+
+const getDonorNotesSource = (donorNotes = '') => {
+  if (typeof donorNotes !== 'string' || !donorNotes.trim()) return '';
+
+  try {
+    return String(JSON.parse(donorNotes)?.source || '').trim();
+  } catch {
+    return '';
+  }
+};
+
+const resolveHairSubmissionSource = (submission = null) => {
+  const explicitSource = String(submission?.donation_source || '').trim();
+  if (explicitSource) return explicitSource;
+
+  const notesSource = getDonorNotesSource(submission?.donor_notes || submission?.Donor_Notes || '');
+  if (notesSource) return notesSource;
+
+  const isEventLinked = Boolean(
+    submission?.from_event
+    || submission?.event_request_id
+    || submission?.event_attendee_id
+  );
+  return isEventLinked ? 'drive_donation' : 'Independent';
+};
+
+const resolveFromEventForWrite = ({ payload = null, eventRequestId = null, eventAttendeeId = null, fallback }) => {
+  if (eventRequestId || eventAttendeeId) return true;
+  if (typeof payload?.from_event === 'boolean') return payload.from_event;
+
+  const sourceKey = normalizeFlowKey(payload?.donation_source || '');
+  if (['drive', 'drivedonation', 'event', 'eventrsvp', 'eventdonation'].includes(sourceKey)) return true;
+  if (['checkhair', 'independent', 'independentdonation', 'manualdonordetails', 'manualentry'].includes(sourceKey)) return false;
+  return fallback;
+};
+
+export const isHairCheckOnlySubmission = (submission = null) => {
+  const sourceKey = normalizeFlowKey(resolveHairSubmissionSource(submission));
+  if (sourceKey === 'checkhair') return true;
+
+  const donorNotes = submission?.donor_notes || submission?.Donor_Notes || '';
+  if (typeof donorNotes !== 'string' || !donorNotes.trim()) return false;
+
+  try {
+    return normalizeFlowKey(JSON.parse(donorNotes)?.source || '') === 'checkhair';
+  } catch {
+    return donorNotes.toLowerCase().includes('"source":"checkhair"')
+      || donorNotes.toLowerCase().includes('"source": "checkhair"');
+  }
+};
 
 const normalizeHairSubmissionStatusForDb = (status, fallback = 'Pending') => {
   const key = normalizeFlowKey(status);
@@ -472,8 +526,116 @@ const isEventSubmissionCutAndShipComplete = (submission = null) => {
   ].includes(statusKey);
 };
 
-const normalizeAiScreening = (row) => ({
-  id: row?.ai_screening_id || null,
+const hasDetailDonationProgress = (detail = null) => {
+  const statusKey = normalizeFlowKey(detail?.current_tracking_status || detail?.status || '');
+  const qrStatusKey = normalizeFlowKey(detail?.qr_status || '');
+
+  return Boolean(
+    detail?.qr_token
+    || detail?.qr_image_path
+    || detail?.qr_generated_at
+    || [
+      'qrgenerated',
+      'scanned',
+      'qractive',
+      'activated',
+      'readyforshipping',
+      'submitted',
+      'shipped',
+      'intransit',
+      'received',
+      'underreview',
+      'underqareview',
+      'accepted',
+      'rejected',
+      'rejectedcut',
+    ].includes(qrStatusKey)
+    || [
+      'readyforshipping',
+      'submitted',
+      'shipped',
+      'intransit',
+      'received',
+      'underreview',
+      'underqareview',
+      'accepted',
+      'rejected',
+      'rejectedcut',
+    ].includes(statusKey)
+  );
+};
+
+export const hasDonationFlowProgress = (submission = null, {
+  logistics = null,
+  trackingEntries = [],
+} = {}) => {
+  if (!submission?.submission_id) return false;
+  if (isHairCheckOnlySubmission(submission)) return false;
+
+  const statusKey = normalizeFlowKey(submission?.status || '');
+  if (['cancelled', 'canceled', 'rejected'].includes(statusKey)) return false;
+
+  const details = Array.isArray(submission?.submission_details)
+    ? submission.submission_details
+    : [];
+  const hasLogisticsProgress = Boolean(
+    logistics?.submission_logistics_id
+    || logistics?.received_at
+    || logistics?.shipment_status
+    || logistics?.logistics_type
+  );
+
+  return Boolean(
+    submission?.cut_at
+    || submission?.bundle_id
+    || isEventSubmissionCutAndShipComplete(submission)
+    || details.some(hasDetailDonationProgress)
+    || hasLogisticsProgress
+    || (trackingEntries || []).some((entry) => entry?.tracking_id || entry?.status || entry?.title)
+  );
+};
+
+export const isCompletedDonationSubmission = (submission = null, {
+  logistics = null,
+  trackingEntries = [],
+} = {}) => {
+  if (!submission?.submission_id) return false;
+  if (isHairCheckOnlySubmission(submission)) return false;
+
+  const statusKey = normalizeFlowKey(submission?.status || '');
+  if (['cancelled', 'canceled', 'rejected'].includes(statusKey)) return false;
+
+  const hasReceivedLogistics = Boolean(
+    logistics?.received_at
+    || normalizeFlowKey(logistics?.shipment_status || '').includes('received')
+  );
+
+  return Boolean(
+    submission?.cut_at
+    || submission?.bundle_id
+    || isEventSubmissionCutAndShipComplete(submission)
+    || hasReceivedLogistics
+    || (trackingEntries || []).some((entry) => {
+      const entryText = normalizeFlowKey([
+        entry?.status,
+        entry?.title,
+        entry?.description,
+      ].filter(Boolean).join(' '));
+      return entryText.includes('received') || entryText.includes('accepted') || entryText.includes('cut');
+    })
+  );
+};
+
+const normalizeAiScreening = (row) => {
+  const analysisResult = row?.analysis_result
+    && typeof row.analysis_result === 'object'
+    && !Array.isArray(row.analysis_result)
+    ? row.analysis_result
+    : {};
+
+  return ({
+  ...analysisResult,
+  id: row?.ai_screening_id || analysisResult?.ai_screening_id || null,
   ai_screening_id: row?.ai_screening_id || null,
   submission_id: row?.submission_id || null,
   submission_detail_id: row?.submission_detail_id || null,
@@ -505,8 +667,14 @@ const normalizeAiScreening = (row) => ({
   improvement_recommendation: row?.improvement_recommendation || '',
   decision: row?.decision || '',
   summary: row?.summary || '',
+  length_assessment: row?.length_assessment || analysisResult?.length_assessment || '',
+  donation_readiness_note: row?.donation_readiness_note || analysisResult?.donation_readiness_note || '',
+  history_assessment: row?.history_assessment || analysisResult?.history_assessment || '',
+  recommendations: Array.isArray(analysisResult?.recommendations) ? analysisResult.recommendations : [],
+  analysis_result: analysisResult,
   created_at: row?.created_at || null,
-});
+  });
+};
 
 const normalizeDonorRecommendation = (row) => ({
   id: row?.recommendation_id || null,
@@ -527,7 +695,9 @@ const normalizeHairSubmission = (row) => ({
   event_attendee_id: row?.event_attendee_id || null,
   donation_reference: row?.submission_id ? `DON-${row.submission_id}` : '',
   from_event: row?.from_event ?? null,
-  donation_source: row?.donation_source || (row?.from_event ? 'Event RSVP' : 'Independent'),
+  // The database has no separate source column. Keep this app-facing value derived
+  // from persisted event links and the optional source stored in Donor_Notes.
+  donation_source: resolveHairSubmissionSource(row),
   donor_notes: row?.donor_notes || '',
   recipient_type: row?.recipient_type || '',
   bundle_id: row?.bundle_id || null,
@@ -727,7 +897,12 @@ export const createHairSubmission = async (payload) => {
   const insertPayload = {
     User_ID: userId,
     Event_Request_ID: eventRequestId,
-    From_Event: payload?.from_event ?? Boolean(eventRequestId || eventAttendeeId),
+    From_Event: resolveFromEventForWrite({
+      payload,
+      eventRequestId,
+      eventAttendeeId,
+      fallback: false,
+    }),
     Donor_Notes: payload?.donor_notes || null,
     Status: normalizeHairSubmissionStatusForDb(payload?.status, 'Pending'),
     Cut_At: payload?.cut_at || payload?.submitted_at || null,
@@ -867,7 +1042,7 @@ export const createAiScreening = async (payload) => {
     table: aiScreeningsTable,
     phase: 'create',
     filters: { Submission_ID: payload?.submission_id },
-    columns: ['Submission_ID', 'Estimated_Length', 'Detected_Color', 'Detected_Texture', 'Detected_Density', 'Detected_Condition', 'Visible_Damage_Notes', 'Confidence_Score', 'Shine_Level', 'Frizz_Level', 'Dryness_Level', 'Oiliness_Level', 'Damage_Level', 'Bald_Spots_Present', 'Affected_Regions', 'Hair_Density_Score', 'Shedding_Level', 'Visible_Scalp_Area', 'Scalp_Coverage_Notes', 'Dandruff_Detected', 'Dandruff_Severity', 'Dandruff_Notes', 'Lice_Detected', 'Lice_Confidence', 'Lice_Notes', 'Improvement_Tracking_Status', 'Improvement_Recommendation', 'Decision', 'Summary'],
+    columns: ['Submission_ID', 'Estimated_Length', 'Detected_Color', 'Detected_Texture', 'Detected_Density', 'Detected_Condition', 'Visible_Damage_Notes', 'Confidence_Score', 'Shine_Level', 'Frizz_Level', 'Dryness_Level', 'Oiliness_Level', 'Damage_Level', 'Bald_Spots_Present', 'Affected_Regions', 'Hair_Density_Score', 'Shedding_Level', 'Visible_Scalp_Area', 'Scalp_Coverage_Notes', 'Dandruff_Detected', 'Dandruff_Severity', 'Dandruff_Notes', 'Lice_Detected', 'Lice_Confidence', 'Lice_Notes', 'Improvement_Tracking_Status', 'Improvement_Recommendation', 'Decision', 'Summary', 'Length_Assessment', 'Donation_Readiness_Note', 'History_Assessment', 'Analysis_Result'],
   });
 
   const result = await supabase
@@ -906,6 +1081,14 @@ export const createAiScreening = async (payload) => {
       Improvement_Recommendation: nonEmptyString(payload?.improvement_recommendation, 'Keep tracking hair length and condition with future CheckHair scans before donating.'),
       Decision: nonEmptyString(payload?.decision, 'Improve hair condition'),
       Summary: nonEmptyString(payload?.summary, 'Hair analysis completed with limited details. Final screening requires manual review.'),
+      Length_Assessment: nonEmptyString(payload?.length_assessment, ''),
+      Donation_Readiness_Note: nonEmptyString(payload?.donation_readiness_note, ''),
+      History_Assessment: nonEmptyString(payload?.history_assessment, ''),
+      Analysis_Result: payload?.analysis_result
+        && typeof payload.analysis_result === 'object'
+        && !Array.isArray(payload.analysis_result)
+        ? payload.analysis_result
+        : {},
       Created_At: getPhilippineDatabaseTimestamp(),
     }], { onConflict: 'Submission_ID' })
     .select(aiScreeningSelect)
@@ -1257,35 +1440,30 @@ export const ensureCertificatesForScannedEventDonations = async (userId, limit =
 
   const submissions = (submissionsResult.data || []).map(normalizeHairSubmission);
   const submissionIds = submissions.map((submission) => submission.submission_id).filter(Boolean);
-  const driveIds = [...new Set(submissions.map((submission) => submission.event_request_id).filter(Boolean))];
 
-  if (!submissionIds.length || !driveIds.length) {
+  if (!submissionIds.length) {
     return { data: [], error: null };
   }
 
-  const [existingCertificatesResult, attendanceResult] = await Promise.all([
+  const [existingCertificatesResult, trackingResult, logisticsResult] = await Promise.all([
     supabase
       .from(donationCertificatesTable)
       .select(donationCertificateSelect)
       .in('Submission_ID', submissionIds),
     supabase
-      .from('Event_Attendees')
-      .select(`
-        event_request_id:Event_Request_ID,
-        user_id:User_ID,
-        attendance_status:Attendance_Status,
-        rsvp_scanned_at:RSVP_Scanned_At,
-        rsvp_scanned_by:RSVP_Scanned_By,
-        updated_at:Updated_At
-      `)
-      .eq('User_ID', resolvedUserId.userId)
-      .in('Event_Request_ID', driveIds),
+      .from(hairBundleTrackingHistoryTable)
+      .select(trackingEntrySelect)
+      .in('Submission_ID', submissionIds),
+    supabase
+      .from(hairSubmissionLogisticsTable)
+      .select(hairSubmissionLogisticsSelect)
+      .in('Submission_ID', submissionIds),
   ]);
 
-  if (existingCertificatesResult.error || attendanceResult.error) {
+  if (existingCertificatesResult.error || trackingResult.error || logisticsResult.error) {
     return {
-      data: (existingCertificatesResult.data || []).map(normalizeDonationCertificate),
-      error: existingCertificatesResult.error || attendanceResult.error,
+      data: [],
+      error: existingCertificatesResult.error || trackingResult.error || logisticsResult.error,
     };
   }
 
@@ -1295,28 +1473,44 @@ export const ensureCertificatesForScannedEventDonations = async (userId, limit =
       .filter((certificate) => certificate?.submission_id)
       .map((certificate) => [Number(certificate.submission_id), certificate])
   );
-  const attendanceByDriveId = new Map(
-    (attendanceResult.data || []).map((attendance) => [Number(attendance?.event_request_id), attendance])
+  const trackingBySubmissionId = new Map();
+  (trackingResult.data || []).forEach((entry) => {
+    const submissionId = Number(entry?.submission_id);
+    const rows = trackingBySubmissionId.get(submissionId) || [];
+    rows.push(entry);
+    trackingBySubmissionId.set(submissionId, rows);
+  });
+  const logisticsBySubmissionId = new Map(
+    (logisticsResult.data || []).map((row) => [Number(row?.submission_id), row])
   );
-
-  const certificates = [...existingBySubmissionId.values()];
+  const isOrganizationReceipt = (entry = null) => {
+    const statusKey = normalizeFlowKey(entry?.status || entry?.shipment_status || '');
+    const textKey = normalizeFlowKey([entry?.title, entry?.description].filter(Boolean).join(' '));
+    return ['received', 'receivedbycompany', 'receivedbyhairforhope', 'receivedbyorganization', 'organizationreceived'].includes(statusKey)
+      || textKey.includes('receivedbyhairforhope')
+      || textKey.includes('receivedbyorganization')
+      || textKey.includes('organizationreceived');
+  };
+  const certificates = [];
 
   for (const submission of submissions) {
-    if (existingBySubmissionId.has(Number(submission.submission_id))) {
+    const submissionId = Number(submission.submission_id);
+    const trackingEntries = trackingBySubmissionId.get(submissionId) || [];
+    const logistics = logisticsBySubmissionId.get(submissionId) || null;
+    const receiptEntry = trackingEntries.find(isOrganizationReceipt);
+    const hasOrganizationReceipt = Boolean(
+      receiptEntry
+      || logistics?.received_at
+      || isOrganizationReceipt(logistics)
+    );
+
+    if (!hasOrganizationReceipt || isHairCheckOnlySubmission(submission)) {
       continue;
     }
 
-    const attendance = attendanceByDriveId.get(Number(submission.event_request_id));
-    const normalizedAttendance = String(attendance?.attendance_status || '')
-      .trim()
-      .toLowerCase()
-      .replace(/[_-]+/g, ' ');
-    const hasCutAndShipScan = Boolean(attendance?.rsvp_scanned_at)
-      || isEventSubmissionCutAndShipComplete(submission)
-      || ['present', 'attended', 'checked in', 'checked-in', 'marked', 'scanned', 'verified']
-        .includes(normalizedAttendance);
-
-    if (!hasCutAndShipScan) {
+    const existingCertificate = existingBySubmissionId.get(submissionId);
+    if (existingCertificate) {
+      certificates.push(existingCertificate);
       continue;
     }
 
@@ -1325,9 +1519,9 @@ export const ensureCertificatesForScannedEventDonations = async (userId, limit =
       submission_id: submission.submission_id,
       certificate_number: createDonationCertificateNumber(submission),
       certificate_type: 'Certificate of Donation',
-      issued_by: attendance?.rsvp_scanned_by || submission.cut_by_user_id || null,
-      issued_at: attendance?.rsvp_scanned_at || submission.cut_at || attendance?.updated_at || submission.updated_at || new Date().toISOString(),
-      remarks: 'Issued after staff scanned the Cut & Ship stage.',
+      issued_by: receiptEntry?.changed_by || logistics?.received_by || null,
+      issued_at: receiptEntry?.updated_at || logistics?.received_at || new Date().toISOString(),
+      remarks: 'Issued after the organization received the hair donation.',
     });
 
     if (certificateResult.data?.certificate_id) {
@@ -2149,11 +2343,19 @@ export const updateHairSubmissionById = async (submissionId, payload) => {
     columns: ['Event_Request_ID', 'From_Event', 'Donor_Notes', 'Status', 'Bundle_ID', 'Cut_At', 'Cut_By_User_ID'],
   });
 
+  const eventRequestId = payload?.event_request_id ?? payload?.donation_drive_id;
+  const fromEvent = resolveFromEventForWrite({
+    payload,
+    eventRequestId,
+    eventAttendeeId: payload?.event_attendee_id,
+    fallback: undefined,
+  });
+
   const result = await supabase
     .from(hairSubmissionsTable)
     .update({
-      Event_Request_ID: payload?.event_request_id ?? payload?.donation_drive_id ?? undefined,
-      From_Event: payload?.from_event ?? undefined,
+      Event_Request_ID: eventRequestId ?? undefined,
+      From_Event: fromEvent,
       Donor_Notes: payload?.donor_notes ?? undefined,
       Bundle_ID: payload?.bundle_id ?? undefined,
       Cut_At: payload?.cut_at ?? payload?.submitted_at ?? undefined,

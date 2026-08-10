@@ -1,6 +1,8 @@
 import { supabase } from '../api/supabase/client';
 import { logAppError, logAppEvent } from '../utils/appErrors';
 import { canSubmitHairDonation, mapDonationPermissionError } from './donorCompliance.service';
+import { createNotifications } from './notification.api';
+import { notificationTypes } from './notification.constants';
 
 const donationDriveRequestsTable = 'Event_Requests';
 const donationDriveRegistrationsTable = 'Event_Attendees';
@@ -63,6 +65,24 @@ const eventHairSubmissionLinkSelect = `
 const normalizeRegistrationStatus = (value = '') => String(value || '').trim().toLowerCase();
 const normalizeDriveStatus = (value = '') => String(value || '').trim().toLowerCase();
 const normalizeVisibility = (value = '') => String(value || '').trim().toLowerCase();
+
+const createDriveRsvpNotification = async ({ databaseUserId, drive = null, registration = null }) => {
+  if (!databaseUserId || !registration?.registration_id) return;
+  const isParticipatingDonor = normalizeRegistrationStatus(registration?.attendee_type) === 'donor';
+
+  await createNotifications([{
+    user_id: databaseUserId,
+    type: notificationTypes.driveRsvpConfirmed,
+    title: 'RSVP confirmed',
+    message: isParticipatingDonor
+      ? `You are registered to participate in ${drive?.event_title || 'the donation event'}.`
+      : `You are registered to attend ${drive?.event_title || 'the event'}.`,
+    status: 'Unread',
+    reference_type: 'donation_drive',
+    reference_id: drive?.donation_drive_id || registration?.donation_drive_id,
+    updated_at: registration?.registered_at || registration?.updated_at || new Date().toISOString(),
+  }]).catch(() => ({ data: [], error: null }));
+};
 
 const resolveDatabaseUserIdFromSession = async (fallbackDatabaseUserId = null) => {
   try {
@@ -841,6 +861,11 @@ export const createDonationDriveRegistration = async ({
 
   const normalizedRegistration = normalizeDonationDriveRegistration(insertResult.data);
   if (attendanceOnly) {
+    await createDriveRsvpNotification({
+      databaseUserId: effectiveDatabaseUserId,
+      drive: driveResult.data,
+      registration: normalizedRegistration,
+    });
     return {
       data: normalizedRegistration,
       error: null,
@@ -860,6 +885,12 @@ export const createDonationDriveRegistration = async ({
       alreadyRegistered: false,
     };
   }
+
+  await createDriveRsvpNotification({
+    databaseUserId: effectiveDatabaseUserId,
+    drive: driveResult.data,
+    registration: normalizedRegistration,
+  });
 
   return {
     data: attachEventHairSubmissionLink(normalizedRegistration, ensured.data),

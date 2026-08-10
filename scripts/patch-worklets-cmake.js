@@ -1,6 +1,7 @@
 const fs = require("fs");
 const path = require("path");
 
+// eslint-disable-next-line no-undef
 const root = path.resolve(__dirname, "..");
 
 function patchFile(relativePath, replacements) {

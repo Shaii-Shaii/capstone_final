@@ -6,6 +6,12 @@ const googleMapsApiKey = String(
   || ''
 ).trim();
 
+const googleServicesFile = String(
+  process.env.GOOGLE_SERVICES_JSON
+  || appConfig.expo.android?.googleServicesFile
+  || './google-services.json'
+).trim();
+
 module.exports = () => {
   const config = appConfig.expo;
 
@@ -13,6 +19,7 @@ module.exports = () => {
     ...config,
     android: {
       ...config.android,
+      googleServicesFile,
       config: {
         ...(config.android?.config || {}),
         googleMaps: {

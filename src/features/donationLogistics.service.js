@@ -10,7 +10,8 @@ import {
     buildDonationNotification,
     buildDonationTrackingQrPayload,
     buildQrImageUrl,
-    recordNotifications
+    recordNotifications,
+    sendDonorQrEmail,
 } from './donorDonations.service';
 import {
     createHairBundleTrackingEntry,
@@ -103,6 +104,7 @@ export const submitDonation = async ({
     // Create hair submission record
     const submissionResult = await createHairSubmission({
       user_id: userId,
+      donation_drive_id: driveId,
       donation_reference: null,
       donation_source: sourceType,
       donor_notes: `Donation from logistics flow - ${donationDetails.hairLengthValue}${donationDetails.hairLengthUnit}`,
@@ -156,6 +158,7 @@ export const submitDonation = async ({
       detail: createdDetail,
     });
     const qrCodeUrl = buildQrImageUrl(qrPayload, QR_IMAGE_SIZE);
+    const donorName = `${userProfile?.first_name || ''} ${userProfile?.last_name || ''}`.trim();
 
     // Upload hair photo if path provided
     if (hairPhotoPath) {
@@ -221,7 +224,7 @@ export const submitDonation = async ({
     // Build notification for staff
     const staffNotification = buildDonationSubmittedNotification({
       donorId: userId,
-      donorName: `${userProfile?.first_name || ''} ${userProfile?.last_name || ''}`.trim(),
+      donorName,
       donationReference,
       donationDetails,
       qrCodeUrl,
@@ -229,19 +232,35 @@ export const submitDonation = async ({
 
     // Record notification
     try {
-      await recordNotifications([
-        buildDonationNotification({
-          dedupeKey: `donation_submitted_${donationReference}`,
-          type: notificationTypes.logisticsUpdated,
-          title: staffNotification.title,
-          message: staffNotification.message,
-          metadata: staffNotification.metadata,
-        }),
-      ]);
+      await recordNotifications({
+        userId,
+        role: 'donor',
+        notifications: [
+          buildDonationNotification({
+            dedupeKey: `donation_submitted_${donationReference}`,
+            type: notificationTypes.logisticsUpdated,
+            title: staffNotification.title,
+            message: staffNotification.message,
+            referenceId: createdSubmission.submission_id,
+          }),
+        ],
+      });
 
       logAppEvent('donation_logistics', 'Staff notification recorded');
     } catch (notifErr) {
       logAppError('donation_logistics', notifErr);
+    }
+
+    try {
+      await sendDonorQrEmail({
+        donorName,
+        submission: qrSubmission,
+        details: [createdDetail],
+        titlePrefix: 'Donation logistics QR',
+      });
+      logAppEvent('donation_logistics', 'Donor QR email requested');
+    } catch (emailErr) {
+      logAppError('donation_logistics/qr_email', emailErr);
     }
 
     return {

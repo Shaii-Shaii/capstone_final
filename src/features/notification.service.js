@@ -6,21 +6,27 @@ import {
   createDonationCertificate,
   fetchDonationCertificateBySubmissionId,
   fetchHairBundleTrackingHistory,
-  fetchLatestDonationCertificateByUserId,
   fetchDonorRecommendationsBySubmissionId,
   fetchHairSubmissionLogisticsBySubmissionId,
   fetchHairSubmissionsByUserId,
+  hasDonationFlowProgress,
+  isHairCheckOnlySubmission,
 } from './hairSubmission.api';
-import { fetchRelevantDonationDriveUpdates } from './donorHome.api';
+import { fetchRegisteredDonationDrivesByUserId } from './donorHome.api';
 import {
   fetchLatestWigAllocationByPatientDetailsId,
   fetchLatestWigRequestByPatientDetailsId,
 } from './wigRequest.api';
-import { fetchPatientDetailsByUserId, resolveDatabaseUserId } from './profile/api/profile.api';
+import {
+  fetchPatientDetailsByUserId,
+  fetchSystemUserByAuthUserId,
+  resolveDatabaseUserId,
+} from './profile/api/profile.api';
 import { writeAuditLog } from '../utils/appErrors';
 
 const buildStorageKey = ({ userId, role }) => `${notificationStoragePrefix}.${role}.${userId}`;
 const DONOR_REMINDER_EMAIL_FUNCTION = 'send-donor-hair-analysis-reminder';
+const PUSH_NOTIFICATION_FUNCTION = 'send-push-notification';
 const DRIVE_REMINDER_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
 const reminderEmailAttemptCache = new Map();
 
@@ -66,10 +72,17 @@ const getNotificationRouteFromType = (notification) => {
     return `/donor/drives/${notification.referenceId}`;
   }
 
+  if (notification?.referenceType === 'ai_screening' && notification?.referenceId) {
+    return `/donor/hair-check-details?screeningId=${encodeURIComponent(notification.referenceId)}`;
+  }
+
   switch (notification?.type) {
     case notificationTypes.hairAnalysisReminder:
       return '/donor/donations';
+    case notificationTypes.accountCreated:
+      return null;
     case notificationTypes.driveUpdated:
+    case notificationTypes.driveRsvpConfirmed:
     case notificationTypes.driveRsvpReminder:
       return notification?.referenceId ? `/donor/drives/${notification.referenceId}` : '/donor/home';
     case notificationTypes.wigAllocationUpdated:
@@ -138,6 +151,26 @@ const buildDriveNotification = (drive) => {
   }
 
   return null;
+};
+
+const buildDriveRsvpNotification = (drive) => {
+  const registration = drive?.registration;
+  if (!registration?.registration_id) return null;
+
+  const attendeeType = normalizeFlowStatusKey(registration.attendee_type);
+  const isParticipatingDonor = ['donor', 'participant', 'participatingdonor'].includes(attendeeType);
+
+  return buildNotification({
+    dedupeKey: `${notificationTypes.driveRsvpConfirmed}:${registration.registration_id}`,
+    type: notificationTypes.driveRsvpConfirmed,
+    title: 'RSVP confirmed',
+    message: isParticipatingDonor
+      ? `You are registered to participate in ${drive.event_title || 'the donation event'}.`
+      : `You are registered to attend ${drive.event_title || 'the event'}.`,
+    createdAt: registration.registered_at || registration.updated_at || new Date().toISOString(),
+    referenceType: 'donation_drive',
+    referenceId: drive.donation_drive_id,
+  });
 };
 
 const triggerHairAnalysisReminderEmail = async ({
@@ -217,44 +250,24 @@ const normalizeFlowStatusKey = (value = '') => String(value || '')
   .toLowerCase()
   .replace(/[_\s-]+/g, '');
 
-const isApprovedEventSubmissionStatus = (value = '') => [
-  'cut',
-  'wiginproduction',
-  'inproduction',
-  'wigcreated',
-  'wigcompleted',
-  'completed',
-].includes(normalizeFlowStatusKey(value));
-
 const textIncludesAny = (source = '', tokens = []) => {
   const normalized = String(source || '').toLowerCase();
   return tokens.some((token) => normalized.includes(token));
 };
 
-const isReceivedByOrganizationSignal = (item = null) => (
-  textIncludesAny(item?.status, ['received_by_company', 'received by hair for hope', 'received by organization', 'received by the organization', 'organization received', 'received'])
+const isReceivedByOrganizationSignal = (item = null) => {
+  const statusKey = normalizeFlowStatusKey(item?.status || '');
+  return (
+  ['received', 'receivedbycompany', 'receivedbyhairforhope', 'receivedbyorganization', 'organizationreceived'].includes(statusKey)
   || textIncludesAny(item?.title, ['received by hair for hope', 'received by organization', 'received by the organization', 'organization received'])
   || textIncludesAny(item?.description, ['received by hair for hope', 'received by organization', 'received by the organization', 'organization received'])
-);
+  );
+};
 
-const isCutAndShippedSignal = (item = null) => (
-  textIncludesAny(item?.status, ['cut & shipped', 'cut and shipped', 'cut shipped', 'sent_by_donor', 'transit', 'shipped'])
-  || textIncludesAny(item?.title, ['cut & shipped', 'cut and shipped', 'cut shipped', 'sent by donor', 'transit', 'shipped'])
-  || textIncludesAny(item?.description, ['cut & shipped', 'cut and shipped', 'cut shipped', 'sent by donor', 'transit', 'shipped'])
-);
-
-const findDonationApprovalEvidence = ({ trackingEntries = [] } = {}) => {
+const findOrganizationReceiptEvidence = ({ trackingEntries = [], logistics = null } = {}) => {
   const sortedEntries = (trackingEntries || [])
     .slice()
     .sort((left, right) => new Date(right?.updated_at || 0).getTime() - new Date(left?.updated_at || 0).getTime());
-  const cutAndShippedEntry = sortedEntries.find((entry) => isCutAndShippedSignal(entry));
-  if (cutAndShippedEntry) {
-    return {
-      issuedBy: normalizeCertificateIssuerId(cutAndShippedEntry.changed_by),
-      issuedAt: cutAndShippedEntry.updated_at || null,
-    };
-  }
-
   const receivedEntry = sortedEntries.find((entry) => isReceivedByOrganizationSignal(entry));
 
   if (receivedEntry) {
@@ -264,36 +277,43 @@ const findDonationApprovalEvidence = ({ trackingEntries = [] } = {}) => {
     };
   }
 
+  if (
+    logistics?.received_at
+    || isReceivedByOrganizationSignal({ status: logistics?.shipment_status })
+  ) {
+    return {
+      issuedBy: normalizeCertificateIssuerId(logistics?.received_by),
+      issuedAt: logistics?.received_at || logistics?.created_at || null,
+    };
+  }
+
   return null;
 };
 
 const ensureDonationCertificateForNotification = async ({
   submission,
   trackingEntries = [],
+  logistics = null,
 }) => {
   if (!submission?.submission_id || !submission?.user_id) return null;
+  if (isHairCheckOnlySubmission(submission)) return null;
+
+  const receiptEvidence = findOrganizationReceiptEvidence({ trackingEntries, logistics });
+  if (!receiptEvidence) return null;
 
   const existingResult = await fetchDonationCertificateBySubmissionId(submission.submission_id);
   if (existingResult.data?.certificate_id) {
     return existingResult.data;
   }
 
-  const isEventSubmission = Boolean(submission?.event_request_id || submission?.donation_drive_id);
-  if (isEventSubmission && !isApprovedEventSubmissionStatus(submission?.status)) {
-    return null;
-  }
-
-  const approvalEvidence = findDonationApprovalEvidence({ trackingEntries });
-  if (!approvalEvidence && !isEventSubmission) return null;
-
   const certificateResult = await createDonationCertificate({
     user_id: submission.user_id,
     submission_id: submission.submission_id,
     certificate_number: createDonationCertificateNumber(submission),
     certificate_type: 'Certificate of Donation',
-    issued_by: approvalEvidence?.issuedBy || submission?.cut_by_user_id || null,
-    issued_at: approvalEvidence?.issuedAt || submission?.cut_at || submission?.updated_at || new Date().toISOString(),
-    remarks: 'Issued after staff approved the hair quality review.',
+    issued_by: receiptEvidence.issuedBy || null,
+    issued_at: receiptEvidence.issuedAt || new Date().toISOString(),
+    remarks: 'Issued after the organization received the hair donation.',
   });
 
   return certificateResult.data || null;
@@ -305,6 +325,22 @@ const normalizeTextToken = (value = '') => String(value || '')
   .toLowerCase();
 
 const getNotificationIdentityKey = (notification = {}) => {
+  const referenceScopedTypes = new Set([
+    notificationTypes.accountCreated,
+    notificationTypes.submissionReceived,
+    notificationTypes.screeningCompleted,
+    notificationTypes.recommendationAvailable,
+    notificationTypes.driveRsvpConfirmed,
+    notificationTypes.wigRequestUpdated,
+    notificationTypes.wigAllocationUpdated,
+    notificationTypes.certificateAvailable,
+  ]);
+  const referenceType = normalizeTextToken(notification.referenceType || '');
+  const referenceId = String(notification.referenceId || '').trim();
+  if (referenceScopedTypes.has(notification.type) && referenceType && referenceId) {
+    return `reference:${notification.type}:${referenceType}:${referenceId}`;
+  }
+
   if (notification.stableKey) {
     return `stable:${normalizeTextToken(notification.stableKey)}`;
   }
@@ -319,13 +355,14 @@ const getNotificationIdentityKey = (notification = {}) => {
   }
 
   const type = normalizeTextToken(notification.type || 'system_update');
-  const referenceType = normalizeTextToken(notification.referenceType || 'none');
-  const referenceId = String(notification.referenceId || notification.submissionId || notification.aiScreeningId || 'none').trim();
+  const fallbackReferenceType = referenceType || 'none';
+  const fallbackReferenceId = referenceId
+    || String(notification.submissionId || notification.aiScreeningId || 'none').trim();
   const createdAt = String(notification.createdAt || notification.updatedAt || notification.created_at || '').trim();
   const title = normalizeTextToken(notification.title || 'system update');
   const message = normalizeTextToken(notification.message || '');
 
-  return `fallback:${type}:${referenceType}:${referenceId}:${createdAt}:${title}:${message}`;
+  return `fallback:${type}:${fallbackReferenceType}:${fallbackReferenceId}:${createdAt}:${title}:${message}`;
 };
 
 const sortNotificationsByNewest = (notifications = []) => (
@@ -410,8 +447,8 @@ const normalizeBackendNotification = (row) => {
     title: row?.title || 'System update',
     message: row?.message || '',
     createdAt,
-    referenceType: 'notification',
-    referenceId: backendId,
+    referenceType: row?.reference_type || 'notification',
+    referenceId: row?.reference_id || backendId,
     backendId,
     isRead: String(row?.status || '').toLowerCase() === 'read',
   });
@@ -423,8 +460,23 @@ const toBackendPayload = ({ databaseUserId, role, notification }) => ({
   message: notification.message,
   type: notification.type || role || 'system_update',
   status: notification.isRead ? 'Read' : 'Unread',
+  reference_type: notification.referenceType || null,
+  reference_id: notification.referenceId || null,
   updated_at: notification.createdAt || new Date().toISOString(),
 });
+
+const sendPushForBackendNotifications = async ({ notificationIds = [] } = {}) => {
+  const ids = (notificationIds || []).filter(Boolean);
+  if (!ids.length) return null;
+
+  const result = await invokeEdgeFunction(PUSH_NOTIFICATION_FUNCTION, {
+    body: {
+      notificationIds: ids,
+    },
+  }).catch((error) => ({ data: null, error }));
+
+  return result?.error || null;
+};
 
 const resolveNotificationBackendUserId = async (userId) => {
   const result = await resolveDatabaseUserId(userId, { ensure: false });
@@ -456,6 +508,134 @@ const mergeNotifications = ({ localNotifications, backendNotifications, derivedN
     ...(localNotifications || []),
     ...(derivedNotifications || []),
   ]);
+};
+
+const isRsvpOnlyTrackingEntry = (entry = null) => {
+  const key = normalizeFlowStatusKey([
+    entry?.status,
+    entry?.title,
+  ].filter(Boolean).join(' '));
+  return key.includes('eventrsvp')
+    || key.includes('rsvp')
+    || key.includes('driveselected')
+    || key.includes('donationdriveselected');
+};
+
+const isDonationLifecycleTrackingEntry = (entry = null) => Boolean(
+  entry
+  && !isRsvpOnlyTrackingEntry(entry)
+  && (entry?.tracking_id || entry?.status || entry?.title)
+);
+
+const hasSubmittedDonationEvidence = ({ submission = null, trackingEntries = [] } = {}) => {
+  if (!submission?.submission_id || isHairCheckOnlySubmission(submission)) return false;
+
+  const submissionStatus = normalizeFlowStatusKey(submission?.status || '');
+  const submittedStatuses = [
+    'cut',
+    'wiginproduction',
+    'wigcreated',
+  ];
+  const hasSubmittedTracking = (trackingEntries || []).some((entry) => {
+    const trackingKey = normalizeFlowStatusKey(entry?.status || entry?.title || '');
+    return [
+      'donationsubmitted',
+      'readyforshipping',
+      'waybillready',
+      'cutandshipped',
+      'sentbydonor',
+      'shipped',
+      'intransit',
+      'received',
+      'receivedbycompany',
+      'receivedbyorganization',
+    ].some((key) => trackingKey.includes(key));
+  });
+
+  return Boolean(
+    submission?.cut_at
+    || submission?.bundle_id
+    || submittedStatuses.includes(submissionStatus)
+    || hasSubmittedTracking
+  );
+};
+
+const hasDonationWorkflowEvidence = ({ submission = null, logistics = null, trackingEntries = [] } = {}) => {
+  if (!submission?.submission_id || isHairCheckOnlySubmission(submission)) return false;
+  return Boolean(
+    hasSubmittedDonationEvidence({ submission, trackingEntries })
+    || logistics?.submission_logistics_id
+    || (trackingEntries || []).some(isDonationLifecycleTrackingEntry)
+  );
+};
+
+const filterInvalidDonorDonationNotifications = async ({ userId, notifications = [] }) => {
+  if (!userId || !notifications.length) return notifications;
+
+  const { data: submissions } = await fetchHairSubmissionsByUserId(userId, 60).catch(() => ({ data: [] }));
+  const todayLocalDateKey = toLocalDateKey(new Date());
+  const hasAnalysisToday = hasScreeningForLocalDay(submissions || [], todayLocalDateKey);
+  const evidenceRows = await Promise.all((submissions || []).map(async (submission) => {
+    if (!submission?.submission_id || isHairCheckOnlySubmission(submission)) {
+      return { submission, logistics: null, trackingEntries: [] };
+    }
+
+    const [logisticsResult, trackingResult] = await Promise.all([
+      fetchHairSubmissionLogisticsBySubmissionId(submission.submission_id),
+      fetchHairBundleTrackingHistory({ submissionId: submission.submission_id, limit: 24 }),
+    ]);
+    return {
+      submission,
+      logistics: logisticsResult.data || null,
+      trackingEntries: trackingResult.data || [],
+    };
+  }));
+  const donationWorkflowSubmissionIds = new Set();
+  const submittedDonationSubmissionIds = new Set();
+  const receivedDonationSubmissionIds = new Set();
+
+  evidenceRows.forEach(({ submission, logistics, trackingEntries }) => {
+    const submissionId = String(submission?.submission_id || '');
+    if (!submissionId) return;
+    if (hasDonationWorkflowEvidence({ submission, logistics, trackingEntries })) {
+      donationWorkflowSubmissionIds.add(submissionId);
+    }
+    if (hasSubmittedDonationEvidence({ submission, trackingEntries })) {
+      submittedDonationSubmissionIds.add(submissionId);
+    }
+    if (findOrganizationReceiptEvidence({ trackingEntries, logistics })) {
+      receivedDonationSubmissionIds.add(submissionId);
+    }
+  });
+
+  return notifications.filter((notification) => {
+    const type = notification?.type || '';
+    const referenceId = String(notification?.referenceId || '');
+
+    if (
+      type === notificationTypes.hairAnalysisReminder
+      && hasAnalysisToday
+      && toLocalDateKey(notification?.createdAt) === todayLocalDateKey
+    ) {
+      return false;
+    }
+
+    if (type === notificationTypes.submissionReceived) {
+      return notification?.referenceType === 'hair_submission'
+        && submittedDonationSubmissionIds.has(referenceId);
+    }
+
+    if ([notificationTypes.logisticsUpdated, notificationTypes.donationTrackingUpdated].includes(type)) {
+      return notification?.referenceType === 'hair_submission'
+        && donationWorkflowSubmissionIds.has(referenceId);
+    }
+
+    if (type === notificationTypes.certificateAvailable) {
+      return receivedDonationSubmissionIds.size > 0;
+    }
+
+    return true;
+  });
 };
 
 const buildDonorDerivedNotifications = async ({
@@ -501,16 +681,6 @@ const buildDonorDerivedNotifications = async ({
       : submission?.ai_screenings;
     const screeningId = screening?.ai_screening_id;
 
-    notifications.push(buildNotification({
-      dedupeKey: `${notificationTypes.submissionReceived}:${submissionId}`,
-      type: notificationTypes.submissionReceived,
-      title: 'Donation submitted',
-      message: `Your donation ${submission.donation_reference || ''} was submitted and is now being processed.`.trim(),
-      createdAt: submission.updated_at || submission.created_at,
-      referenceType: 'hair_submission',
-      referenceId: submissionId,
-    }));
-
     if (screeningId) {
       notifications.push(buildNotification({
         dedupeKey: `${notificationTypes.screeningCompleted}:${screeningId}`,
@@ -545,7 +715,27 @@ const buildDonorDerivedNotifications = async ({
     ]);
 
     const logistics = logisticsResult.data;
-    if (logistics?.submission_logistics_id) {
+    const trackingEntries = trackingResult.data || [];
+    const hasDonationWorkflow = hasDonationWorkflowEvidence({
+      submission,
+      logistics,
+      trackingEntries,
+    });
+    const hasSubmittedDonation = hasSubmittedDonationEvidence({ submission, trackingEntries });
+
+    if (hasSubmittedDonation) {
+      notifications.push(buildNotification({
+        dedupeKey: `${notificationTypes.submissionReceived}:${submissionId}`,
+        type: notificationTypes.submissionReceived,
+        title: 'Donation submitted',
+        message: `Your donation ${submission.donation_reference || ''} was submitted and is now being processed.`.trim(),
+        createdAt: submission.updated_at || submission.created_at,
+        referenceType: 'hair_submission',
+        referenceId: submissionId,
+      }));
+    }
+
+    if (hasDonationWorkflow && logistics?.submission_logistics_id) {
       notifications.push(buildNotification({
         dedupeKey: `${notificationTypes.logisticsUpdated}:${logistics.submission_logistics_id}`,
         type: notificationTypes.logisticsUpdated,
@@ -559,7 +749,7 @@ const buildDonorDerivedNotifications = async ({
       }));
     }
 
-    (trackingResult.data || []).forEach((entry) => {
+    trackingEntries.filter(isDonationLifecycleTrackingEntry).forEach((entry) => {
       notifications.push(buildNotification({
         dedupeKey: `${notificationTypes.donationTrackingUpdated}:${entry.tracking_id}`,
         type: notificationTypes.donationTrackingUpdated,
@@ -571,10 +761,13 @@ const buildDonorDerivedNotifications = async ({
       }));
     });
 
-    const certificate = await ensureDonationCertificateForNotification({
-      submission,
-      trackingEntries: trackingResult.data || [],
-    });
+    const certificate = hasDonationWorkflow
+      ? await ensureDonationCertificateForNotification({
+          submission,
+          trackingEntries,
+          logistics,
+        })
+      : null;
 
     if (certificate?.certificate_id) {
       notifications.push(buildNotification({
@@ -583,36 +776,24 @@ const buildDonorDerivedNotifications = async ({
         title: 'Certificate available',
         message: 'Your donation was received. Your certificate is ready in Achievements.',
         createdAt: certificate.issued_at || new Date().toISOString(),
-        referenceType: 'route',
-        referenceId: '/donor/achievements',
+        referenceType: 'donation_certificate',
+        referenceId: certificate.certificate_id,
       }));
     }
 
   }));
 
-  const latestCertificate = (await fetchLatestDonationCertificateByUserId(userId)).data;
-  if (latestCertificate?.certificate_id) {
-    notifications.push(buildNotification({
-      dedupeKey: `${notificationTypes.certificateAvailable}:${latestCertificate.certificate_id}`,
-      type: notificationTypes.certificateAvailable,
-      title: 'Certificate available',
-      message: 'Your donation was received. Your certificate is ready in Achievements.',
-      createdAt: latestCertificate.issued_at || new Date().toISOString(),
-      referenceType: 'route',
-      referenceId: '/donor/achievements',
-    }));
-  }
-
   if (databaseUserId) {
-    const driveUpdatesResult = await fetchRelevantDonationDriveUpdates({ databaseUserId, limit: 8 });
-    (driveUpdatesResult.data || [])
-      .filter(shouldIncludeDriveUpdate)
-      .forEach((drive) => {
-        const notification = buildDriveNotification(drive);
-        if (notification) {
-          notifications.push(notification);
-        }
-      });
+    const registeredDrivesResult = await fetchRegisteredDonationDrivesByUserId({ databaseUserId, limit: 24 });
+    (registeredDrivesResult.data || []).forEach((drive) => {
+      const rsvpNotification = buildDriveRsvpNotification(drive);
+      if (rsvpNotification) notifications.push(rsvpNotification);
+
+      if (shouldIncludeDriveUpdate(drive)) {
+        const reminderNotification = buildDriveNotification(drive);
+        if (reminderNotification) notifications.push(reminderNotification);
+      }
+    });
   }
 
   return notifications;
@@ -665,6 +846,38 @@ const buildPatientDerivedNotifications = async (userId) => {
   return notifications;
 };
 
+const buildAccountCreatedNotification = async ({ userId, role }) => {
+  if (!userId) return null;
+
+  const accountResult = await fetchSystemUserByAuthUserId(userId).catch(() => ({ data: null }));
+  const account = accountResult.data;
+  if (!account?.user_id) return null;
+
+  const normalizedRole = String(role || account.role || '').trim().toLowerCase();
+  return buildNotification({
+    dedupeKey: `${notificationTypes.accountCreated}:${account.user_id}`,
+    type: notificationTypes.accountCreated,
+    title: 'Welcome to Donivra',
+    message: normalizedRole === 'patient'
+      ? 'Your patient account has been created. You can now explore wig support and manage requests.'
+      : 'Your donor account has been created. You can now analyze your hair, RSVP to events, and manage donations.',
+    createdAt: account.created_at || account.updated_at || new Date().toISOString(),
+    referenceType: 'route',
+    referenceId: normalizedRole === 'patient' ? '/patient/home' : '/donor/home',
+  });
+};
+
+const buildRoleDerivedNotifications = async ({ userId, databaseUserId, userEmail, role }) => {
+  const [accountNotification, roleNotifications] = await Promise.all([
+    buildAccountCreatedNotification({ userId, role }),
+    role === 'donor'
+      ? buildDonorDerivedNotifications({ userId, databaseUserId, userEmail })
+      : buildPatientDerivedNotifications(userId),
+  ]);
+
+  return [accountNotification, ...(roleNotifications || [])].filter(Boolean);
+};
+
 const persistMissingBackendNotifications = async ({
   databaseUserId,
   role,
@@ -686,6 +899,12 @@ const persistMissingBackendNotifications = async ({
     missingNotifications.map((notification) => toBackendPayload({ databaseUserId, role, notification }))
   );
 
+  if (!result.error) {
+    void sendPushForBackendNotifications({
+      notificationIds: (result.data || []).map((row) => row.notification_id),
+    }).catch(() => {});
+  }
+
   return result.error || null;
 };
 
@@ -703,19 +922,21 @@ export const loadNotificationSummary = async ({
         : resolveNotificationBackendUserId(userId),
     ]);
 
-    const derivedNotifications = role === 'donor'
-      ? await buildDonorDerivedNotifications({
-          userId,
-          databaseUserId,
-          userEmail,
-        })
-      : await buildPatientDerivedNotifications(userId);
+    const derivedNotifications = await buildRoleDerivedNotifications({
+      userId,
+      databaseUserId,
+      userEmail,
+      role,
+    });
     const backendResult = await fetchBackendNotifications(databaseUserId);
-    const notifications = mergeNotifications({
+    const mergedNotifications = mergeNotifications({
       localNotifications,
       backendNotifications: backendResult.notifications,
       derivedNotifications,
     });
+    const notifications = role === 'donor'
+      ? await filterInvalidDonorDonationNotifications({ userId, notifications: mergedNotifications })
+      : mergedNotifications;
 
     if (notifications.length) {
       await saveLocalNotifications({ userId, role, notifications });
@@ -738,10 +959,13 @@ export const loadNotificationSummary = async ({
     };
   } catch (error) {
     const localNotifications = await loadLocalNotifications({ userId, role });
+    const safeLocalNotifications = role === 'donor'
+      ? await filterInvalidDonorDonationNotifications({ userId, notifications: localNotifications })
+      : localNotifications;
 
     return {
-      notifications: localNotifications,
-      unreadCount: localNotifications.filter((item) => !item.isRead).length,
+      notifications: safeLocalNotifications,
+      unreadCount: safeLocalNotifications.filter((item) => !item.isRead).length,
       error: error.message || 'Unable to load notifications right now.',
       databaseUserId: preferredDatabaseUserId || null,
     };
@@ -762,22 +986,24 @@ export const loadNotifications = ({
         ? Promise.resolve(preferredDatabaseUserId)
         : resolveNotificationBackendUserId(userId),
     ]);
-    const derivedNotifications = role === 'donor'
-      ? await buildDonorDerivedNotifications({
-          userId,
-          databaseUserId,
-          userEmail,
-        })
-      : await buildPatientDerivedNotifications(userId);
+    const derivedNotifications = await buildRoleDerivedNotifications({
+      userId,
+      databaseUserId,
+      userEmail,
+      role,
+    });
 
     const backendResult = await fetchBackendNotifications(databaseUserId);
     const backendNotifications = backendResult.notifications;
 
-    const mergedNotifications = mergeNotifications({
+    const unfilteredMergedNotifications = mergeNotifications({
       localNotifications,
       backendNotifications,
       derivedNotifications,
     });
+    const mergedNotifications = role === 'donor'
+      ? await filterInvalidDonorDonationNotifications({ userId, notifications: unfilteredMergedNotifications })
+      : unfilteredMergedNotifications;
 
     await saveLocalNotifications({ userId, role, notifications: mergedNotifications });
 
@@ -795,11 +1021,14 @@ export const loadNotifications = ({
           .map(normalizeBackendNotification)
           .filter((notification) => notification.title || notification.message);
 
-        const databaseNotifications = mergeNotifications({
+        const unfilteredDatabaseNotifications = mergeNotifications({
           localNotifications,
           backendNotifications: refreshedBackendNotifications,
           derivedNotifications,
         });
+        const databaseNotifications = role === 'donor'
+          ? await filterInvalidDonorDonationNotifications({ userId, notifications: unfilteredDatabaseNotifications })
+          : unfilteredDatabaseNotifications;
 
         await saveLocalNotifications({ userId, role, notifications: databaseNotifications });
 
@@ -820,10 +1049,13 @@ export const loadNotifications = ({
     };
   } catch (error) {
     const localNotifications = await loadLocalNotifications({ userId, role });
+    const safeLocalNotifications = role === 'donor'
+      ? await filterInvalidDonorDonationNotifications({ userId, notifications: localNotifications })
+      : localNotifications;
 
     return {
-      notifications: localNotifications,
-      unreadCount: localNotifications.filter((item) => !item.isRead).length,
+      notifications: safeLocalNotifications,
+      unreadCount: safeLocalNotifications.filter((item) => !item.isRead).length,
       error: error.message || 'Unable to load notifications right now.',
       databaseUserId: preferredDatabaseUserId || null,
     };
@@ -851,6 +1083,10 @@ export const recordNotifications = async ({ userId, role, notifications }) => {
       const backendNotifications = (createResult.data || [])
         .map(normalizeBackendNotification)
         .filter((notification) => notification.title || notification.message);
+
+      void sendPushForBackendNotifications({
+        notificationIds: backendNotifications.map((notification) => notification.backendId),
+      }).catch(() => {});
 
       mergedNotifications = mergeNotifications({
         localNotifications,
@@ -889,12 +1125,17 @@ export const buildImmediateNotificationEvents = ({ role, payload }) => {
   if (role === 'donor') {
     const notifications = [];
 
-    if (payload?.submission && !payload?.screening) {
+    if (
+      payload?.submission
+      && !payload?.screening
+      && !isHairCheckOnlySubmission(payload.submission)
+      && hasDonationFlowProgress(payload.submission)
+    ) {
       notifications.push(buildNotification({
         dedupeKey: `${notificationTypes.submissionReceived}:${payload.submission.submission_id}`,
         type: notificationTypes.submissionReceived,
-        title: 'Submission received',
-        message: `Your hair submission ${payload.submission.donation_reference || ''} was saved successfully.`.trim(),
+        title: 'Donation submitted',
+        message: `Your donation ${payload.submission.donation_reference || ''} was submitted and is now being processed.`.trim(),
         createdAt: payload.submission.created_at || new Date().toISOString(),
         referenceType: 'hair_submission',
         referenceId: payload.submission.submission_id,
@@ -905,8 +1146,8 @@ export const buildImmediateNotificationEvents = ({ role, payload }) => {
       notifications.push(buildNotification({
         dedupeKey: `${notificationTypes.screeningCompleted}:${payload.screening.ai_screening_id || payload.submission?.submission_id}`,
         type: notificationTypes.screeningCompleted,
-        title: 'Hair check completed',
-        message: payload.screening.summary || `Your screening result is ${payload.screening.decision || 'ready for review'}.`,
+        title: 'Hair analysis completed',
+        message: payload.screening.summary || `Your latest screening result is ${payload.screening.decision || 'ready for review'}.`,
         createdAt: payload.screening.created_at || new Date().toISOString(),
         referenceType: 'ai_screening',
         referenceId: payload.screening.ai_screening_id || payload.submission?.submission_id,

@@ -32,7 +32,8 @@ const isOngoingWigRequest = (request) => {
 };
 
 const mapPatientWigRequestError = (type, error) => {
-  const message = getErrorMessage(error).toLowerCase();
+  const resolvedMessage = getErrorMessage(error);
+  const message = resolvedMessage.toLowerCase();
 
   if (type === 'context') {
     if (message.includes('session has expired') || message.includes('session changed') || message.includes('sign in again')) {
@@ -91,9 +92,23 @@ const mapPatientWigRequestError = (type, error) => {
       );
     }
 
+    if (message.includes('not configured') || message.includes('api key')) {
+      return createAppError(
+        'AI Configuration Required',
+        'The OpenAI wig preview service is not configured correctly on the server.'
+      );
+    }
+
+    if (message.includes('three active wigs') || message.includes('valid reference images')) {
+      return createAppError(
+        'Wigs Unavailable',
+        'At least three active wigs with valid reference images are required.'
+      );
+    }
+
     return createAppError(
-      'Suggestion Unavailable',
-      'Preview could not be generated right now.'
+      'AI Preview Error',
+      resolvedMessage || 'Preview could not be generated right now.'
     );
   }
 
@@ -266,6 +281,8 @@ const buildSelectedPreview = (preview, selectedOptionId) => {
     recommended_style_family: selectedOption.family || preview.recommended_style_family || '',
     preview_url: selectedOption.preview_url || selectedOption.generated_image_data_url || preview.preview_url || preview.generated_image_data_url || '',
     generated_image_data_url: selectedOption.generated_image_data_url || selectedOption.preview_url || preview.generated_image_data_url || preview.preview_url || '',
+    selected_wig: selectedOption.selected_wig || preview.selected_wig || null,
+    suitability_reason: selectedOption.suitability_reason || selectedOption.note || '',
     selected_option_id: selectedOption.id || '',
     selected_option_index: selectedOption.option_index || null,
     options,
@@ -315,13 +332,17 @@ export const usePatientWigRequest = ({ userId }) => {
     return 'Start a wig request';
   }, [hasSubmittedRequest, isGeneratingPreview, isSavingRequest, preview]);
 
-  const refreshContext = useCallback(async () => {
-    setIsLoadingContext(true);
+  const refreshContext = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) {
+      setIsLoadingContext(true);
+    }
     setError(null);
 
     const result = await getPatientWigRequestContext(userId);
 
-    setIsLoadingContext(false);
+    if (!silent) {
+      setIsLoadingContext(false);
+    }
     setContext({
       patientDetails: result.patientDetails,
       latestAllocation: result.latestAllocation,
@@ -496,14 +517,15 @@ export const usePatientWigRequest = ({ userId }) => {
     setSuccessMessage('');
   };
 
-  const generatePreview = async (preferences, selectedWig = null) => {
-    if (!referenceImage?.uri) {
+  const generatePreview = async (preferences, selectedWig = null, referenceImageOverride = null) => {
+    const sourceReferenceImage = referenceImageOverride || referenceImage;
+    if (!sourceReferenceImage?.uri) {
       setError(FRONT_PHOTO_REQUIRED_ERROR);
       return { success: false, error: FRONT_PHOTO_REQUIRED_ERROR.message };
     }
 
-    if (!selectedWig?.wig_id) {
-      const mappedError = createAppError('Select Wig', 'Choose one wig first.');
+    if (availableWigs.length < 3) {
+      const mappedError = createAppError('Wigs Unavailable', 'At least three active wigs are needed for AI recommendations.');
       setError(mappedError);
       return { success: false, error: mappedError.message };
     }
@@ -512,9 +534,9 @@ export const usePatientWigRequest = ({ userId }) => {
     setError(null);
     setSuccessMessage('');
 
-    const preparedReferenceImage = referenceImage?.placement?.faceFrame
-      ? referenceImage
-      : await attachDetectedWigPlacement(referenceImage);
+    const preparedReferenceImage = sourceReferenceImage?.placement?.faceFrame
+      ? sourceReferenceImage
+      : await attachDetectedWigPlacement(sourceReferenceImage);
     if (preparedReferenceImage !== referenceImage) {
       setReferenceImage(preparedReferenceImage);
     }
@@ -523,6 +545,7 @@ export const usePatientWigRequest = ({ userId }) => {
       preferences,
       referenceImage: preparedReferenceImage,
       selectedWig,
+      availableWigs,
     });
 
     setIsGeneratingPreview(false);
@@ -535,9 +558,10 @@ export const usePatientWigRequest = ({ userId }) => {
 
     setPreview(result.preview);
 
-    logAppEvent('patient_wig_request.preview', 'Generated selected wig composite preview.', {
+    logAppEvent('patient_wig_request.preview', 'Generated ranked AI wig recommendations.', {
       userId,
       selectedWigId: selectedWig?.wig_id || null,
+      recommendationCount: result.preview?.options?.length || 0,
       previewKeys: Object.keys(result.preview),
       hasGeneratedImage: Boolean(result.preview?.generated_image_data_url),
     });
@@ -591,12 +615,20 @@ export const usePatientWigRequest = ({ userId }) => {
       return { success: false, error: mappedError.message };
     }
 
+    setContext((current) => ({
+      ...current,
+      latestWigRequest: result.wigRequest || current.latestWigRequest,
+      latestWigSpecification: result.wigSpecification || current.latestWigSpecification,
+      requestWig: selectedWigId ? (current.requestWig || { wig_id: selectedWigId }) : current.requestWig,
+    }));
     setSuccessMessage(
       result.alreadyExists
         ? 'You already have a pending request.'
         : 'Wig request submitted successfully. Waiting for organization approval.'
     );
-    await refreshContext();
+    void refreshContext({ silent: true }).catch((refreshError) => {
+      logAppError('patientWigRequest.refreshAfterSave', refreshError, { userId });
+    });
     return { success: true, wigRequest: result.wigRequest, alreadyExists: Boolean(result.alreadyExists) };
   };
 

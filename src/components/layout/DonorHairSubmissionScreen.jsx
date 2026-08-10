@@ -27,6 +27,7 @@ import { fetchRegisteredDonationDrivesByUserId } from '../../features/donorHome.
 import {
   fetchHairSubmissionsByUserId,
 } from '../../features/hairSubmission.api';
+import { invalidateHairAnalysisHomeCache } from '../../features/hairAnalysisHomeCache';
 import {
   hairAnalyzerComplianceDefaultValues,
   hairAnalyzerComplianceSchema,
@@ -926,6 +927,191 @@ function ReviewOptionChips({ value, options, onChange }) {
   );
 }
 
+function HairCaptureTutorialModal({
+  currentView,
+  requiredViews = [],
+  visible,
+  onClose,
+}) {
+  const activeViewKey = currentView?.key || '';
+
+  return (
+    <Modal
+      transparent
+      visible={visible}
+      animationType="fade"
+      presentationStyle="overFullScreen"
+      statusBarTranslucent
+      onRequestClose={onClose}
+    >
+      <View style={styles.captureTutorialOverlay}>
+        <Pressable
+          style={styles.captureTutorialBackdrop}
+          onPress={onClose}
+          accessibilityRole="button"
+          accessibilityLabel="Close capture tutorial"
+        />
+        <View style={styles.captureTutorialSheet}>
+          <View style={styles.captureTutorialHeader}>
+            <View style={styles.captureTutorialHeaderCopy}>
+              <Text style={styles.captureTutorialEyebrow}>6 scan photos</Text>
+              <Text style={styles.captureTutorialTitle}>How to show your hair</Text>
+            </View>
+            <Pressable
+              onPress={onClose}
+              hitSlop={10}
+              style={({ pressed }) => [styles.captureTutorialClose, pressed ? styles.pressedMuted : null]}
+              accessibilityRole="button"
+              accessibilityLabel="Close capture tutorial"
+            >
+              <AppIcon name="close" size="sm" state="inverse" />
+            </Pressable>
+          </View>
+
+          <ScrollView
+            style={styles.captureTutorialScroll}
+            contentContainerStyle={styles.captureTutorialList}
+            showsVerticalScrollIndicator={false}
+          >
+            {requiredViews.map((view, index) => {
+              const isActive = view?.key === activeViewKey;
+              const tips = Array.isArray(view?.tutorialTips) ? view.tutorialTips : [];
+
+              return (
+                <View
+                  key={view?.key || `${view?.label}-${index}`}
+                  style={[
+                    styles.captureTutorialItem,
+                    isActive ? styles.captureTutorialItemActive : null,
+                  ]}
+                >
+                  <View style={styles.captureTutorialNumberWrap}>
+                    <Text style={styles.captureTutorialNumber}>{index + 1}</Text>
+                  </View>
+                  <View style={styles.captureTutorialCopy}>
+                    <Text style={styles.captureTutorialItemTitle}>
+                      {view?.tutorialTitle || view?.label || `Photo ${index + 1}`}
+                    </Text>
+                    <Text style={styles.captureTutorialDisplayTip}>
+                      {view?.displayTip || view?.helperText || 'Keep hair clear and well lit.'}
+                    </Text>
+                    {tips.length ? (
+                      <View style={styles.captureTutorialTipRow}>
+                        {tips.slice(0, 3).map((tip) => (
+                          <Text key={tip} style={styles.captureTutorialTip}>
+                            {tip}
+                          </Text>
+                        ))}
+                      </View>
+                    ) : null}
+                  </View>
+                </View>
+              );
+            })}
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function CaptureInstructionPopup({
+  completedPhotoCount = 0,
+  currentView,
+  requiredCount = 0,
+  tips = [],
+  visible,
+  onClose,
+}) {
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const [shouldRender, setShouldRender] = useState(visible);
+  const viewTitle = currentView?.tutorialTitle || getViewCaptureLabel(currentView);
+  const displayTip = currentView?.displayTip || 'Keep hair loose, centered, and well lit.';
+
+  useEffect(() => {
+    if (visible) {
+      setShouldRender(true);
+      fadeAnim.setValue(0);
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 300,
+        useNativeDriver: true,
+      }).start();
+      return undefined;
+    }
+
+    Animated.timing(fadeAnim, {
+      toValue: 0,
+      duration: 300,
+      useNativeDriver: true,
+    }).start(({ finished }) => {
+      if (finished) setShouldRender(false);
+    });
+    return undefined;
+  }, [fadeAnim, visible]);
+
+  if (!shouldRender) return null;
+
+  return (
+    <Modal
+      transparent
+      visible={shouldRender}
+      animationType="none"
+      presentationStyle="overFullScreen"
+      statusBarTranslucent
+      onRequestClose={onClose}
+    >
+      <Animated.View style={[styles.captureInstructionPopupOverlay, { opacity: fadeAnim }]}>
+        <Pressable
+          style={styles.captureInstructionPopupBackdrop}
+          onPress={onClose}
+          accessibilityRole="button"
+          accessibilityLabel="Close photo instruction"
+        />
+        <View style={styles.captureInstructionPopupCard}>
+          <View style={styles.captureInstructionPopupHeader}>
+            <View style={styles.captureInstructionPopupIconWrap}>
+              <AppIcon name="tutorial" size="md" state="inverse" />
+            </View>
+            <View style={styles.captureInstructionPopupCopy}>
+              <Text style={styles.captureInstructionPopupStep}>
+                Photo {Math.min(completedPhotoCount + 1, requiredCount)} of {requiredCount}
+              </Text>
+              <Text style={styles.captureInstructionPopupTitle}>{viewTitle}</Text>
+            </View>
+            <Pressable
+              onPress={onClose}
+              hitSlop={10}
+              style={styles.captureInstructionPopupClose}
+              accessibilityRole="button"
+              accessibilityLabel="Close photo instruction"
+            >
+              <AppIcon name="close" size="sm" state="default" />
+            </Pressable>
+          </View>
+          <Text style={styles.captureInstructionPopupTip}>{displayTip}</Text>
+          {tips.length ? (
+            <View style={styles.captureInstructionPopupTips}>
+              {tips.slice(0, 2).map((tip) => (
+                <View key={tip} style={styles.captureInstructionPopupTipRow}>
+                  <View style={styles.captureInstructionPopupDot} />
+                  <Text style={styles.captureInstructionPopupTipText}>{tip}</Text>
+                </View>
+              ))}
+            </View>
+          ) : null}
+          <AppButton
+            title="Got it"
+            fullWidth
+            onPress={onClose}
+            style={styles.captureInstructionPopupAction}
+          />
+        </View>
+      </Animated.View>
+    </Modal>
+  );
+}
+
 function LiveHairCameraPanel({
   autoCaptureEnabled,
   autoCaptureCountdown,
@@ -953,6 +1139,8 @@ function LiveHairCameraPanel({
   onFacesChange,
   onCameraError,
 }) {
+  const [isCaptureTutorialOpen, setIsCaptureTutorialOpen] = useState(false);
+  const [isInstructionPopupVisible, setIsInstructionPopupVisible] = useState(false);
   const { width: windowWidth } = useWindowDimensions();
   const cameraStageWidth = Math.min(Math.max(windowWidth - theme.spacing.sm * 2, 320), 520);
   const cameraStageHeight = Math.min(Math.max(windowWidth * 1.28, 460), 620);
@@ -968,6 +1156,9 @@ function LiveHairCameraPanel({
       ? styles.liveStatusDotError
       : styles.liveStatusDotActive;
   const shortViewHint = getViewCaptureLabel(currentView);
+  const hairDisplayTip = currentView?.displayTip || 'Keep hair loose, centered, and well lit.';
+  const currentTutorialTips = Array.isArray(currentView?.tutorialTips) ? currentView.tutorialTips.slice(0, 2) : [];
+  const currentViewKey = currentView?.key || currentView?.label || '';
 
   useEffect(() => {
     if (currentPhoto?.uri) return undefined;
@@ -994,6 +1185,12 @@ function LiveHairCameraPanel({
     };
   }, [currentPhoto?.uri, scanLineProgress]);
 
+  useEffect(() => {
+    if (currentViewKey && !currentPhoto?.uri) {
+      setIsInstructionPopupVisible(true);
+    }
+  }, [currentPhoto?.uri, currentViewKey]);
+
   const scanLineTravel = Math.max(cameraStageHeight - 220, 120);
   const scanLineStyle = {
     transform: [
@@ -1008,6 +1205,20 @@ function LiveHairCameraPanel({
 
   return (
     <View style={styles.liveCameraPanel}>
+      <HairCaptureTutorialModal
+        currentView={currentView}
+        requiredViews={requiredViews}
+        visible={isCaptureTutorialOpen}
+        onClose={() => setIsCaptureTutorialOpen(false)}
+      />
+      <CaptureInstructionPopup
+        completedPhotoCount={completedPhotoCount}
+        currentView={currentView}
+        requiredCount={requiredViews.length}
+        tips={currentTutorialTips}
+        visible={isInstructionPopupVisible}
+        onClose={() => setIsInstructionPopupVisible(false)}
+      />
       <View style={[styles.liveCameraStage, { width: cameraStageWidth, height: cameraStageHeight }]}>
         {currentPhoto?.uri ? (
           <Image source={{ uri: currentPhoto.uri }} style={styles.liveCameraPreview} resizeMode="cover" />
@@ -1066,13 +1277,26 @@ function LiveHairCameraPanel({
                   : liveScanStatus.statusLabel}
             </Text>
           </View>
-          <Pressable
-            onPress={onToggleFlash}
-            disabled={Boolean(isCapturing || isUploading || isAnalyzing || currentPhoto?.uri)}
-            style={styles.liveCameraOverlayIcon}
-          >
-            <AppIcon name={flashMode === 'on' ? 'flash' : 'flash-off'} size="sm" state="inverse" />
-          </Pressable>
+          <View style={styles.liveCameraTopActions}>
+            <Pressable
+              onPress={() => setIsCaptureTutorialOpen(true)}
+              disabled={Boolean(isCapturing || isUploading || isAnalyzing)}
+              style={styles.liveCameraOverlayIcon}
+              accessibilityRole="button"
+              accessibilityLabel="Open photo capture tutorial"
+            >
+              <AppIcon name="help-circle-outline" size="sm" state="inverse" />
+            </Pressable>
+            <Pressable
+              onPress={onToggleFlash}
+              disabled={Boolean(isCapturing || isUploading || isAnalyzing || currentPhoto?.uri)}
+              style={styles.liveCameraOverlayIcon}
+              accessibilityRole="button"
+              accessibilityLabel={flashMode === 'on' ? 'Turn flash off' : 'Turn flash on'}
+            >
+              <AppIcon name={flashMode === 'on' ? 'flash' : 'flash-off'} size="sm" state="inverse" />
+            </Pressable>
+          </View>
         </View>
 
         <View style={styles.liveFrameGuide} pointerEvents="none">
@@ -1093,6 +1317,42 @@ function LiveHairCameraPanel({
       </View>
 
       <View style={styles.liveCameraBottomSheet}>
+        <View style={styles.liveCaptureInstructionCard}>
+          <View style={styles.liveCaptureInstructionHeader}>
+            <View style={styles.liveCaptureInstructionCopy}>
+              <Text style={styles.liveCaptureInstructionStep}>
+                Photo {Math.min(completedPhotoCount + 1, requiredViews.length)} of {requiredViews.length}
+              </Text>
+              <Text style={styles.liveCaptureInstructionTitle}>
+                {currentView?.tutorialTitle || shortViewHint}
+              </Text>
+            </View>
+            <Pressable
+              onPress={() => setIsCaptureTutorialOpen(true)}
+              disabled={Boolean(isCapturing || isUploading || isAnalyzing)}
+              style={styles.liveCaptureInstructionIcon}
+              accessibilityRole="button"
+              accessibilityLabel="Open photo capture tutorial"
+            >
+              <AppIcon name="tutorial" size="sm" state="inverse" />
+            </Pressable>
+          </View>
+          <Text style={styles.liveCaptureInstructionTip} numberOfLines={2}>
+            {hairDisplayTip}
+          </Text>
+          {currentTutorialTips.length ? (
+            <View style={styles.liveCaptureInstructionBullets}>
+              {currentTutorialTips.map((tip) => (
+                <View key={tip} style={styles.liveCaptureInstructionBullet}>
+                  <View style={styles.liveCaptureInstructionDot} />
+                  <Text style={styles.liveCaptureInstructionBulletText} numberOfLines={1}>
+                    {tip}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          ) : null}
+        </View>
         <View style={styles.liveBottomStatusRow}>
           <Text style={styles.liveHoldStillText}>
             {currentPhoto
@@ -2908,6 +3168,7 @@ export function DonorHairSubmissionScreen() {
     });
 
     if (result?.success) {
+      invalidateHairAnalysisHomeCache(user?.id);
       questionForm.reset({
         ...hairAnalyzerQuestionDefaultValues,
         questionnaireMode,
@@ -4589,6 +4850,9 @@ const styles = StyleSheet.create({
     paddingTop: theme.spacing.xl,
     paddingBottom: theme.spacing.lg,
   },
+  pressedMuted: {
+    opacity: 0.72,
+  },
   analyzerScroll: {
     flex: 1,
   },
@@ -5670,6 +5934,212 @@ const styles = StyleSheet.create({
     lineHeight: theme.typography.compact.body * theme.typography.lineHeights.normal,
     color: theme.colors.textSecondary,
   },
+  captureTutorialOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0, 0, 0, 0.58)',
+  },
+  captureTutorialBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  captureTutorialSheet: {
+    maxHeight: '86%',
+    paddingHorizontal: theme.spacing.md,
+    paddingTop: theme.spacing.md,
+    paddingBottom: theme.spacing.lg,
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    backgroundColor: theme.colors.backgroundPrimary,
+    gap: theme.spacing.md,
+  },
+  captureTutorialHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: theme.spacing.md,
+  },
+  captureTutorialHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  captureTutorialEyebrow: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.brandPrimary,
+    textTransform: 'uppercase',
+  },
+  captureTutorialTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.titleSm,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.textPrimary,
+  },
+  captureTutorialClose: {
+    width: 38,
+    height: 38,
+    borderRadius: theme.radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.brandPrimary,
+  },
+  captureTutorialList: {
+    gap: theme.spacing.sm,
+    paddingBottom: theme.spacing.xs,
+  },
+  captureTutorialScroll: {
+    flexGrow: 0,
+  },
+  captureTutorialItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: theme.spacing.sm,
+    padding: theme.spacing.sm,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: theme.colors.borderSubtle,
+    backgroundColor: theme.colors.surfaceSoft,
+  },
+  captureTutorialItemActive: {
+    borderColor: theme.colors.brandPrimary,
+    backgroundColor: theme.colors.brandPrimaryMuted,
+  },
+  captureTutorialNumberWrap: {
+    width: 30,
+    height: 30,
+    borderRadius: theme.radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.brandPrimary,
+  },
+  captureTutorialNumber: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.textOnBrand,
+  },
+  captureTutorialCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 4,
+  },
+  captureTutorialItemTitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.body,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.textPrimary,
+  },
+  captureTutorialDisplayTip: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+    lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.normal,
+    color: theme.colors.textSecondary,
+  },
+  captureTutorialTipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  captureTutorialTip: {
+    overflow: 'hidden',
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: 4,
+    backgroundColor: theme.colors.backgroundPrimary,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    color: theme.colors.textSecondary,
+  },
+  captureInstructionPopupOverlay: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.md,
+    backgroundColor: 'rgba(0, 0, 0, 0.48)',
+  },
+  captureInstructionPopupBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  captureInstructionPopupCard: {
+    width: '100%',
+    maxWidth: 390,
+    gap: theme.spacing.sm,
+    padding: theme.spacing.md,
+    borderRadius: 18,
+    backgroundColor: theme.colors.backgroundPrimary,
+    ...theme.shadows.md,
+  },
+  captureInstructionPopupHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  captureInstructionPopupIconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: theme.radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.brandPrimary,
+  },
+  captureInstructionPopupCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  captureInstructionPopupStep: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.brandPrimary,
+    textTransform: 'uppercase',
+  },
+  captureInstructionPopupTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.bodyLg,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.textPrimary,
+  },
+  captureInstructionPopupClose: {
+    width: 34,
+    height: 34,
+    borderRadius: theme.radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.surfaceSoft,
+  },
+  captureInstructionPopupTip: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.bodySm,
+    lineHeight: theme.typography.semantic.bodySm * theme.typography.lineHeights.relaxed,
+    fontWeight: theme.typography.weights.semibold,
+    color: theme.colors.textPrimary,
+  },
+  captureInstructionPopupTips: {
+    gap: 6,
+  },
+  captureInstructionPopupTipRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: theme.spacing.xs,
+  },
+  captureInstructionPopupDot: {
+    width: 6,
+    height: 6,
+    borderRadius: theme.radius.full,
+    marginTop: 7,
+    backgroundColor: theme.colors.brandPrimary,
+  },
+  captureInstructionPopupTipText: {
+    flex: 1,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.body,
+    lineHeight: theme.typography.compact.body * theme.typography.lineHeights.normal,
+    color: theme.colors.textSecondary,
+  },
+  captureInstructionPopupAction: {
+    marginTop: theme.spacing.xs,
+  },
   answerSummaryCompact: {
     gap: theme.spacing.xs,
   },
@@ -5862,12 +6332,17 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: 'rgba(255,255,255,0.16)',
   },
+  liveCameraTopActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   liveStatusPill: {
     flexShrink: 1,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 7,
-    maxWidth: '52%',
+    maxWidth: '44%',
     paddingHorizontal: theme.spacing.md,
     paddingVertical: 8,
     borderRadius: theme.radius.pill,
@@ -6040,6 +6515,93 @@ const styles = StyleSheet.create({
     borderRadius: 0,
     backgroundColor: '#111111',
     gap: theme.spacing.xs,
+  },
+  liveCaptureInstructionCard: {
+    gap: 6,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: 8,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
+  liveCaptureInstructionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: theme.spacing.sm,
+  },
+  liveCaptureInstructionCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  liveCaptureInstructionStep: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.brandPrimary,
+    textTransform: 'uppercase',
+  },
+  liveCaptureInstructionTitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.body,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.textInverse,
+  },
+  liveCaptureInstructionIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: theme.radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.16)',
+  },
+  liveCaptureInstructionTip: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: theme.typography.compact.caption * theme.typography.lineHeights.relaxed,
+    fontWeight: theme.typography.weights.semibold,
+    color: theme.colors.textInverse,
+  },
+  liveCaptureInstructionBullets: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  liveCaptureInstructionBullet: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    maxWidth: '48%',
+  },
+  liveCaptureInstructionDot: {
+    width: 5,
+    height: 5,
+    borderRadius: theme.radius.full,
+    backgroundColor: theme.colors.brandPrimary,
+  },
+  liveCaptureInstructionBulletText: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    color: 'rgba(255,255,255,0.82)',
+  },
+  liveHairDisplayTip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.xs,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: 8,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
+  liveHairDisplayTipText: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: theme.typography.compact.caption * theme.typography.lineHeights.relaxed,
+    fontWeight: theme.typography.weights.semibold,
+    color: theme.colors.textInverse,
   },
   liveBottomStatusRow: {
     flexDirection: 'row',

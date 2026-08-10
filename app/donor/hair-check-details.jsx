@@ -55,7 +55,9 @@ export default function DonorHairCheckDetailsScreen() {
         setEntry({
           screening,
           submission,
-          recommendations: submission.donor_recommendations || submission.recommendations || [],
+          recommendations: submission.donor_recommendations?.length
+            ? submission.donor_recommendations
+            : screening.recommendations || screening.analysis_result?.recommendations || [],
           images: (submission.submission_details || []).flatMap((detail) => detail.images || []),
         });
         return;

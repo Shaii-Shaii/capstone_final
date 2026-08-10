@@ -1,5 +1,5 @@
 import { Link } from 'expo-router';
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, TextStyle, View, ViewStyle } from 'react-native';
 import { theme } from '../src/design-system/theme';
 
 export default function ModalScreen() {
@@ -13,7 +13,12 @@ export default function ModalScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const styles = StyleSheet.create<{
+  container: ViewStyle;
+  title: TextStyle;
+  link: TextStyle;
+  linkText: TextStyle;
+}>({
   container: {
     flex: 1,
     alignItems: 'center',
@@ -24,7 +29,7 @@ const styles = StyleSheet.create({
   title: {
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.sizes.h2,
-    fontWeight: theme.typography.weights.bold,
+    fontWeight: theme.typography.weights.bold as TextStyle['fontWeight'],
     color: theme.colors.textPrimary,
   },
   link: {

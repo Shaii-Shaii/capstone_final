@@ -6268,6 +6268,7 @@ export function DonorDonationStatusScreen() {
             submission,
             databaseUserId: profile?.user_id || null,
             donationDriveId: null,
+            donorName: accountDonorName,
           }));
         }
       }
@@ -6321,6 +6322,7 @@ export function DonorDonationStatusScreen() {
       setIsGeneratingQr(false);
     }
   }, [
+    accountDonorName,
     activeDonationQrItems,
     activeDonationQrPayload,
     hairEligibilityMessage,

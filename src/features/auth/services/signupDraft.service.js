@@ -1,6 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { linkPatientRecordByCode, saveAvatar, saveProfile } from '../../profile/services/profile.service';
 import { ensureSystemUserRecord, ensureUserDetailsRecord } from '../../profile/api/profile.api';
+import { createNotifications } from '../../notification.api';
+import { notificationTypes } from '../../notification.constants';
 
 const SIGNUP_DRAFT_STORAGE_KEY = 'donivra.signupDrafts';
 
@@ -184,6 +186,20 @@ export const syncPendingSignupDraft = async ({ userId, email, role }) => {
         return { success: false, synced: false, error: patientLinkResult.error };
       }
     }
+
+    const accountRole = draft.isPatient === 'yes' ? 'patient' : 'donor';
+    await createNotifications([{
+      user_id: systemUserResult.data.user_id,
+      type: notificationTypes.accountCreated,
+      title: 'Welcome to Donivra',
+      message: accountRole === 'patient'
+        ? 'Your patient account has been created. You can now explore wig support and manage requests.'
+        : 'Your donor account has been created. You can now analyze your hair, RSVP to events, and manage donations.',
+      status: 'Unread',
+      reference_type: 'route',
+      reference_id: accountRole === 'patient' ? '/patient/home' : '/donor/home',
+      updated_at: systemUserResult.data.created_at || new Date().toISOString(),
+    }]).catch(() => ({ data: [], error: null }));
 
     await clearPendingSignupDraft(email);
     return { success: true, synced: true, error: null };

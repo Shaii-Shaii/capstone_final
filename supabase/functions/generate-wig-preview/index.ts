@@ -1,13 +1,28 @@
 import { createJsonResponse, handleCorsPreflight } from '../_shared/cors.ts';
+import {
+  createImageEdit,
+  createStructuredResponse,
+  getDefaultOpenAiImageModel,
+  getDefaultOpenAiModel,
+} from '../_shared/openai.ts';
 
-const MAX_PREVIEW_VARIANTS = 1;
-const CLOUDFLARE_AI_API_URL = 'https://api.cloudflare.com/client/v4/accounts';
-const CLOUDFLARE_WIG_IMAGE_MODEL = Deno.env.get('CLOUDFLARE_AI_MODEL')
-  || '@cf/black-forest-labs/flux-2-klein-4b';
-const CLOUDFLARE_OUTPUT_SIZE = Deno.env.get('CLOUDFLARE_AI_IMAGE_SIZE') || '768';
-const CLOUDFLARE_STEPS = Deno.env.get('CLOUDFLARE_AI_STEPS') || '12';
+const MAX_CANDIDATE_WIGS = 24;
+const RECOMMENDATION_COUNT = 3;
+const PREVIEW_STORAGE_BUCKET = Deno.env.get('WIG_REQUEST_PREVIEWS_BUCKET') || 'wig_request_previews';
 
-const toText = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+type WigRecommendation = {
+  wig_id: string;
+  rank: number;
+  suitability_reason: string;
+  styling_note: string;
+  wig: Record<string, unknown>;
+};
+
+const toText = (value: unknown) => (
+  typeof value === 'string' || typeof value === 'number'
+    ? String(value).trim()
+    : ''
+);
 
 const toSafeErrorMessage = (value: string) => {
   const normalized = String(value || '').replace(/\s+/g, ' ').trim();
@@ -17,13 +32,79 @@ const toSafeErrorMessage = (value: string) => {
     .slice(0, 500);
 };
 
-const getSelectedWigReferenceUrl = (selectedWig: Record<string, unknown>) => (
-  toText(selectedWig?.reference_image_url)
-  || toText(selectedWig?.thumbnail_url)
-  || toText(selectedWig?.layer_full_wig_url)
-  || toText(selectedWig?.layer_front_bangs_url)
-  || toText(selectedWig?.layer_back_hair_url)
-);
+const getAuthenticatedUserId = async (request: Request) => {
+  const authorization = (request.headers.get('Authorization') || '').trim();
+  const supabaseUrl = (Deno.env.get('SUPABASE_URL') || '').trim();
+  const anonKey = (Deno.env.get('SUPABASE_ANON_KEY') || '').trim();
+  if (!authorization.match(/^Bearer\s+\S+$/i) || !supabaseUrl || !anonKey) return '';
+
+  try {
+    const response = await fetch(`${supabaseUrl}/auth/v1/user`, {
+      headers: { Authorization: authorization, apikey: anonKey },
+    });
+    if (!response.ok) return '';
+    const user = await response.json().catch(() => ({}));
+    return toText(user?.id);
+  } catch (error) {
+    console.error('[generate-wig-preview] auth validation failed', error);
+    return '';
+  }
+};
+
+const dataUrlToBlob = (dataUrl: string) => {
+  const match = /^data:([^;]+);base64,(.*)$/i.exec(dataUrl || '');
+  if (!match?.[2]) throw new Error('Generated image data is invalid.');
+  const binary = atob(match[2]);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return new Blob([bytes], { type: match[1] || 'image/webp' });
+};
+
+const persistGeneratedImage = async ({
+  imageUrl,
+  userId,
+  optionIndex,
+}: {
+  imageUrl: string;
+  userId: string;
+  optionIndex: number;
+}) => {
+  const supabaseUrl = (Deno.env.get('SUPABASE_URL') || '').trim();
+  const serviceRoleKey = (Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '').trim();
+  if (!supabaseUrl || !serviceRoleKey) {
+    throw new Error('Supabase Storage credentials are not configured in Edge Function Secrets.');
+  }
+
+  const imageBlob = imageUrl.startsWith('data:')
+    ? dataUrlToBlob(imageUrl)
+    : await fetch(imageUrl).then(async (response) => {
+        if (!response.ok) throw new Error('Unable to download the generated OpenAI image.');
+        return await response.blob();
+      });
+  const filePath = `${userId}/ai-wig-preview-${Date.now()}-${optionIndex}.webp`;
+  const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
+  const uploadResponse = await fetch(
+    `${supabaseUrl}/storage/v1/object/${encodeURIComponent(PREVIEW_STORAGE_BUCKET)}/${encodedPath}`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${serviceRoleKey}`,
+        apikey: serviceRoleKey,
+        'Content-Type': imageBlob.type || 'image/webp',
+        'x-upsert': 'false',
+      },
+      body: imageBlob,
+    },
+  );
+  if (!uploadResponse.ok) {
+    const payload = await uploadResponse.json().catch(() => ({}));
+    throw new Error(toText(payload?.message) || 'Unable to save the generated wig preview.');
+  }
+
+  return `${supabaseUrl}/storage/v1/object/public/${encodeURIComponent(PREVIEW_STORAGE_BUCKET)}/${encodedPath}`;
+};
 
 const getPatientImageUrl = (referenceImage: Record<string, unknown>) => (
   toText(referenceImage?.dataUrl)
@@ -31,383 +112,381 @@ const getPatientImageUrl = (referenceImage: Record<string, unknown>) => (
   || toText(referenceImage?.uri)
 );
 
-const extractMimeTypeFromDataUrl = (value: string) => {
-  const match = /^data:([^;]+);base64,/i.exec(value || '');
-  return match?.[1] || '';
-};
+const getWigReferenceUrl = (wig: Record<string, unknown>) => (
+  toText(wig?.reference_image_url)
+  || toText(wig?.thumbnail_url)
+  || toText(wig?.layer_full_wig_url)
+  || toText(wig?.layer_front_bangs_url)
+  || toText(wig?.layer_back_hair_url)
+);
 
-const extractBase64Payload = (value: string) => {
-  const commaIndex = value.indexOf(',');
-  return commaIndex >= 0 ? value.slice(commaIndex + 1) : '';
-};
-
-const arrayBufferToBase64 = (buffer: ArrayBuffer) => {
-  const bytes = new Uint8Array(buffer);
-  const chunkSize = 0x8000;
-  let binary = '';
-
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
-  }
-
-  return btoa(binary);
-};
-
-const loadImageUpload = async (imageUrl: string, label: string) => {
-  if (imageUrl.startsWith('data:')) {
-    const mimeType = extractMimeTypeFromDataUrl(imageUrl) || 'image/jpeg';
-    const data = extractBase64Payload(imageUrl);
-    if (!data) throw new Error(`${label} image data is empty.`);
-    const binary = atob(data);
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index += 1) {
-      bytes[index] = binary.charCodeAt(index);
-    }
-    const extension = mimeType.includes('png') ? 'png' : 'jpg';
-    return {
-      blob: new Blob([bytes], { type: mimeType }),
-      filename: `${label.replace(/\s+/g, '-')}.${extension}`,
-      mimeType,
-    };
-  }
-
-  if (/^https?:\/\//i.test(imageUrl)) {
-    const response = await fetch(imageUrl);
-    if (!response.ok) {
-      throw new Error(`Unable to load ${label} image reference.`);
-    }
-    const mimeType = response.headers.get('content-type') || 'image/png';
-    const extension = mimeType.includes('png') ? 'png' : 'jpg';
-    return {
-      blob: new Blob([await response.arrayBuffer()], { type: mimeType }),
-      filename: `${label.replace(/\s+/g, '-')}.${extension}`,
-      mimeType,
-    };
-  }
-
-  throw new Error(`${label} image reference is not accessible to the server.`);
-};
-
-const extractProviderError = async (response: Response) => {
+const isAllowedStorageImageUrl = (value: string) => {
   try {
-    const payload = await response.clone().json();
-    const firstError = Array.isArray(payload?.errors) ? payload.errors[0] : null;
-    const message = payload?.error?.message || firstError?.message || payload?.message;
-    if (typeof message === 'string' && message.trim()) return message.trim();
+    const imageUrl = new URL(value);
+    const supabaseUrl = new URL((Deno.env.get('SUPABASE_URL') || '').trim());
+    return imageUrl.protocol === 'https:' && imageUrl.host === supabaseUrl.host;
   } catch {
-    // Fall through to text parsing.
+    return false;
   }
-
-  try {
-    const text = await response.clone().text();
-    if (text?.trim()) return text.trim();
-  } catch {
-    // Fall through to generic message.
-  }
-
-  return 'AI image generation request failed.';
 };
 
-const createCloudflareWigImage = async ({
+const getWigId = (wig: Record<string, unknown>) => (
+  toText(wig?.wig_id) || toText(wig?.id)
+);
+
+const getWigName = (wig: Record<string, unknown>) => (
+  toText(wig?.wig_name)
+  || toText((wig?.physical_specification as Record<string, unknown>)?.style)
+  || 'Available wig'
+);
+
+const normalizeWig = (wig: Record<string, unknown>) => {
+  const specification = (wig?.physical_specification || {}) as Record<string, unknown>;
+  const id = getWigId(wig);
+
+  return {
+    ...wig,
+    id,
+    wig_id: id,
+    wig_name: getWigName(wig),
+    reference_image_url: getWigReferenceUrl(wig),
+    physical_specification: {
+      color: toText(specification?.color) || toText(wig?.pending_hair_color),
+      length: specification?.length ?? wig?.pending_hair_length ?? '',
+      hair_texture: toText(specification?.hair_texture) || toText(wig?.pending_hair_texture),
+      hair_density: toText(specification?.hair_density) || toText(wig?.pending_hair_density),
+      cap_size: toText(specification?.cap_size) || toText(wig?.pending_cap_size),
+      style: toText(specification?.style) || toText(wig?.pending_style),
+    },
+  };
+};
+
+const recommendationSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    visual_profile_summary: { type: 'string' },
+    recommendations: {
+      type: 'array',
+      minItems: RECOMMENDATION_COUNT,
+      maxItems: RECOMMENDATION_COUNT,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          wig_id: { type: 'string' },
+          rank: { type: 'integer', minimum: 1, maximum: RECOMMENDATION_COUNT },
+          suitability_reason: { type: 'string' },
+          styling_note: { type: 'string' },
+        },
+        required: ['wig_id', 'rank', 'suitability_reason', 'styling_note'],
+      },
+    },
+  },
+  required: ['visual_profile_summary', 'recommendations'],
+};
+
+const rankingInstructions = [
+  'You are a wig styling assistant. Rank exactly three distinct wigs from the supplied inventory for the person in the photo.',
+  'Base recommendations only on visible face outline, apparent proportions, and how each wig style, length, texture, density, and color visually frames the face.',
+  'Do not identify the person or infer ethnicity, health, diagnosis, personality, gender identity, or any other sensitive attribute.',
+  'Use only wig_id values present in the supplied inventory. Do not invent wigs.',
+  'Rank the recommendations from best overall match to third-best match without using percentages, scores, ratings, or measurements.',
+  'For each wig, explain in one or two short, warm, user-friendly sentences how its shape, length, texture, volume, fringe, or color complements the visible facial features and frames the face.',
+  'Avoid technical styling jargon, guarantees, negative comments, and sensitive personal inferences. Return JSON only.',
+].join(' ');
+
+const toInventorySummary = (wig: Record<string, unknown>) => ({
+  wig_id: getWigId(wig),
+  wig_name: getWigName(wig),
+  stock_count: wig?.stock_count ?? null,
+  physical_specification: wig?.physical_specification || {},
+});
+
+const completeRecommendations = (
+  rawRecommendations: Array<Record<string, unknown>>,
+  wigs: Array<Record<string, unknown>>,
+  selectedWigId = '',
+): WigRecommendation[] => {
+  const wigById = new Map(wigs.map((wig) => [getWigId(wig), wig]));
+  const usedIds = new Set<string>();
+  const completed: Array<Record<string, unknown>> = [];
+
+  if (selectedWigId && wigById.has(selectedWigId)) {
+    const selectedRecommendation = (rawRecommendations || []).find(
+      (item) => toText(item?.wig_id) === selectedWigId,
+    );
+    usedIds.add(selectedWigId);
+    completed.push(selectedRecommendation || {
+      wig_id: selectedWigId,
+      rank: 1,
+      suitability_reason: 'This is the style you selected. It is included so you can see how naturally it frames your face beside the other suggestions.',
+      styling_note: 'Patient-selected comparison style.',
+    });
+  }
+
+  for (const item of rawRecommendations || []) {
+    const wigId = toText(item?.wig_id);
+    if (!wigId || usedIds.has(wigId) || !wigById.has(wigId)) continue;
+    usedIds.add(wigId);
+    completed.push({ ...item, wig_id: wigId });
+    if (completed.length === RECOMMENDATION_COUNT) break;
+  }
+
+  for (const wig of wigs) {
+    const wigId = getWigId(wig);
+    if (!wigId || usedIds.has(wigId)) continue;
+    usedIds.add(wigId);
+    completed.push({
+      wig_id: wigId,
+      rank: completed.length + 1,
+      suitability_reason: 'This style softly frames your face and creates a balanced, natural-looking outline.',
+      styling_note: 'AI fallback recommendation based on the available wig inventory.',
+    });
+    if (completed.length === RECOMMENDATION_COUNT) break;
+  }
+
+  return completed.map((item, index) => {
+    const wigId = toText(item?.wig_id);
+    const wig = wigById.get(wigId);
+    if (!wig) {
+      throw new Error(`Recommendation references an unavailable wig: ${wigId || 'missing wig ID'}.`);
+    }
+
+    return {
+      wig_id: wigId,
+      rank: index + 1,
+      suitability_reason: toText(item?.suitability_reason)
+        || 'This style softly frames your face and creates a balanced, natural-looking outline.',
+      styling_note: toText(item?.styling_note)
+        || 'Recommended from the available wig inventory.',
+      wig,
+    };
+  });
+};
+
+const buildTryOnPrompt = ({
+  wig,
+  recommendation,
+}: {
+  wig: Record<string, unknown>;
+  recommendation: WigRecommendation;
+}) => {
+  const specification = (wig?.physical_specification || {}) as Record<string, unknown>;
+
+  return [
+    'Create a photorealistic virtual wig try-on using the two supplied reference images.',
+    'The first image is the patient photo and must remain the composition and identity reference.',
+    'The second image is the exact wig reference and must define the hairstyle.',
+    'Place that wig naturally and accurately on the patient head, aligned to the hairline, forehead, temples, ears, crown, neck, and shoulders.',
+    'Preserve the patient face, facial features, expression, skin tone, head pose, body, clothing, background, camera angle, and lighting.',
+    'Change only the hair and areas naturally occluded by the selected wig. Remove or cover the original hair where the wig overlaps.',
+    'Match realistic strand direction, density, flyaways, shadows, highlights, perspective, and contact at the scalp.',
+    'Do not beautify, reshape, age, or otherwise alter the face. Do not add text, labels, borders, or watermarks.',
+    `Selected inventory wig: ${getWigName(wig)}.`,
+    `Wig specification: ${JSON.stringify(specification)}.`,
+    `Styling rationale: ${toText(recommendation?.suitability_reason)}.`,
+  ].join(' ');
+};
+
+const createWigImageWithRetry = async ({
   prompt,
   patientImageUrl,
   wigReferenceUrl,
-  model,
+  optionIndex,
 }: {
   prompt: string;
   patientImageUrl: string;
   wigReferenceUrl: string;
-  model: string;
+  optionIndex: number;
 }) => {
-  const accountId = (Deno.env.get('CLOUDFLARE_ACCOUNT_ID') || '').trim();
-  const apiToken = (Deno.env.get('CLOUDFLARE_API_TOKEN') || '').trim();
-  if (!accountId || !apiToken) {
-    throw new Error('Cloudflare Workers AI credentials are not configured in Edge Function Secrets.');
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      return await createImageEdit({
+        prompt,
+        images: [
+          { image_url: patientImageUrl },
+          { image_url: wigReferenceUrl },
+        ],
+        quality: 'medium',
+        size: '1024x1024',
+        outputFormat: 'webp',
+        inputFidelity: 'high',
+        outputCompression: 82,
+      });
+    } catch (error) {
+      const status = Number((error as Error & { status?: number })?.status || 0);
+      const retryable = status === 429 || status >= 500;
+      if (!retryable || attempt === 2) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 900 * optionIndex));
+    }
   }
 
-  const [patientImage, wigImage] = await Promise.all([
-    loadImageUpload(patientImageUrl, 'patient'),
-    loadImageUpload(wigReferenceUrl, 'wig reference'),
-  ]);
-
-  const form = new FormData();
-  form.append('prompt', prompt);
-  form.append('width', CLOUDFLARE_OUTPUT_SIZE);
-  form.append('height', CLOUDFLARE_OUTPUT_SIZE);
-  form.append('steps', CLOUDFLARE_STEPS);
-  form.append('strength', '0.35');
-  form.append('guidance', '3.5');
-  form.append('image', patientImage.blob, patientImage.filename);
-  form.append('image', wigImage.blob, wigImage.filename);
-  form.append('input_image', patientImage.blob, patientImage.filename);
-  form.append('reference_image', wigImage.blob, wigImage.filename);
-
-  const endpoint = `${CLOUDFLARE_AI_API_URL}/${encodeURIComponent(accountId)}/ai/run/${model}`;
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiToken}`,
-    },
-    body: form,
-  });
-
-  if (!response.ok) {
-    throw new Error(await extractProviderError(response));
-  }
-
-  const contentType = response.headers.get('content-type') || '';
-  if (contentType.startsWith('image/')) {
-    const data = arrayBufferToBase64(await response.arrayBuffer());
-    return {
-      imageDataUrl: `data:${contentType};base64,${data}`,
-      model,
-      raw: null,
-    };
-  }
-
-  const payload = await response.json();
-  const image = toText(payload?.result?.image) || toText(payload?.image);
-  if (!image) {
-    throw new Error(`Cloudflare Workers AI model ${model} returned no generated image.`);
-  }
-
-  return {
-    imageDataUrl: image.startsWith('data:') ? image : `data:image/png;base64,${image}`,
-    model,
-    raw: payload,
-  };
-};
-
-const getWigSpecValue = (
-  selectedWig: Record<string, unknown>,
-  key: string,
-  fallback = '',
-) => {
-  const spec = selectedWig?.physical_specification as Record<string, unknown> | undefined;
-  return toText(spec?.[key]) || fallback;
-};
-
-const buildCompositePrompt = ({
-  preferredColor,
-  preferredLength,
-  hairTexture,
-  hairDensity,
-  capSize,
-  stylePreference,
-  notes,
-  selectedWig,
-}: {
-  preferredColor: string;
-  preferredLength: string;
-  hairTexture: string;
-  hairDensity: string;
-  capSize: string;
-  stylePreference: string;
-  notes: string;
-  selectedWig: Record<string, unknown>;
-}) => {
-  const wigName = toText(selectedWig?.wig_name) || 'selected wig';
-  const wigColor = getWigSpecValue(selectedWig, 'color', preferredColor || 'match the selected wig reference');
-  const wigLength = getWigSpecValue(selectedWig, 'length', preferredLength || 'match the selected wig reference');
-  const wigTexture = getWigSpecValue(selectedWig, 'hair_texture', hairTexture || 'match the selected wig reference');
-  const wigDensity = getWigSpecValue(selectedWig, 'hair_density', hairDensity || 'match the selected wig reference');
-  const wigStyle = getWigSpecValue(selectedWig, 'style', stylePreference || 'match the selected wig reference');
-
-  return [
-    'Perform an image-to-image edit, not text-to-image generation.',
-    'Use Image 1 as the exact base canvas and final composition. Image 1 is the patient photo.',
-    'Use Image 2 only as the selected wig reference.',
-    'Do not create a new person, new face, new portrait, new background, or new camera angle.',
-    'The output must keep the same person from Image 1 in the same pose, crop, room, lighting, clothing, and expression.',
-    '',
-    'Primary objective: replace only the patient hairstyle with the selected wig. Everything else must remain unchanged.',
-    '',
-    'Identity preservation requirements:',
-    'Do not modify the patient face shape, jawline, cheekbones, chin, eyes, eye color, eyebrows, nose, lips, teeth, skin texture, skin tone, expression, facial proportions, neck, shoulders, body, clothing, jewelry, glasses, earrings, background, camera angle, lighting, or image quality.',
-    'Do not beautify, slim the face, enlarge eyes, apply makeup, remove blemishes, recolor skin, add accessories, change composition, or crop differently.',
-    '',
-    'Analyze the patient photo for head size, head width and height, skull shape, hairline, forehead, temples, ear position, neck position, face orientation, head rotation, camera perspective, existing hair volume, visible hair, and occluded areas. Do not assume symmetry; analyze each side independently.',
-    '',
-    'Analyze the selected wig for shape, length, volume, density, texture, straightness, waves, curls, layers, bangs or fringe, side or middle part, crown position, hairline design, color, shine, root transition, and thickness.',
-    '',
-    'Place the selected wig naturally on the patient head. Resize, rotate, warp, bend, scale, and adjust perspective so it wraps around the head and never appears pasted on.',
-    'Blend the hairline into the scalp with natural forehead exposure, temple transitions, sideburns, root appearance, and no visible cut lines, floating edges, hard borders, halo, white outline, black outline, jagged edge, or sticker effect.',
-    'Hair strands may overlap the forehead, ears, neck, and shoulders where physically appropriate.',
-    '',
-    'Match the original patient photo lighting: brightness, contrast, white balance, color temperature, ambient light, directional light, shadows, highlights, camera distance, lens perspective, and image quality.',
-    'Generate realistic soft shadows from hair to face, ears, neck, and shoulders where needed.',
-    '',
-    'Preserve the selected wig color and texture faithfully, adjusting only enough to match the patient photo lighting and exposure. Preserve natural strands, flyaways, layering, curls or waves, and density. Avoid plastic, CGI, cartoon, filter, AR overlay, or Photoshop-like results.',
-    'Remove or cover the original hairstyle naturally where the wig overlaps. Do not allow both hairstyles to remain visible unless the selected wig placement would physically reveal a small area.',
-    '',
-    `Selected wig: ${wigName}.`,
-    `Wig specification: color ${wigColor}; length ${wigLength}; texture ${wigTexture}; density ${wigDensity}; cap size ${capSize || 'not provided'}; style ${wigStyle}.`,
-    notes ? `Patient notes: ${notes}.` : '',
-    '',
-    'Final output: a single high-resolution realistic photograph of the same patient naturally wearing the selected wig. Only the hairstyle should be changed.',
-  ].filter(Boolean).join('\n');
-};
-
-const buildPreviewPayload = ({
-  generatedImageUrl,
-  selectedWig,
-  prompt,
-}: {
-  generatedImageUrl: string;
-  selectedWig: Record<string, unknown>;
-  prompt: string;
-}) => {
-  const wigName = toText(selectedWig?.wig_name) || 'Selected wig';
-  const wigId = toText(selectedWig?.wig_id) || toText(selectedWig?.id) || null;
-  const family = [
-    getWigSpecValue(selectedWig, 'style'),
-    getWigSpecValue(selectedWig, 'color'),
-  ].filter(Boolean).join(' - ') || 'Selected wig';
-
-  const preview = {
-    id: wigId || 'selected-wig-preview',
-    option_index: 1,
-    generated_image_data_url: generatedImageUrl,
-    preview_url: generatedImageUrl,
-    summary: 'Photorealistic try-on using your uploaded photo and selected wig.',
-    style_notes: 'Only the hairstyle was intended to be changed. Face, clothing, lighting, and background are preserved.',
-    recommended_style_name: wigName,
-    recommended_style_family: family,
-    match_label: 'Selected',
-    image_prompt_hint: prompt,
-    selected_wig_id: wigId,
-  };
-
-  const option = {
-    id: preview.id,
-    option_index: preview.option_index,
-    name: preview.recommended_style_name,
-    note: preview.style_notes,
-    summary: preview.summary,
-    style_notes: preview.style_notes,
-    family: preview.recommended_style_family,
-    match_label: preview.match_label,
-    generated_image_data_url: preview.generated_image_data_url,
-    preview_url: preview.preview_url,
-  };
-
-  return {
-    preview_url: generatedImageUrl,
-    generated_image_data_url: generatedImageUrl,
-    preview: {
-      ...preview,
-      options: [option],
-    },
-    previews: [preview],
-    selected_preview_url: generatedImageUrl,
-  };
+  throw new Error('OpenAI image edit did not complete.');
 };
 
 Deno.serve(async (request) => {
   const preflightResponse = handleCorsPreflight(request);
   if (preflightResponse) return preflightResponse;
 
+  let executionStage = 'authentication';
   try {
+    const authenticatedUserId = await getAuthenticatedUserId(request);
+    if (!authenticatedUserId) {
+      return createJsonResponse({
+        error: 'Your session is not authorized to generate wig recommendations.',
+        errorType: 'authentication_error',
+      }, 401);
+    }
+
+    executionStage = 'request_validation';
     const body = await request.json();
-    const preferredColor = toText(body?.preferred_color);
-    const preferredLength = toText(body?.preferred_length);
-    const hairTexture = toText(body?.hair_texture);
-    const hairDensity = toText(body?.hair_density);
-    const capSize = toText(body?.cap_size);
-    const stylePreference = toText(body?.style_preference);
-    const notes = toText(body?.notes);
     const referenceImage = (body?.reference_image || {}) as Record<string, unknown>;
-    const selectedWig = (body?.selected_wig || {}) as Record<string, unknown>;
     const patientImageUrl = getPatientImageUrl(referenceImage);
-    const wigReferenceUrl = getSelectedWigReferenceUrl(selectedWig);
-    const hasCloudflareCredentials = Boolean(
-      Deno.env.get('CLOUDFLARE_ACCOUNT_ID') && Deno.env.get('CLOUDFLARE_API_TOKEN'),
-    );
-    const model = CLOUDFLARE_WIG_IMAGE_MODEL;
+    const requestedWigs = Array.isArray(body?.available_wigs) ? body.available_wigs : [];
+    const selectedWigId = toText(body?.selected_wig_id);
+    const wigs = requestedWigs
+      .map((wig: Record<string, unknown>) => normalizeWig(wig))
+      .filter((wig: Record<string, unknown>) => (
+        getWigId(wig) && isAllowedStorageImageUrl(getWigReferenceUrl(wig))
+      ))
+      .slice(0, MAX_CANDIDATE_WIGS);
 
     if (!patientImageUrl) {
-      return createJsonResponse({ error: 'A front photo is required before generating a wig preview.' }, 400);
+      return createJsonResponse({ error: 'A front photo is required before generating wig recommendations.' }, 400);
     }
 
-    if (!wigReferenceUrl) {
-      return createJsonResponse({ error: 'A selected wig reference image is required before generating a wig preview.' }, 400);
-    }
-
-    console.info('[generate-wig-preview] invoked', {
-      provider: 'cloudflare',
-      model,
-      hasCloudflareCredentials,
-      hasPatientDataUrl: patientImageUrl.startsWith('data:'),
-      hasPatientImageUrl: /^https?:\/\//i.test(patientImageUrl),
-      hasWigReferenceUrl: Boolean(wigReferenceUrl),
-      selectedWigId: selectedWig?.wig_id || selectedWig?.id || null,
-    });
-
-    if (!hasCloudflareCredentials) {
-      console.error('[generate-wig-preview] cloudflare credentials missing');
+    if (wigs.length < RECOMMENDATION_COUNT) {
       return createJsonResponse({
-        error: 'Wig preview is not configured on the server. Please try again later.',
-        errorType: 'configuration_error',
-        provider: 'cloudflare',
-      }, 500);
+        error: 'At least three active wigs with reference images are required for AI recommendations.',
+      }, 400);
     }
 
-    const prompt = buildCompositePrompt({
-      preferredColor,
-      preferredLength,
-      hairTexture,
-      hairDensity,
-      capSize,
-      stylePreference,
-      notes,
-      selectedWig,
+    console.info('[generate-wig-preview] recommendation started', {
+      provider: 'openai',
+      analysisModel: getDefaultOpenAiModel(),
+      imageModel: getDefaultOpenAiImageModel(),
+      candidateCount: wigs.length,
     });
 
-    const generated = await createCloudflareWigImage({
-      prompt,
-      patientImageUrl,
-      wigReferenceUrl,
-      model,
+    executionStage = 'facial_fit_analysis';
+    const analysis = await createStructuredResponse({
+      instructions: rankingInstructions,
+      schemaName: 'patient_wig_recommendations',
+      schema: recommendationSchema,
+      maxOutputTokens: 1400,
+      input: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'input_text',
+              text: JSON.stringify({
+                task: 'Rank the three most visually suitable wigs.',
+                inventory: wigs.map(toInventorySummary),
+                patient_preferences: body?.preferences || {},
+                selected_wig_id: selectedWigId || null,
+                selection_instruction: selectedWigId
+                  ? 'Include the patient-selected wig in the three recommendations and rank the other candidates around it.'
+                  : 'Choose the top three candidates from the inventory.',
+              }),
+            },
+            {
+              type: 'input_image',
+              image_url: patientImageUrl,
+              detail: 'high',
+            },
+          ],
+        },
+      ],
+    }) as Record<string, unknown>;
+
+    const recommendations = completeRecommendations(
+      Array.isArray(analysis?.recommendations)
+        ? analysis.recommendations as Array<Record<string, unknown>>
+        : [],
+      wigs,
+      selectedWigId,
+    );
+
+    executionStage = 'try_on_generation';
+    const generatedOptions = await Promise.all(recommendations.map(async (recommendation, index) => {
+      const wig = recommendation.wig as Record<string, unknown>;
+      const generated = await createWigImageWithRetry({
+        prompt: buildTryOnPrompt({ wig, recommendation }),
+        patientImageUrl,
+        wigReferenceUrl: getWigReferenceUrl(wig),
+        optionIndex: index + 1,
+      });
+      const providerImageUrl = 'imageDataUrl' in generated
+        ? generated.imageDataUrl
+        : generated.imageUrl;
+      const generatedImageUrl = await persistGeneratedImage({
+        imageUrl: providerImageUrl,
+        userId: authenticatedUserId,
+        optionIndex: index + 1,
+      });
+
+      return {
+        id: getWigId(wig),
+        option_index: index + 1,
+        recommended_style_name: getWigName(wig),
+        recommended_style_family: toText((wig?.physical_specification as Record<string, unknown>)?.style),
+        match_label: `#${index + 1} - ${index === 0
+          ? 'Best overall match'
+          : index === 1
+            ? 'Great alternative'
+            : 'Another flattering option'}`,
+        suitability_reason: toText(recommendation.suitability_reason),
+        note: toText(recommendation.suitability_reason),
+        summary: toText(recommendation.suitability_reason),
+        style_notes: toText(recommendation.styling_note),
+        generated_image_data_url: generatedImageUrl,
+        preview_url: generatedImageUrl,
+        render_mode: 'openai_image_edit',
+        selected_wig: wig,
+      };
+    }));
+
+    const primary = generatedOptions[0];
+    console.info('[generate-wig-preview] recommendation ready', {
+      provider: 'openai',
+      recommendationCount: generatedOptions.length,
+      generatedImageCount: generatedOptions.filter((item) => item.generated_image_data_url).length,
     });
 
-    const generatedImageUrl = generated.imageDataUrl || '';
-    if (!generatedImageUrl) {
-      throw new Error('Cloudflare Workers AI returned no generated wig preview.');
-    }
-
-    const payload = buildPreviewPayload({
-      generatedImageUrl,
-      selectedWig,
-      prompt,
-    });
-
-    console.info('[generate-wig-preview] image response ready', {
-      provider: 'cloudflare',
-      model: generated.model || model,
-      previewCount: MAX_PREVIEW_VARIANTS,
-      hasGeneratedImage: Boolean(generatedImageUrl),
-    });
-
+    executionStage = 'complete';
     return createJsonResponse({
       success: true,
-      provider: 'cloudflare',
-      model: generated.model || model,
-      ...payload,
+      provider: 'openai',
+      analysis_model: getDefaultOpenAiModel(),
+      image_model: getDefaultOpenAiImageModel(),
+      visual_profile_summary: toText(analysis?.visual_profile_summary),
+      summary: toText(analysis?.visual_profile_summary),
+      preview_url: primary?.preview_url || '',
+      generated_image_data_url: primary?.generated_image_data_url || '',
+      render_mode: 'openai_image_edit',
+      selected_wig: primary?.selected_wig || null,
+      previews: generatedOptions,
+      options: generatedOptions,
     });
   } catch (error) {
     console.error('[generate-wig-preview]', error);
     const errorMessage = error instanceof Error ? error.message : String(error || '');
     const normalizedMessage = errorMessage.toLowerCase();
-    const isConfigurationError = normalizedMessage.includes('cloudflare workers ai credentials');
-    const safeErrorMessage = toSafeErrorMessage(errorMessage);
+    const providerStatus = Number((error as Error & { status?: number })?.status || 0) || null;
+    const isConfigurationError = normalizedMessage.includes('openai api key is not configured')
+      || normalizedMessage.includes('supabase storage credentials are not configured');
 
     return createJsonResponse({
       error: isConfigurationError
-        ? 'Wig preview is not configured on the server. Please try again later.'
-        : 'We could not generate the wig preview right now. Please try again.',
-      message: safeErrorMessage,
+        ? 'Wig recommendations are not configured on the server. Please try again later.'
+        : 'We could not generate the wig recommendations right now. Please try again.',
+      message: toSafeErrorMessage(errorMessage),
+      stage: executionStage,
+      providerStatus,
       errorType: isConfigurationError ? 'configuration_error' : 'provider_error',
-      provider: 'cloudflare',
+      provider: 'openai',
     }, isConfigurationError ? 500 : 502);
   }
 });

@@ -25,6 +25,7 @@ import {
   fetchDonationCertificatesByUserId,
   fetchDonorPatientImpactByBundleIds,
   fetchHairSubmissionsByUserId,
+  isCompletedDonationSubmission,
 } from '../../src/features/hairSubmission.api';
 import { fetchOrganizationPreview } from '../../src/features/donorHome.api';
 import {
@@ -587,9 +588,12 @@ export default function DonorAchievementsScreen() {
       const submissionsById = Object.fromEntries(
         (submissionsResult.data || []).map((submission) => [submission.submission_id, submission])
       );
+      const completedCertificateRows = (certificateResult.data || []).filter((certificate) => (
+        isCompletedDonationSubmission(submissionsById[certificate.submission_id])
+      ));
       const organizationIds = [
         ...new Set(
-          (certificateResult.data || [])
+          completedCertificateRows
             .map((certificate) => submissionsById[certificate.submission_id]?.organization_id)
             .filter(Boolean)
         ),
@@ -605,7 +609,7 @@ export default function DonorAchievementsScreen() {
       if (cancelled) return;
 
       const organizationsById = Object.fromEntries(organizationResults);
-      const certificates = (certificateResult.data || []).map((certificate) => {
+      const certificates = completedCertificateRows.map((certificate) => {
         const linkedSubmission = submissionsById[certificate.submission_id] || null;
         const linkedScreening = Array.isArray(linkedSubmission?.ai_screenings)
           ? linkedSubmission.ai_screenings[0]

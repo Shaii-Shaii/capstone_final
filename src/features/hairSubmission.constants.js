@@ -22,31 +22,73 @@ export const hairAnalysisRequiredViews = [
     key: hairSubmissionImageTypes.frontView,
     label: 'Front View Photo',
     helperText: 'Face the camera directly. Keep your full hair, face, lower cheek/neck area, and ends visible with no glasses, masks, clips, headbands, caps, or accessories covering the face or hair.',
+    displayTip: 'Hair down, brushed forward, ends visible.',
+    tutorialTitle: 'Front view',
+    tutorialTips: [
+      'Face the camera.',
+      'Show full hair and face.',
+      'No clips, caps, or glasses.',
+    ],
   },
   {
     key: hairSubmissionImageTypes.sideProfile,
     label: 'Left Side Photo',
     helperText: 'Turn your head to the left side. Keep the hair length and ends visible from the side profile with no glasses, masks, or accessories covering the face or hair.',
+    displayTip: 'Turn left, hair over shoulder, ends in frame.',
+    tutorialTitle: 'Left side',
+    tutorialTips: [
+      'Turn your head left.',
+      'Keep hair length visible.',
+      'Do not cover your hair.',
+    ],
   },
   {
     key: hairSubmissionImageTypes.rightSideProfile,
     label: 'Right Side Photo',
     helperText: 'Turn your head to the right side. Keep the hair length and ends visible from the side profile with no glasses, masks, or accessories covering the face or hair.',
+    displayTip: 'Turn right, hair over shoulder, ends in frame.',
+    tutorialTitle: 'Right side',
+    tutorialTips: [
+      'Turn your head right.',
+      'Keep hair length visible.',
+      'Do not cover your hair.',
+    ],
   },
   {
     key: hairSubmissionImageTypes.hairScalp,
     label: 'Hair Scalp',
     helperText: 'Show the scalp/crown area clearly with the hair parted enough to check visible scalp coverage, density, flakes, oiliness, or buildup.',
+    displayTip: 'Part hair gently so the crown is visible.',
+    tutorialTitle: 'Scalp view',
+    tutorialTips: [
+      'Show the crown area.',
+      'Part hair gently.',
+      'Use bright light.',
+    ],
   },
   {
     key: hairSubmissionImageTypes.hairEndsCloseUp,
     label: 'Hair Ends Close-Up',
     helperText: 'Capture the ends clearly so split ends, dryness, frizz, and damage are easier to check.',
+    displayTip: 'Hold the tips together near the camera.',
+    tutorialTitle: 'Hair ends',
+    tutorialTips: [
+      'Move ends closer.',
+      'Keep tips sharp.',
+      'Show dryness or split ends.',
+    ],
   },
   {
     key: hairSubmissionImageTypes.backHair,
     label: 'Back Hair Photo',
     helperText: 'Show the back of your hair from behind with the lower cheek or neck area down to the lowest visible ends.',
+    displayTip: 'Ask someone to capture the back of your head.',
+    tutorialTitle: 'Back hair',
+    tutorialTips: [
+      'Ask for help.',
+      'Face away from camera.',
+      'Show neck to hair ends.',
+    ],
   },
 ];
 

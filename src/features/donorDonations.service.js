@@ -3,6 +3,7 @@ import * as MediaLibrary from 'expo-media-library';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
+import { invokeEdgeFunction } from '../api/supabase/client';
 import { logAppError } from '../utils/appErrors';
 import {
   createDonationDriveRegistration,
@@ -45,6 +46,7 @@ import {
     fetchSalonOperatingHours,
     fetchSalonScheduleOverrides,
     getHairSubmissionImageSignedUrl,
+    isHairCheckOnlySubmission,
     removeHairSubmissionImagesFromStorage,
     updateHairSubmissionDetailById,
     updateHairSubmissionById,
@@ -71,6 +73,7 @@ const MANUAL_DONATION_NOTE_MARKER = 'Manual donor details saved from the donor D
 const CM_PER_INCH = 2.54;
 const PARCEL_IMAGE_TYPES = ['independent_parcel_photo', 'parcel_photo', 'parcel_log'];
 const QR_IMAGE_BASE_URL = 'https://api.qrserver.com/v1/create-qr-code/';
+const DONOR_QR_EMAIL_FUNCTION = 'send-donor-qr-email';
 
 const sanitizeFileName = (value = 'donivra-qr') => (
   String(value || 'donivra-qr')
@@ -534,7 +537,7 @@ const mergeDonationNotes = (notes = '', additions = []) => {
   return uniqueFragments.join(' ');
 };
 
-const buildDonationNotification = ({
+export const buildDonationNotification = ({
   dedupeKey,
   type = notificationTypes.logisticsUpdated,
   title,
@@ -567,31 +570,19 @@ const normalizeCertificateIssuerId = (value = null) => {
   return Number.isFinite(issuerId) && issuerId > 0 ? issuerId : null;
 };
 
-const isReceivedByOrganizationSignal = (item = null) => (
-  matchesAnyToken(item?.status, ['received_by_company', 'received by hair for hope', 'received by organization', 'received by the organization', 'organization received', 'received'])
+const isReceivedByOrganizationSignal = (item = null) => {
+  const statusKey = normalizeStatus(item?.status || '');
+  return (
+  ['received', 'received_by_company', 'received_by_organization', 'received by company', 'received by hair for hope', 'received by organization', 'organization received'].includes(statusKey)
   || matchesAnyToken(item?.title, ['received by hair for hope', 'received by organization', 'received by the organization', 'organization received'])
   || matchesAnyToken(item?.description, ['received by hair for hope', 'received by organization', 'received by the organization', 'organization received'])
-);
-
-const isCutAndShippedSignal = (item = null) => (
-  matchesAnyToken(item?.status, ['cut & shipped', 'cut and shipped', 'cut shipped', 'sent_by_donor', 'transit', 'shipped'])
-  || matchesAnyToken(item?.title, ['cut & shipped', 'cut and shipped', 'cut shipped', 'sent by donor', 'transit', 'shipped'])
-  || matchesAnyToken(item?.description, ['cut & shipped', 'cut and shipped', 'cut shipped', 'sent by donor', 'transit', 'shipped'])
-);
+  );
+};
 
 const findDonationApprovalEvidence = ({ trackingEntries = [], logistics = null } = {}) => {
   const sortedEntries = (trackingEntries || [])
     .slice()
     .sort((left, right) => new Date(right?.updated_at || 0).getTime() - new Date(left?.updated_at || 0).getTime());
-  const cutAndShippedEntry = sortedEntries.find((entry) => isCutAndShippedSignal(entry));
-  if (cutAndShippedEntry) {
-    return {
-      entry: cutAndShippedEntry,
-      issuedBy: normalizeCertificateIssuerId(cutAndShippedEntry.changed_by),
-      issuedAt: cutAndShippedEntry.updated_at || null,
-    };
-  }
-
   const receivedEntry = sortedEntries.find((entry) => isReceivedByOrganizationSignal(entry));
 
   if (receivedEntry) {
@@ -604,7 +595,7 @@ const findDonationApprovalEvidence = ({ trackingEntries = [], logistics = null }
 
   const hasReceivedLogistics = Boolean(
     logistics?.received_at
-    || matchesAnyToken(logistics?.shipment_status, ['received_by_company', 'received by hair for hope', 'received by organization', 'received by the organization', 'organization received', 'received'])
+    || isReceivedByOrganizationSignal({ status: logistics?.shipment_status })
   );
 
   if (hasReceivedLogistics) {
@@ -637,6 +628,59 @@ const persistDonationNotifications = async ({
   }
 };
 
+const buildDonationQrEmailItems = ({
+  submission = null,
+  details = [],
+  titlePrefix = 'Hair donation QR',
+} = {}) => (
+  (details || [])
+    .filter((detail) => detail?.submission_detail_id)
+    .map((detail, index) => {
+      const qrPayload = buildDonationTrackingQrPayload({ submission, detail });
+      const hairItemLabel = detail.hair_item_code || `Hair item ${index + 1}`;
+      const reference = submission?.donation_reference || `DON-${submission?.submission_id || ''}`;
+
+      return {
+        title: details.length > 1 ? `${titlePrefix} - ${hairItemLabel}` : titlePrefix,
+        subtitle: 'Attach this QR to the parcel or hair bundle before shipping or drop-off.',
+        qrPayload,
+        reference: [reference, hairItemLabel].filter(Boolean).join(' / '),
+        details: [
+          { label: 'Donation reference', value: reference },
+          { label: 'Hair item', value: hairItemLabel },
+          { label: 'Length', value: detail.declared_length ? `${detail.declared_length} in` : '' },
+          { label: 'Color', value: detail.declared_color || '' },
+          { label: 'Condition', value: detail.declared_condition || '' },
+        ],
+      };
+    })
+);
+
+export const sendDonorQrEmail = async ({
+  donorName = '',
+  submission = null,
+  details = [],
+  titlePrefix = 'Hair donation QR',
+} = {}) => {
+  const qrItems = buildDonationQrEmailItems({ submission, details, titlePrefix });
+  if (!qrItems.length) {
+    return null;
+  }
+
+  const result = await invokeEdgeFunction(DONOR_QR_EMAIL_FUNCTION, {
+    body: {
+      donorName,
+      qrItems,
+    },
+  });
+
+  if (result?.error) {
+    logAppError('donor_donation.qr_email', result.error);
+  }
+
+  return result;
+};
+
 const ensureDonationCertificateForApprovedSubmission = async ({
   userId,
   submission,
@@ -648,6 +692,15 @@ const ensureDonationCertificateForApprovedSubmission = async ({
     return currentCertificate || null;
   }
 
+  if (isHairCheckOnlySubmission(submission)) {
+    return null;
+  }
+
+  const approvalEvidence = findDonationApprovalEvidence({ trackingEntries, logistics });
+  if (!approvalEvidence) {
+    return null;
+  }
+
   if (currentCertificate?.submission_id === submission.submission_id) {
     return currentCertificate;
   }
@@ -657,24 +710,14 @@ const ensureDonationCertificateForApprovedSubmission = async ({
     return existingResult.data;
   }
 
-  const isEventSubmission = Boolean(submission?.event_request_id || submission?.donation_drive_id);
-  if (isEventSubmission && !isCutAndShipCompletedStatus(submission?.status)) {
-    return currentCertificate || null;
-  }
-
-  const approvalEvidence = findDonationApprovalEvidence({ trackingEntries, logistics });
-  if (!approvalEvidence && !isEventSubmission) {
-    return currentCertificate || null;
-  }
-
   const certificateResult = await createDonationCertificate({
     user_id: submission.user_id,
     submission_id: submission.submission_id,
     certificate_number: createDonationCertificateNumber(submission),
     certificate_type: 'Certificate of Donation',
-    issued_by: approvalEvidence?.issuedBy || submission?.cut_by_user_id || null,
-    issued_at: approvalEvidence?.issuedAt || submission?.cut_at || submission?.updated_at || new Date().toISOString(),
-    remarks: 'Issued after staff approved the hair quality review.',
+    issued_by: approvalEvidence.issuedBy || null,
+    issued_at: approvalEvidence.issuedAt || new Date().toISOString(),
+    remarks: 'Issued after the organization received the hair donation.',
   });
 
   if (certificateResult.error || !certificateResult.data?.certificate_id) {
@@ -688,10 +731,10 @@ const ensureDonationCertificateForApprovedSubmission = async ({
         dedupeKey: `${notificationTypes.certificateAvailable}:${certificateResult.data.certificate_id}`,
         type: notificationTypes.certificateAvailable,
         title: 'Certificate available',
-        message: 'Your hair donation was approved. Your certificate is ready in Achievements.',
+        message: 'Your hair donation was received by the organization. Your certificate is ready in Achievements.',
         createdAt: certificateResult.data.issued_at || new Date().toISOString(),
-        referenceType: 'route',
-        referenceId: '/donor/achievements',
+        referenceType: 'donation_certificate',
+        referenceId: certificateResult.data.certificate_id,
       }),
     ],
   });
@@ -2632,7 +2675,7 @@ export const buildIndependentDonationQrPayload = ({
     donation_reference: submission?.donation_reference || '',
     submission_detail_id: detail?.submission_detail_id || null,
     user_id: submission?.user_id || null,
-    donation_source: submission?.donation_source || '',
+    from_event: Boolean(submission?.from_event || submission?.event_request_id || submission?.event_attendee_id),
     qr_status: submission?.qr_status || '',
     donation_drive_id: submission?.donation_drive_id || null,
     recipient_type: submission?.recipient_type || '',
@@ -2655,7 +2698,7 @@ export const buildDonationTrackingQrPayload = ({
     donation_reference: submission?.donation_reference || '',
     submission_detail_id: detail?.submission_detail_id || null,
     user_id: submission?.user_id || null,
-    donation_source: submission?.donation_source || '',
+    from_event: Boolean(submission?.from_event || submission?.event_request_id || submission?.event_attendee_id),
     qr_status: submission?.qr_status || '',
     donation_drive_id: submission?.donation_drive_id || drive?.donation_drive_id || null,
     recipient_type: submission?.recipient_type || '',
@@ -2698,7 +2741,8 @@ const parseDonationTrackingQrPayload = (payloadText = '') => {
           donation_reference: parsed?.donation_reference || '',
           submission_detail_id: parsed?.submission_detail_id != null ? String(parsed.submission_detail_id) : '',
           user_id: parsed?.user_id != null ? String(parsed.user_id) : '',
-          donation_source: parsed?.donation_source || '',
+          donation_source: parsed?.donation_source
+            || (parsed?.from_event ? DRIVE_DONATION_SOURCE : INDEPENDENT_DONATION_SOURCE),
           donation_status: parsed?.qr_status || parsed?.status || parsed?.tracking_status || '',
           donation_drive_id: parsed?.donation_drive_id != null ? String(parsed.donation_drive_id) : '',
           recipient_type: parsed?.recipient_type || '',
@@ -2710,6 +2754,13 @@ const parseDonationTrackingQrPayload = (payloadText = '') => {
     }
   }
 
+  const legacyEventRequestId = getDonationQrPayloadValue(payloadText, 'Event_Request_ID')
+    || getDonationQrPayloadValue(payloadText, 'Donation_Drive_ID');
+  const legacyFromEvent = getDonationQrPayloadValue(payloadText, 'Hair_Submissions.From_Event')
+    || getDonationQrPayloadValue(payloadText, 'From_Event');
+  const isLegacyEventSubmission = ['true', '1', 'yes'].includes(legacyFromEvent.toLowerCase())
+    || Boolean(legacyEventRequestId);
+
   return {
     submission_id: getDonationQrPayloadValue(payloadText, 'Hair_Submissions.Submission_ID')
       || getDonationQrPayloadValue(payloadText, 'Submission_ID'),
@@ -2719,12 +2770,10 @@ const parseDonationTrackingQrPayload = (payloadText = '') => {
       || getDonationQrPayloadValue(payloadText, 'Submission_Detail_ID'),
     user_id: getDonationQrPayloadValue(payloadText, 'Hair_Submissions.User_ID')
       || getDonationQrPayloadValue(payloadText, 'User_ID'),
-    donation_source: getDonationQrPayloadValue(payloadText, 'Hair_Submissions.Donation_Source')
-      || getDonationQrPayloadValue(payloadText, 'Donation_Source'),
+    donation_source: isLegacyEventSubmission ? DRIVE_DONATION_SOURCE : INDEPENDENT_DONATION_SOURCE,
     donation_status: getDonationQrPayloadValue(payloadText, 'Hair_Submissions.Status')
       || getDonationQrPayloadValue(payloadText, 'Status'),
-    donation_drive_id: getDonationQrPayloadValue(payloadText, 'Event_Request_ID')
-      || getDonationQrPayloadValue(payloadText, 'Donation_Drive_ID'),
+    donation_drive_id: legacyEventRequestId,
   };
 };
 
@@ -3215,33 +3264,6 @@ export const getDonorDonationsModuleData = async ({ userId, databaseUserId, driv
   }
 
   let certificate = certificateResult.data || null;
-  const hasAttendanceScan = Boolean(activeDrive?.registration?.rsvp_scanned_at)
-    || isPresentAttendanceStatus(activeDrive?.registration?.attendance_status)
-    || isCutAndShipCompletedStatus(activeSubmission?.status);
-
-  if (activeSubmission?.submission_id && activeDrive?.donation_drive_id && hasAttendanceScan) {
-    const existingEventCertificate = await fetchDonationCertificateBySubmissionId(activeSubmission.submission_id);
-    if (!existingEventCertificate?.data?.certificate_id) {
-      const certificateResultFromAttendance = await createDonationCertificate({
-        user_id: activeSubmission.user_id,
-        submission_id: activeSubmission.submission_id,
-        certificate_number: createDonationCertificateNumber(activeSubmission),
-        certificate_type: 'Certificate of Donation',
-        issued_by: null,
-        issued_at: activeDrive?.registration?.rsvp_scanned_at
-          || activeSubmission?.cut_at
-          || activeDrive?.registration?.updated_at
-          || activeSubmission?.updated_at
-          || new Date().toISOString(),
-        remarks: 'Issued after staff marked RSVP attendance complete.',
-      });
-      if (certificateResultFromAttendance?.data?.certificate_id) {
-        certificate = certificateResultFromAttendance.data;
-      }
-    } else {
-      certificate = existingEventCertificate.data;
-    }
-  }
 
   if (activeSubmission?.submission_id) {
     certificate = await ensureDonationCertificateForApprovedSubmission({
@@ -3948,6 +3970,7 @@ export const ensureIndependentDonationQr = async ({
   submission,
   databaseUserId,
   donationDriveId = null,
+  donorName = '',
 }) => {
   if (!submission?.submission_id) {
     return { success: false, error: 'A valid donation submission is required before generating a QR.' };
@@ -4045,16 +4068,28 @@ export const ensureIndependentDonationQr = async ({
       ],
     });
 
+    const finalSubmission = submissionResult.data || submission;
+    try {
+      await sendDonorQrEmail({
+        donorName,
+        submission: finalSubmission,
+        details: generatedDetails,
+        titlePrefix: 'Independent donation QR',
+      });
+    } catch (error) {
+      logAppError('ensureIndependentDonationQr/email', error);
+    }
+
     return {
       success: true,
       qrState: {
-        reference: submissionResult.data?.donation_reference || submission?.donation_reference || `DON-${submission.submission_id}`,
+        reference: finalSubmission?.donation_reference || submission?.donation_reference || `DON-${submission.submission_id}`,
         generated_at: submittedAt,
         status: 'Generated',
         is_valid: true,
         show_my_qr: true,
       },
-      submission: submissionResult.data || submission,
+      submission: finalSubmission,
       details: generatedDetails,
       reused: false,
     };
@@ -5374,11 +5409,13 @@ export const saveDriveDonationParticipation = async ({
       userId,
       notifications: [
         buildDonationNotification({
-          dedupeKey: `${notificationTypes.logisticsUpdated}:${submissionResult.data.submission_id}:drive-selected:${drive.donation_drive_id}`,
-          title: 'Donation drive selected',
-          message: `${drive?.event_title || 'The donation drive'} was linked to your donation.`,
+          dedupeKey: `${notificationTypes.driveRsvpConfirmed}:${registrationResult.data?.registration_id || drive.donation_drive_id}`,
+          type: notificationTypes.driveRsvpConfirmed,
+          title: 'RSVP confirmed',
+          message: `You are registered to participate in ${drive?.event_title || 'the donation event'}.`,
           createdAt: new Date().toISOString(),
-          referenceId: submissionResult.data.submission_id,
+          referenceType: 'donation_drive',
+          referenceId: drive.donation_drive_id,
         }),
       ],
     });

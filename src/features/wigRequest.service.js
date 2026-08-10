@@ -525,10 +525,15 @@ export const savePatientWigRequestFlow = async ({
 
     try {
       if (notificationEvents.length) {
-        await recordNotifications({
+        void recordNotifications({
           userId,
           role: 'patient',
           notifications: notificationEvents,
+        }).catch((notificationError) => {
+          logAppError('wig_request.save.notifications', notificationError, {
+            userId,
+            reqId: wigRequest?.req_id || null,
+          });
         });
       }
     } catch (notificationError) {
@@ -539,13 +544,18 @@ export const savePatientWigRequestFlow = async ({
     }
 
     try {
-      await writeAuditLog({
+      void writeAuditLog({
         authUserId: userId,
         databaseUserId: systemUser?.user_id || null,
         action: 'wig_request.create',
         description: `Created wig request ${wigRequest.req_id || wigRequest.id}.`,
         resource: 'wig_requests',
         status: 'success',
+      }).catch((auditError) => {
+        logAppError('wig_request.save.audit', auditError, {
+          userId,
+          reqId: wigRequest?.req_id || null,
+        });
       });
     } catch (auditError) {
       logAppError('wig_request.save.audit', auditError, {

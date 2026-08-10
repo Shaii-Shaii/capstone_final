@@ -73,7 +73,7 @@ export const ScreenContainer = ({
       contentInsetAdjustmentBehavior={isAuth ? 'never' : 'automatic'}
       keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
       showsVerticalScrollIndicator={false}
-      keyboardShouldPersistTaps="handled"
+      keyboardShouldPersistTaps="always"
     >
       {content}
     </ScrollView>

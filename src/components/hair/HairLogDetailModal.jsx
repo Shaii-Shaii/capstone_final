@@ -212,7 +212,6 @@ const sanitizeRecommendation = (recommendation = {}) => ({
 });
 
 const filterDisplayRecommendations = (rows = [], screening = null) => {
-  if (!getCanonicalHairAssessment(screening).needsCare) return [];
   return rows
     .filter(isHairCareTip)
     .map(sanitizeRecommendation)
@@ -339,11 +338,12 @@ export function HairLogDetailModal({
       });
     }
 
-    if (!getCanonicalHairAssessment(activeEntry.screening).needsCare) {
-      setRecommendations([]);
-      setIsLoadingRecommendations(false);
-    } else if (Array.isArray(activeEntry.recommendations) && activeEntry.recommendations.length) {
-      setRecommendations(filterDisplayRecommendations(activeEntry.recommendations, activeEntry.screening));
+    const savedRecommendations = Array.isArray(activeEntry.recommendations) && activeEntry.recommendations.length
+      ? activeEntry.recommendations
+      : activeEntry.screening?.recommendations || activeEntry.screening?.analysis_result?.recommendations || [];
+
+    if (savedRecommendations.length) {
+      setRecommendations(filterDisplayRecommendations(savedRecommendations, activeEntry.screening));
       setIsLoadingRecommendations(false);
     } else if (activeEntry.submission?.submission_id) {
       setIsLoadingRecommendations(true);
@@ -412,11 +412,25 @@ export function HairLogDetailModal({
       : 'Use this scan as a baseline and compare the next check for changes.');
   const assessmentMetrics = [
     { label: 'Condition', value: screening?.detected_condition || 'Not detected' },
+    { label: 'Donation decision', value: screening?.decision || 'Not detected' },
     { label: 'Length', value: formatLengthLabel(screening?.estimated_length) },
+    { label: 'Color', value: screening?.detected_color || 'Not detected' },
+    { label: 'Texture', value: screening?.detected_texture || 'Not detected' },
     { label: 'Density', value: screening?.detected_density || 'Not detected' },
-    { label: 'Score', value: formatDensityScore(screening?.hair_density_score) },
+    { label: 'Density score', value: formatDensityScore(screening?.hair_density_score) },
+    { label: 'Visible scalp', value: screening?.visible_scalp_area || 'Not detected' },
+    {
+      label: 'Affected areas',
+      value: Array.isArray(screening?.affected_regions) && screening.affected_regions.length
+        ? screening.affected_regions.join(', ')
+        : 'None detected',
+    },
+    { label: 'Shedding', value: screening?.shedding_level || 'Not detected' },
     { label: 'Dandruff', value: formatDetectedLabel(screening?.dandruff_detected) },
+    { label: 'Dandruff severity', value: screening?.dandruff_severity || 'None' },
     { label: 'Lice / nits', value: formatDetectedLabel(screening?.lice_detected) },
+    { label: 'Lice confidence', value: screening?.lice_confidence || 'None' },
+    { label: 'Tracking status', value: screening?.improvement_tracking_status || 'Not detected' },
   ];
   const nextAnalysisAtMs = screening?.created_at
     ? new Date(screening.created_at).getTime() + HAIR_ANALYSIS_COOLDOWN_MS
@@ -429,17 +443,18 @@ export function HairLogDetailModal({
     ? formatNextAnalysisDateTime(nextAnalysisAtMs)
     : '';
   const insightBullets = Array.from(new Set([
+    screening?.donation_readiness_note,
+    screening?.length_assessment,
+    screening?.history_assessment,
     screening?.dandruff_notes,
     screening?.lice_notes,
     screening?.scalp_coverage_notes,
     screening?.improvement_recommendation,
     screening?.visible_damage_notes,
-    ...recommendations.map((recommendation) => cleanRecommendationText(recommendation.recommendation_text || recommendation.title || '')),
   ]
     .map((value) => String(value || '').trim())
     .filter(Boolean)))
-    .filter((value) => value !== assessmentSummary)
-    .slice(0, 2);
+    .filter((value) => value !== assessmentSummary);
   const modalEyebrow = hasScreening && events.length
     ? 'Hair check and events'
     : hasScreening
@@ -697,7 +712,7 @@ export function HairLogDetailModal({
                             styles.metaValue,
                             { color: pageColor(roles.headingText) },
                             metric.label === 'Length' && metric.value === 'Not detected' ? styles.metricValueMuted : null,
-                            metric.label === 'Score' ? styles.metricValueLarge : null,
+                            metric.label === 'Density score' ? styles.metricValueLarge : null,
                           ]}
                         >
                           {metric.value}
@@ -723,7 +738,7 @@ export function HairLogDetailModal({
                     />
                   </View>
                   <Text style={[styles.insightsTitle, { color: pageColor(roles.primaryActionBackground) }]}>
-                    Care guidance
+                    Saved analysis notes
                   </Text>
                 </View>
 
@@ -747,13 +762,63 @@ export function HairLogDetailModal({
                       </View>
                     ) : (
                       <Text style={[styles.insightsText, { color: pageColor(roles.bodyText) }]}>
-                        No additional recommendations were returned for this check.
+                        No additional analysis notes were saved for this check.
                       </Text>
                     )}
                   </View>
                 )}
 
               </View>
+            ) : null}
+
+            {hasScreening ? (
+              <>
+                <SectionTitleRow
+                  title="Hair recommendations"
+                  icon="lightbulb-on-outline"
+                  color={pageColor(roles.headingText)}
+                  iconColor={pageColor(roles.metaText)}
+                  accentColor={pageColor(roles.primaryActionBackground)}
+                  titleStyle={styles.sectionTitle}
+                />
+                {isLoadingRecommendations ? (
+                  <ActivityIndicator
+                    color={resolvedTheme?.primaryColor || theme.colors.brandPrimary}
+                    style={styles.recommendationLoader}
+                  />
+                ) : recommendations.length ? (
+                  <View style={styles.recommendationList}>
+                    {recommendations.map((recommendation, index) => (
+                      <View
+                        key={recommendation.recommendation_id || `${recommendation.title}-${index}`}
+                        style={[
+                          styles.recommendationCard,
+                          {
+                            backgroundColor: pageMode ? roles.pageBackground : roles.defaultCardBackground,
+                            borderColor: roles.defaultCardBorder,
+                          },
+                        ]}
+                      >
+                        <Text style={[styles.recommendationStep, { color: pageColor(roles.primaryActionBackground) }]}>
+                          Step {index + 1}
+                        </Text>
+                        {recommendation.title ? (
+                          <Text style={[styles.recommendationTitle, { color: pageColor(roles.headingText) }]}>
+                            {recommendation.title}
+                          </Text>
+                        ) : null}
+                        <Text style={[styles.recommendationText, { color: pageColor(roles.bodyText) }]}>
+                          {recommendation.recommendation_text || recommendation.title}
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+                ) : (
+                  <Text style={[styles.insightsText, { color: pageColor(roles.bodyText) }]}>
+                    No hair-care recommendations were saved for this check.
+                  </Text>
+                )}
+              </>
             ) : null}
           </ScrollView>
         </AppCard>
@@ -1146,5 +1211,30 @@ const styles = StyleSheet.create({
   },
   recommendationLoader: {
     marginVertical: theme.spacing.sm,
+  },
+  recommendationList: {
+    gap: theme.spacing.sm,
+  },
+  recommendationCard: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: theme.spacing.md,
+    gap: theme.spacing.xs,
+  },
+  recommendationStep: {
+    alignSelf: 'flex-start',
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    fontWeight: theme.typography.weights.semibold,
+  },
+  recommendationTitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.bodySm,
+    fontWeight: theme.typography.weights.bold,
+  },
+  recommendationText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 12,
+    lineHeight: 18,
   },
 });

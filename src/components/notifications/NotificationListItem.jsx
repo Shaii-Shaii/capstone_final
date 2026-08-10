@@ -6,6 +6,7 @@ import { useAuth } from '../../providers/AuthProvider';
 import { getNotificationTimestampLabel } from '../../features/notification.service';
 
 const TYPE_ICON_MAP = {
+  account_created: 'account-check-outline',
   submission_received: 'gift-outline',
   ai_screening_completed: 'star-four-points-outline',
   recommendation_available: 'lightbulb-on-outline',
@@ -13,6 +14,7 @@ const TYPE_ICON_MAP = {
   donation_tracking_updated: 'timeline-text-outline',
   hair_analysis_reminder: 'line-scan',
   donation_drive_update: 'calendar-clock-outline',
+  donation_drive_rsvp_confirmed: 'calendar-check-outline',
   donation_drive_rsvp_reminder: 'calendar-clock-outline',
   wig_request_updated: 'clipboard-text-outline',
   wig_allocation_updated: 'content-cut',

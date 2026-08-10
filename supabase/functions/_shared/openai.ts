@@ -37,7 +37,8 @@ type ImageEditOptions = {
   quality?: 'low' | 'medium' | 'high' | 'auto';
   size?: '1024x1024' | '1536x1024' | '1024x1536' | 'auto';
   outputFormat?: 'png' | 'jpeg' | 'webp';
-  moderation?: 'auto' | 'low';
+  inputFidelity?: 'low' | 'high';
+  outputCompression?: number;
 };
 
 const extractErrorMessage = (payload: any) => (
@@ -247,7 +248,8 @@ export const createImageEdit = async ({
   quality = 'medium',
   size = '1024x1024',
   outputFormat = 'png',
-  moderation = 'auto',
+  inputFidelity = 'high',
+  outputCompression = 85,
 }: ImageEditOptions) => {
   if (!prompt?.trim()) {
     throw new Error('OpenAI image prompt is required.');
@@ -268,7 +270,8 @@ export const createImageEdit = async ({
     quality,
     size,
     outputFormat,
-    moderation,
+    inputFidelity,
+    outputCompression,
     hasOpenAiKey: Boolean(Deno.env.get('OPENAI_API_KEY')),
   });
 
@@ -278,8 +281,11 @@ export const createImageEdit = async ({
   formData.append('prompt', prompt);
   formData.append('quality', quality);
   formData.append('size', size);
-  formData.append('moderation', moderation);
   formData.append('output_format', outputFormat);
+  formData.append('input_fidelity', inputFidelity);
+  if (outputFormat !== 'png') {
+    formData.append('output_compression', String(Math.max(0, Math.min(100, outputCompression))));
+  }
   formData.append('n', '1');
 
   const imageBlobs = await Promise.all(validImages.map(loadImageEditBlob));
@@ -305,7 +311,10 @@ export const createImageEdit = async ({
   });
 
   if (!response.ok) {
-    throw new Error(extractErrorMessage(payload));
+    const error = new Error(extractErrorMessage(payload)) as Error & { status?: number; provider?: string };
+    error.status = response.status;
+    error.provider = 'openai';
+    throw error;
   }
 
   const firstImage = Array.isArray(payload?.data) ? payload.data[0] : null;

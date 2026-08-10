@@ -251,26 +251,39 @@ export const useProfileActions = () => {
       country: values.country,
     };
 
-    const result = await saveProfile(user.id, payload, profile?.role);
-    setIsSavingProfile(false);
+    try {
+      const result = await saveProfile(user.id, payload, profile?.role);
 
-    if (result.error) {
-      logAppError('profile_completion.save', new Error(result.error), {
+      if (result.error) {
+        logAppError('profile_completion.save', new Error(result.error), {
+          authUserId: user.id,
+          role: profile?.role || null,
+        });
+        return { success: false, error: result.error };
+      }
+
+      void refreshProfile(user.id).catch((refreshError) => {
+        logAppError('profile_completion.save.refresh', refreshError, {
+          authUserId: user.id,
+          role: profile?.role || null,
+        });
+      });
+      void loadProfileBundle().catch((bundleError) => {
+        logAppError('profile_completion.save.bundle_refresh', bundleError, {
+          authUserId: user.id,
+          role: profile?.role || null,
+        });
+      });
+
+      logAppEvent('profile_completion.save', 'Profile completion save succeeded.', {
         authUserId: user.id,
         role: profile?.role || null,
       });
-      return { success: false, error: result.error };
+
+      return { success: true };
+    } finally {
+      setIsSavingProfile(false);
     }
-
-    await refreshProfile(user.id);
-    await loadProfileBundle();
-
-    logAppEvent('profile_completion.save', 'Profile completion save succeeded.', {
-      authUserId: user.id,
-      role: profile?.role || null,
-    });
-
-    return { success: true };
   };
 
   const uploadAvatar = async () => {

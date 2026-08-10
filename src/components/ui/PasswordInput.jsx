@@ -90,13 +90,13 @@ export const PasswordInput = ({
     );
   }, [error, shakeX]);
 
-  const handleToggle = async () => {
+  const handleToggle = () => {
     if (disabled) return;
     toggleScale.value = withSpring(0.92, theme.motion.spring, () => {
       toggleScale.value = withSpring(1, theme.motion.spring);
     });
-    await Haptics.selectionAsync();
     setIsSecure((prev) => !prev);
+    Haptics.selectionAsync().catch(() => {});
   };
 
   return (

@@ -1189,7 +1189,7 @@ function FirstTimeOnboarding() {
               styles.patientManualFormScrollContent,
               manualPatientStep === 2 ? styles.patientManualFormScrollContentCompact : null,
             ]}
-            keyboardShouldPersistTaps="handled"
+            keyboardShouldPersistTaps="always"
             showsVerticalScrollIndicator={false}
           >
             <View style={styles.stepIndicatorRow}>

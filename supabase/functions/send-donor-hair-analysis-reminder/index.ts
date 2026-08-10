@@ -1,7 +1,13 @@
 import { createClient } from 'npm:@supabase/supabase-js@2';
-import { createJsonResponse, handleCorsPreflight } from '../_shared/cors';
+import { createJsonResponse, handleCorsPreflight } from '../_shared/cors.ts';
 
 const REMINDER_AUDIT_ACTION = 'notification.hair_analysis_reminder_email';
+
+const getBearerToken = (request: Request) => {
+  const authorization = request.headers.get('Authorization') || '';
+  const match = authorization.match(/^Bearer\s+(.+)$/i);
+  return match?.[1] || '';
+};
 
 const normalizeLocalDate = (value: unknown) => {
   const raw = String(value || '').trim();
@@ -54,47 +60,15 @@ const insertAuditLog = async ({
 const resolveSystemUser = async ({
   supabase,
   authUserId,
-  databaseUserId,
-  userEmail,
 }: {
   supabase: ReturnType<typeof createClient>;
   authUserId: string;
-  databaseUserId: number | null;
-  userEmail: string;
 }) => {
-  if (databaseUserId) {
-    const result = await supabase
-      .from('users')
-      .select('user_id, auth_user_id, email')
-      .eq('user_id', databaseUserId)
-      .maybeSingle();
-
-    return {
-      data: result.data,
-      error: result.error,
-    };
-  }
-
   if (authUserId) {
     const result = await supabase
       .from('users')
-      .select('user_id, auth_user_id, email')
+      .select('user_id, auth_user_id, email, role')
       .eq('auth_user_id', authUserId)
-      .maybeSingle();
-
-    return {
-      data: result.data,
-      error: result.error,
-    };
-  }
-
-  if (userEmail) {
-    const result = await supabase
-      .from('users')
-      .select('user_id, auth_user_id, email')
-      .ilike('email', userEmail)
-      .order('updated_at', { ascending: false })
-      .limit(1)
       .maybeSingle();
 
     return {
@@ -105,7 +79,7 @@ const resolveSystemUser = async ({
 
   return {
     data: null,
-    error: new Error('A donor user identifier is required.'),
+    error: new Error('A valid authenticated donor session is required.'),
   };
 };
 
@@ -128,33 +102,34 @@ Deno.serve(async (request) => {
     return createJsonResponse({ message: 'Supabase server configuration is missing.' }, 500);
   }
 
-  const payload = await request.json().catch(() => ({}));
-  const authUserId = String(payload?.authUserId || '').trim();
-  const requestedDatabaseUserId = Number(payload?.databaseUserId);
-  const databaseUserId = Number.isInteger(requestedDatabaseUserId) && requestedDatabaseUserId > 0
-    ? requestedDatabaseUserId
-    : null;
-  const userEmail = String(payload?.userEmail || '').trim().toLowerCase();
-  const localDate = normalizeLocalDate(payload?.localDate);
-  const dayStart = `${localDate} 00:00:00`;
-  const dayEnd = `${localDate} 23:59:59.999`;
-
   const supabase = createClient(supabaseUrl, supabaseServiceRoleKey, {
     auth: { persistSession: false },
   });
 
+  const bearerToken = getBearerToken(request);
+  if (!bearerToken) {
+    return createJsonResponse({ message: 'Authorization is required.' }, 401);
+  }
+
+  const authUserResult = await supabase.auth.getUser(bearerToken);
+  const authUserId = authUserResult.data?.user?.id || '';
+  if (!authUserId || authUserResult.error) {
+    return createJsonResponse({ message: 'A valid authenticated session is required.' }, 401);
+  }
+
+  const payload = await request.json().catch(() => ({}));
+  const localDate = normalizeLocalDate(payload?.localDate);
+  const dayStart = `${localDate} 00:00:00`;
+  const dayEnd = `${localDate} 23:59:59.999`;
+
   console.info('[send-donor-hair-analysis-reminder] invoked', {
     localDate,
     hasAuthUserId: Boolean(authUserId),
-    hasDatabaseUserId: Boolean(databaseUserId),
-    hasUserEmail: Boolean(userEmail),
   });
 
   const systemUserResult = await resolveSystemUser({
     supabase,
     authUserId,
-    databaseUserId,
-    userEmail,
   });
 
   if (systemUserResult.error) {
@@ -165,8 +140,12 @@ Deno.serve(async (request) => {
     return createJsonResponse({ message: 'Donor account could not be resolved.' }, 404);
   }
 
+  if (String(systemUserResult.data.role || '').trim().toLowerCase() !== 'donor') {
+    return createJsonResponse({ message: 'Only donor accounts can receive hair analysis reminders.' }, 403);
+  }
+
   const resolvedUserId = Number(systemUserResult.data.user_id);
-  const resolvedEmail = userEmail || String(systemUserResult.data.email || '').trim().toLowerCase();
+  const resolvedEmail = String(systemUserResult.data.email || '').trim().toLowerCase();
 
   if (!resolvedEmail) {
     return createJsonResponse({ message: 'The donor account does not have a registered email address.' }, 400);

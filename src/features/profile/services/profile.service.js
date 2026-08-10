@@ -739,7 +739,7 @@ export const saveProfile = async (userId, updates, role) => {
           role: 'donor',
         };
 
-        await writeAuditLog({
+        void writeAuditLog({
           authUserId: userId,
           databaseUserId: nextProfile?.user_id || null,
           action: 'role.transition',
@@ -750,7 +750,7 @@ export const saveProfile = async (userId, updates, role) => {
       }
     }
 
-    await writeAuditLog({
+    void writeAuditLog({
       authUserId: userId,
       databaseUserId: nextProfile?.user_id || null,
       action: 'profile.update',
@@ -779,7 +779,7 @@ export const saveProfile = async (userId, updates, role) => {
       updatedFieldCount: Object.keys(updates || {}).length,
     });
 
-    await writeAuditLog({
+    void writeAuditLog({
       authUserId: userId,
       action: 'profile.update',
       description: error.message || 'Profile update failed.',

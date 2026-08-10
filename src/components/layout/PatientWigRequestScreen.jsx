@@ -257,7 +257,13 @@ const buildRecommendationOptions = ({
       summary: option.summary || option.note || "",
       styleNotes: option.style_notes || option.note || "",
       family: option.family || "",
-      matchLabel: option.match_label || option.matchLabel || "",
+      matchLabel: index === 0
+        ? "#1 - Best overall match"
+        : index === 1
+          ? "#2 - Great alternative"
+          : "#3 - Another flattering option",
+      suitabilityReason: option.suitability_reason || option.note || "",
+      selectedWig: option.selected_wig || option.selectedWig || null,
       optionIndex: option.option_index || index + 1,
       generatedImageUri:
         option.generated_image_data_url || option.generatedImageDataUrl || "",
@@ -2970,7 +2976,6 @@ function AiMatcherSkeleton({ roles }) {
   );
 }
 
-// eslint-disable-next-line no-unused-vars
 function MatcherRecommendationCard({
   option,
   isActive,
@@ -3349,6 +3354,9 @@ function RequestFlowModal({
   );
   const hasAvailableWigs =
     Array.isArray(availableWigs) && availableWigs.length > 0;
+  const activeRecommendation = (recommendationOptions || []).find(
+    (option) => option.id === selectedOptionId,
+  ) || recommendationOptions?.[0] || null;
   const patientPicture = patientDetails?.patient_picture || "";
   const medicalDocument = patientDetails?.medical_document || "";
   const patientHeroName = patientName || "Patient account";
@@ -3851,8 +3859,9 @@ function RequestFlowModal({
                 </View>
 
                 <AppButton
-                  title="Continue to Wig Selection"
+                  title={isGeneratingPreview ? "Analyzing your photo..." : "Analyze & Generate 3 Looks"}
                   disabled={!photoValidation?.valid}
+                  loading={isGeneratingPreview}
                   onPress={onContinueToWigs}
                   fullWidth={true}
                   leading={<AppIcon name="success" state="inverse" />}
@@ -3996,7 +4005,7 @@ function RequestFlowModal({
                   color={roles.primaryActionBackground}
                 />
                 <Text style={[styles.flowTitle, { textAlign: "center" }]}>
-                  Preparing your wig preview...
+                  AI is ranking facial-fit styles and generating three try-on images...
                 </Text>
               </View>
             ) : null}
@@ -4154,15 +4163,51 @@ function RequestFlowModal({
                       { color: roles.headingText },
                     ]}
                   >
-                    Your Wig Preview
+                    Your Top 3 Wig Matches
                   </Text>
                   <Text style={[styles.matcherHeroBody, { color: roles.headingText }]}>
-                    Review the fit and make small adjustments before submitting your request.
+                    Compare the AI-generated try-ons and read why each style complements your facial look.
                   </Text>
                 </View>
 
                 {hasGeneratedPreview ? (
                   <View style={styles.aiResultGrid}>
+                    <ScrollView
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      contentContainerStyle={styles.aiRecommendationRow}
+                    >
+                      {recommendationOptions.map((option) => (
+                        <View key={option.id} style={styles.aiRecommendationCard}>
+                          <MatcherRecommendationCard
+                            option={option}
+                            isActive={option.id === selectedOptionId}
+                            imageUri={option.generatedImageUri || option.previewUrl}
+                            selectedWig={null}
+                            onPress={() => onSelectOption?.(option.id)}
+                            roles={roles}
+                          />
+                        </View>
+                      ))}
+                    </ScrollView>
+
+                    {activeRecommendation?.suitabilityReason ? (
+                      <View style={[
+                        styles.aiRecommendationReason,
+                        {
+                          backgroundColor: roles.supportCardBackground,
+                          borderColor: roles.defaultCardBorder,
+                        },
+                      ]}>
+                        <Text style={[styles.aiRecommendationReasonTitle, { color: roles.headingText }]}>
+                          Why this style suits you
+                        </Text>
+                        <Text style={[styles.flowBody, { color: roles.bodyText }]}>
+                          {activeRecommendation.suitabilityReason}
+                        </Text>
+                      </View>
+                    ) : null}
+
                     <View style={[
                       styles.aiResultPanel,
                       styles.aiPreviewCard,
@@ -4174,10 +4219,10 @@ function RequestFlowModal({
                       <View style={styles.aiPreviewCardHeader}>
                         <View>
                           <Text style={[styles.aiResultLabel, { color: roles.headingText }]}>
-                            Generated preview
+                            Selected AI try-on
                           </Text>
                           <Text style={[styles.aiPreviewHint, { color: roles.headingText }]}>
-                            Fine-tune the placement if needed
+                            {activeRecommendation?.matchLabel || "AI-recommended style"}
                           </Text>
                         </View>
                       </View>
@@ -4267,7 +4312,7 @@ function RequestFlowModal({
                 )}
 
                 <View style={styles.previewActionSection}>
-                  <Text style={[styles.previewActionTitle, { color: roles.headingText }]}>Refine preview</Text>
+                  <Text style={[styles.previewActionTitle, { color: roles.headingText }]}>Your selected look</Text>
                   <AppButton
                     title="Download Preview"
                     variant="outline"
@@ -4709,6 +4754,8 @@ export function PatientWigRequestScreen({ showFlowOnly = false } = {}) {
       availablePreviewWigs.find((wig) => wig.id === selectedWigFilterId) || null,
     [availablePreviewWigs, selectedWigFilterId],
   );
+  const selectedRecommendationWig = selectedOption?.selectedWig || null;
+  const effectiveSelectedWig = selectedRecommendationWig || selectedWig;
   useEffect(() => {
     setSelectedOptionId(recommendationOptions[0]?.id || "");
   }, [
@@ -4805,6 +4852,34 @@ export function PatientWigRequestScreen({ showFlowOnly = false } = {}) {
     });
   };
 
+  const generateRecommendationsForPhoto = async (image) => {
+    const validation = validateAiTryOnPhoto(image);
+    setPhotoValidation(validation);
+    if (!validation.valid) return { success: false, error: validation.message };
+    if (availablePreviewWigs.length < 3) {
+      Alert.alert(
+        "Wigs unavailable",
+        "At least three active wigs with reference images are needed for AI recommendations.",
+      );
+      return { success: false, error: "At least three active wigs are required." };
+    }
+
+    setFlowStep("generating");
+    const generationResult = await generatePreview(draftValues, null, image);
+    if (generationResult?.success) {
+      setSelectedWigFilterId("");
+      setFlowStep("summary");
+      return generationResult;
+    }
+
+    setFlowStep("photo");
+    Alert.alert(
+      "Recommendations unavailable",
+      generationResult?.error || "We couldn't generate all three wig recommendations. Please try again.",
+    );
+    return generationResult;
+  };
+
   const handleUploadAiPhoto = async () => {
     const result = await pickReferenceImage();
     if (!result?.success || !result.image) return result;
@@ -4812,8 +4887,7 @@ export function PatientWigRequestScreen({ showFlowOnly = false } = {}) {
     const validation = validateAiTryOnPhoto(result.image);
     setPhotoValidation(validation);
     if (!validation.valid) return { success: false, error: validation.message };
-
-    return result;
+    return await generateRecommendationsForPhoto(result.image);
   };
 
   const handleCapturePhoto = async () => {
@@ -4838,7 +4912,7 @@ export function PatientWigRequestScreen({ showFlowOnly = false } = {}) {
 
       const result = await saveCapturedReferenceImage(photo);
       if (result?.image) {
-        setPhotoValidation(validateAiTryOnPhoto(result.image));
+        await generateRecommendationsForPhoto(result.image);
       }
     } catch {
       await saveCapturedReferenceImage(null);
@@ -4847,12 +4921,8 @@ export function PatientWigRequestScreen({ showFlowOnly = false } = {}) {
     }
   };
 
-  const handleContinueToWigs = () => {
-    const validation = validateAiTryOnPhoto(referenceImage);
-    setPhotoValidation(validation);
-    if (!validation.valid) return { success: false, error: validation.message };
-    setFlowStep("styles");
-    return { success: true };
+  const handleContinueToWigs = async () => {
+    return await generateRecommendationsForPhoto(referenceImage);
   };
 
   const handleStartGeneration = handleSubmit(async (values) => {
@@ -4899,7 +4969,14 @@ export function PatientWigRequestScreen({ showFlowOnly = false } = {}) {
   const captureAdjustedWigPreview = async () => {
     if (preview?.render_mode !== "wig_overlay") {
       return generatedImageUri
-        ? { uri: generatedImageUri, mimeType: "image/jpeg" }
+        ? {
+            uri: generatedImageUri,
+            mimeType: generatedImageUri.startsWith("data:image/webp")
+              ? "image/webp"
+              : generatedImageUri.startsWith("data:image/png")
+                ? "image/png"
+                : "image/jpeg",
+          }
         : null;
     }
 
@@ -4962,7 +5039,7 @@ export function PatientWigRequestScreen({ showFlowOnly = false } = {}) {
     }
 
     const requestedWigId =
-      requestMode === "custom" ? null : selectedWig?.wig_id || null;
+      requestMode === "custom" ? null : effectiveSelectedWig?.wig_id || null;
     let capturedPreviewImage = null;
     try {
       capturedPreviewImage = await captureAdjustedWigPreview();
@@ -4982,7 +5059,7 @@ export function PatientWigRequestScreen({ showFlowOnly = false } = {}) {
     );
 
     if (result?.success) {
-      await refreshTracking();
+      void refreshTracking().catch(() => {});
       const requestId = result?.wigRequest?.req_id || latestWigRequest?.req_id || null;
       setSafetyAssessmentRequestId(requestId);
       setSafetyAssessment(SAFETY_ASSESSMENT_DEFAULTS);
@@ -5389,7 +5466,7 @@ export function PatientWigRequestScreen({ showFlowOnly = false } = {}) {
         medicalCondition={medicalCondition}
         availableWigs={availablePreviewWigs}
         referenceImage={referenceImage}
-        selectedWig={selectedWig}
+        selectedWig={effectiveSelectedWig}
         recommendedPreferenceOptions={recommendedPreferenceOptions}
         recommendationOptions={recommendationOptions}
         selectedOptionId={selectedOptionId}
@@ -7430,6 +7507,24 @@ const styles = StyleSheet.create({
   },
   aiResultGrid: {
     gap: theme.spacing.md,
+  },
+  aiRecommendationRow: {
+    gap: theme.spacing.md,
+    paddingRight: theme.spacing.md,
+  },
+  aiRecommendationCard: {
+    width: 238,
+  },
+  aiRecommendationReason: {
+    gap: theme.spacing.xs,
+    borderWidth: 1,
+    borderRadius: theme.radius.md,
+    padding: theme.spacing.md,
+  },
+  aiRecommendationReasonTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.body,
+    fontWeight: theme.typography.weights.bold,
   },
   aiResultPanel: {
     gap: theme.spacing.xs,

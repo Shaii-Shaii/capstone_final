@@ -18,13 +18,15 @@ import {
   fetchLatestDonationRequirement,
 } from '../../src/features/hairSubmission.api';
 import { evaluateAiDonationEligibility } from '../../src/features/donorDonations.service';
+import {
+  getCachedHairAnalysisHomeData,
+  setCachedHairAnalysisHomeData,
+} from '../../src/features/hairAnalysisHomeCache';
 import { buildProfileCompletionMeta } from '../../src/features/profile/services/profile.service';
 import { useNotifications } from '../../src/hooks/useNotifications';
 import { useAuth } from '../../src/providers/AuthProvider';
 import { resolveThemeRoles, theme } from '../../src/design-system/theme';
 
-let cachedHairAnalysisHomeData = null;
-let cachedHairAnalysisHomeUserId = '';
 const HAIR_CALENDAR_WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const ANALYSIS_FAB_SIZE = 48;
 const ANALYSIS_FAB_EDGE_PADDING = 12;
@@ -259,8 +261,8 @@ function HairAnalysisHomeModule({ initialTab = 'overview' }) {
   const { user, profile, resolvedTheme } = useAuth();
   const roles = resolveThemeRoles(resolvedTheme);
   const headerPrimaryColor = resolvedTheme?.primaryColor || roles.primaryActionBackground;
-  const cacheMatchesUser = Boolean(cachedHairAnalysisHomeData && cachedHairAnalysisHomeUserId === user?.id);
-  const cachedHome = cacheMatchesUser ? cachedHairAnalysisHomeData : null;
+  const cachedHome = getCachedHairAnalysisHomeData(user?.id);
+  const cacheMatchesUser = Boolean(cachedHome);
   const submissionsRef = React.useRef(cachedHome?.submissions || []);
   const [isLoading, setIsLoading] = React.useState(!cacheMatchesUser);
   const [error, setError] = React.useState('');
@@ -352,8 +354,7 @@ function HairAnalysisHomeModule({ initialTab = 'overview' }) {
 
       const normalized = Array.isArray(result.data) ? result.data : [];
       const nextDonationRequirement = requirementResult.data || null;
-      cachedHairAnalysisHomeData = { submissions: normalized, donationRequirement: nextDonationRequirement };
-      cachedHairAnalysisHomeUserId = user.id;
+      setCachedHairAnalysisHomeData(user.id, { submissions: normalized, donationRequirement: nextDonationRequirement });
       submissionsRef.current = normalized;
       setSubmissions(normalized);
       setDonationRequirement(nextDonationRequirement);

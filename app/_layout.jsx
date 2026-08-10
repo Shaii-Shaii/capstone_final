@@ -7,6 +7,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as NavigationBar from 'expo-navigation-bar';
 import { LinearGradient } from 'expo-linear-gradient';
 import { AuthProvider, useAuth } from '../src/providers/AuthProvider';
+import { usePushNotifications } from '../src/hooks/usePushNotifications';
 import { useRoleRedirect } from '../src/hooks/useRoleRedirect';
 import { bundledBrandLogoSource, normalizeResolvedTheme, resolveBrandLogoSource } from '../src/design-system/theme';
 
@@ -482,9 +483,13 @@ function LaunchSplash({ resolvedTheme }) {
 // ─── Root navigation ───────────────────────────────────────────────────────
 function RootLayoutNav() {
   const [showSplash, setShowSplash] = useState(true);
-  const { resolvedTheme } = useAuth();
+  const { databaseUserId, profile, resolvedTheme } = useAuth();
 
   useRoleRedirect();
+  usePushNotifications({
+    databaseUserId,
+    role: profile?.role,
+  });
 
   useEffect(() => {
     const hideNav = async () => {

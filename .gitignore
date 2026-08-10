@@ -34,6 +34,10 @@ yarn-error.*
 .env
 .env*.local
 
+# Firebase / Google credentials
+google-services.json
+*-firebase-adminsdk-*.json
+
 # editor local state
 .idea/caches/
 .vscode/.react/

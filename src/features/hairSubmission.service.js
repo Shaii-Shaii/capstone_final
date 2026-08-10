@@ -130,10 +130,7 @@ const getPhotoUploadPayload = async (photo) => {
 };
 
 const uploadSelectedImages = async ({ userId, submissionId, detailId, photos }) => {
-  const uploadedRows = [];
-
-  for (let index = 0; index < photos.length; index += 1) {
-    const photo = photos[index];
+  return Promise.all(photos.map(async (photo, index) => {
     const imageType = resolveAnalysisImageType(photo?.viewKey);
     logAppEvent('hair_submission.save', 'Preparing hair submission photo upload.', {
       userId,
@@ -201,14 +198,12 @@ const uploadSelectedImages = async ({ userId, submissionId, detailId, photos }) 
       bucket: hairSubmissionStorageBucket,
     });
 
-    uploadedRows.push({
+    return {
       submission_detail_id: detailId,
       file_path: filePath,
       image_type: imageType,
-    });
-  }
-
-  return uploadedRows;
+    };
+  }));
 };
 
 const rollbackHairSubmissionSave = async ({
@@ -549,6 +544,10 @@ export const saveHairSubmissionFlow = async ({
       improvement_recommendation: aiAnalysis.improvement_recommendation || null,
       decision: aiAnalysis.decision || null,
       summary: aiAnalysis.summary || null,
+      length_assessment: aiAnalysis.length_assessment || null,
+      donation_readiness_note: aiAnalysis.donation_readiness_note || null,
+      history_assessment: aiAnalysis.history_assessment || null,
+      analysis_result: aiAnalysis,
     });
 
     logAppEvent('hair_submission.save', 'AI screening payload prepared.', {
@@ -584,6 +583,10 @@ export const saveHairSubmissionFlow = async ({
         'improvement_recommendation',
         'decision',
         'summary',
+        'length_assessment',
+        'donation_readiness_note',
+        'history_assessment',
+        'analysis_result',
       ],
       recommendationCount: Array.isArray(aiAnalysis?.recommendations) ? aiAnalysis.recommendations.length : 0,
     });
@@ -598,36 +601,6 @@ export const saveHairSubmissionFlow = async ({
       submissionId: submission?.submission_id || null,
       screeningId: screening?.ai_screening_id || null,
     });
-
-    try {
-      const imageRows = await uploadSelectedImages({
-        userId,
-        submissionId: submission.submission_id,
-        detailId: detail.submission_detail_id,
-        photos,
-      });
-      uploadedImageRows = imageRows;
-
-      const { error: imageInsertError } = await HairSubmissionAPI.createHairSubmissionImages(imageRows);
-      if (imageInsertError) {
-        throw new Error(imageInsertError.message || 'Unable to save the uploaded image references.');
-      }
-      hasImageReferences = true;
-
-      logAppEvent('hair_submission.save', 'Hair submission image references saved.', {
-        userId,
-        submissionId: submission?.submission_id || null,
-        detailId: detail?.submission_detail_id || null,
-        imageRowCount: imageRows.length,
-      });
-    } catch (imageSaveError) {
-      logAppEvent('hair_submission.save', 'Hair photo attachment failed; continuing to save AI screening.', {
-        userId,
-        submissionId: submission?.submission_id || null,
-        detailId: detail?.submission_detail_id || null,
-        message: imageSaveError?.message || 'Unable to attach hair photos.',
-      }, 'warn');
-    }
 
     const logisticsPayload = buildLogisticsRowPayload({
       submissionId: submission.submission_id,
@@ -657,17 +630,27 @@ export const saveHairSubmissionFlow = async ({
       });
     }
 
-    const recommendationRows = [];
+    let recommendationRows = [];
     const displayRecommendationRows = buildRecommendationRows({
       submissionId: submission.submission_id,
       recommendations: aiAnalysis.recommendations,
     });
 
     if (displayRecommendationRows.length) {
-      logAppEvent('hair_submission.save', 'AI recommendations kept as display-only; AI result is stored in AI_Screenings.', {
+      const { data: savedRecommendations, error: recommendationError } = await HairSubmissionAPI.createDonorRecommendations(
+        displayRecommendationRows
+      );
+
+      if (recommendationError) {
+        throw new Error(recommendationError.message || 'Unable to save the hair-care recommendations.');
+      }
+
+      recommendationRows = savedRecommendations || [];
+      hasRecommendations = recommendationRows.length > 0;
+      logAppEvent('hair_submission.save', 'AI recommendations saved for hair-log replay.', {
         userId,
         submissionId: submission?.submission_id || null,
-        recommendationCount: displayRecommendationRows.length,
+        recommendationCount: recommendationRows.length,
       }, 'info');
     }
 
@@ -681,20 +664,55 @@ export const saveHairSubmissionFlow = async ({
     });
 
     if (notificationEvents.length) {
-      try {
-        await recordNotifications({
+      void recordNotifications({
           userId,
           role: 'donor',
           notifications: notificationEvents,
-        });
-      } catch (notificationError) {
+        }).catch((notificationError) => {
         logAppEvent('hair_submission.save', 'Notification persistence failed after submission save.', {
           userId,
           submissionId: submission?.submission_id || null,
           message: notificationError?.message || 'Unable to persist notifications.',
         }, 'warn');
-      }
+      });
     }
+
+    void (async () => {
+      try {
+        const imageRows = await uploadSelectedImages({
+          userId,
+          submissionId: submission.submission_id,
+          detailId: detail.submission_detail_id,
+          photos,
+        });
+
+        const { error: imageInsertError } = await HairSubmissionAPI.createHairSubmissionImages(imageRows);
+        if (imageInsertError) {
+          throw new Error(imageInsertError.message || 'Unable to save the uploaded image references.');
+        }
+
+        logAppEvent('hair_submission.save', 'Hair submission image references saved.', {
+          userId,
+          submissionId: submission?.submission_id || null,
+          detailId: detail?.submission_detail_id || null,
+          imageRowCount: imageRows.length,
+        });
+      } catch (imageSaveError) {
+        logAppEvent('hair_submission.save', 'Hair photo attachment failed after core save completed.', {
+          userId,
+          submissionId: submission?.submission_id || null,
+          detailId: detail?.submission_detail_id || null,
+          message: imageSaveError?.message || 'Unable to attach hair photos.',
+        }, 'warn');
+      }
+    })();
+
+    logAppEvent('hair_submission.save', 'Hair photo attachment started in background after core save.', {
+      userId,
+      submissionId: submission?.submission_id || null,
+      detailId: detail?.submission_detail_id || null,
+      photoCount: photos.length,
+    }, 'info');
 
     void writeAuditLog({
       authUserId: userId,
