@@ -776,6 +776,54 @@ const normalizeNumber = (value: unknown) => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
+const nearlyEqualLength = (left: number, right: number) => (
+  Math.abs(left - right) <= Math.max(0.2, Math.abs(right) * 0.02)
+);
+
+const extractExplicitLengthMeasurements = (value: string) => {
+  const measurements: Array<{ value: number; unit: 'in' | 'cm' }> = [];
+  const pattern = /(\d+(?:\.\d+)?)\s*(inches?|in\.?|centimet(?:er|re)s?|cm)\b/gi;
+  let match = pattern.exec(normalizeString(value));
+
+  while (match) {
+    const measurement = normalizeNumber(match[1]);
+    if (measurement != null && measurement > 0) {
+      measurements.push({
+        value: measurement,
+        unit: String(match[2] || '').toLowerCase().startsWith('in') ? 'in' : 'cm',
+      });
+    }
+    match = pattern.exec(normalizeString(value));
+  }
+
+  return measurements;
+};
+
+const normalizeEstimatedLengthCm = (rawValue: unknown, evidenceText: string) => {
+  const rawLength = normalizeNumber(rawValue);
+  const measurements = extractExplicitLengthMeasurements(evidenceText);
+
+  if (rawLength != null && rawLength > 0) {
+    for (const measurement of measurements) {
+      const describedLengthCm = measurement.unit === 'in'
+        ? measurement.value * CM_PER_INCH
+        : measurement.value;
+      if (nearlyEqualLength(rawLength, describedLengthCm)) return Math.round(rawLength * 10) / 10;
+      if (measurement.unit === 'in' && nearlyEqualLength(rawLength, measurement.value)) {
+        return Math.round(describedLengthCm * 10) / 10;
+      }
+    }
+    return Math.round(rawLength * 10) / 10;
+  }
+
+  const firstMeasurement = measurements[0];
+  if (!firstMeasurement) return null;
+  const inferredCm = firstMeasurement.unit === 'in'
+    ? firstMeasurement.value * CM_PER_INCH
+    : firstMeasurement.value;
+  return Math.round(inferredCm * 10) / 10;
+};
+
 const normalizeConfidence = (value: unknown) => {
   const parsed = normalizeNumber(value);
   if (parsed === null) return null;
@@ -803,6 +851,13 @@ const normalizeLevel10 = (value: unknown, fallback = 1) => {
 const inferApproximateLengthFromText = (value: string) => {
   const normalized = normalizeString(value).toLowerCase();
   if (!normalized) return null;
+
+  const explicitMeasurement = extractExplicitLengthMeasurements(normalized)[0];
+  if (explicitMeasurement) {
+    return explicitMeasurement.unit === 'in'
+      ? Math.round(explicitMeasurement.value * CM_PER_INCH * 10) / 10
+      : explicitMeasurement.value;
+  }
 
   const rules: { keywords: string[]; lengthCm: number }[] = [
     { keywords: ['waist-length', 'waist length', 'reaches the waist', 'at the waist'], lengthCm: 82 },
@@ -1709,13 +1764,15 @@ const normalizeAnalysisPayload = (
   const visibleDamageNotes = normalizeString(analysis?.visible_damage_notes);
   const confidenceScore = normalizeConfidence(analysis?.confidence_score);
   const lengthAssessment = normalizeString(analysis?.length_assessment);
-  const approximateLengthFromText = inferApproximateLengthFromText([
+  const lengthEvidenceText = [
     lengthAssessment,
     normalizeString(analysis?.summary),
     visibleDamageNotes,
     ...normalizedViewNotes.map((item) => item.notes),
-  ].join(' '));
-  const estimatedLength = normalizeNumber(analysis?.estimated_length) ?? approximateLengthFromText;
+  ].join(' ');
+  const approximateLengthFromText = inferApproximateLengthFromText(lengthEvidenceText);
+  const estimatedLength = normalizeEstimatedLengthCm(analysis?.estimated_length, lengthEvidenceText)
+    ?? approximateLengthFromText;
   const rawShineLevel = normalizeLevel10(analysis?.shine_level, detectedCondition.toLowerCase().includes('healthy') ? 7 : 5);
   const rawFrizzLevel = normalizeLevel10(analysis?.frizz_level, detectedCondition.toLowerCase().includes('frizz') ? 8 : 3);
   const rawDrynessLevel = normalizeLevel10(analysis?.dryness_level, detectedCondition.toLowerCase().includes('dry') ? 8 : 3);
@@ -1846,6 +1903,16 @@ const normalizeAnalysisPayload = (
           ? 'Repeat the same photo views over time to track visible scalp coverage and density changes, and use gentle scalp and hair care while monitoring progress.'
           : 'Keep tracking hair length and condition with future CheckHair scans before donating.'
   );
+  const minimumLengthMessage = minimumDonationLengthCm != null && finalEstimatedLength != null && !meetsLengthRule
+    ? `The estimated donation length is ${formatLengthInches(finalEstimatedLength)}, below the ${formatLengthInches(minimumDonationLengthCm)} requirement. Continue caring for and growing the hair before checking again.`
+    : '';
+  const finalImprovementTrackingStatus = decision === ELIGIBLE_STATUS
+    ? 'Ready for donation'
+    : 'Not eligible for donation yet';
+  const finalImprovementRecommendation = minimumLengthMessage || improvementRecommendation;
+  const finalDonationReadinessNote = decision === ELIGIBLE_STATUS
+    ? donationReadinessNote
+    : minimumLengthMessage;
 
   return {
     is_hair_detected: finalIsHairDetected,
@@ -1888,14 +1955,8 @@ const normalizeAnalysisPayload = (
         ? 'Visible lice or nit-like signs were observed; this screening is not a medical diagnosis.'
         : 'No visible lice or nit-like signs were observed in the uploaded views.'
     ),
-    improvement_tracking_status: normalizeString(analysis?.improvement_tracking_status) || (
-      decision === ELIGIBLE_STATUS
-        ? 'Ready for donation'
-        : hasCoverageConcern || hasScalpFindingConcern
-          ? 'Needs improvement tracking'
-          : 'Not eligible for donation yet'
-    ),
-    improvement_recommendation: improvementRecommendation,
+    improvement_tracking_status: finalImprovementTrackingStatus,
+    improvement_recommendation: finalImprovementRecommendation,
     decision,
     summary,
     length_assessment: lengthAssessment || buildLengthAssessment({
@@ -1905,7 +1966,7 @@ const normalizeAnalysisPayload = (
       isHairDetected,
       perViewNotes: normalizedViewNotes,
     }),
-    donation_readiness_note: decision === ELIGIBLE_STATUS ? donationReadinessNote : '',
+    donation_readiness_note: finalDonationReadinessNote,
     history_assessment: [historyAssessment, questionnaireAssessment].filter(Boolean).join(' '),
     recommendations: normalizedRecommendations,
   };

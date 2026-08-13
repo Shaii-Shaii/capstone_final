@@ -71,10 +71,20 @@ const groupNotificationsByDate = (notifications = []) => {
 
 const getVisibleNotifications = (notifications = []) => {
   const seen = new Set();
+  const seenBackendIds = new Set();
 
   return (Array.isArray(notifications) ? notifications : []).filter((notification) => {
     if (!notification || (!notification.title && !notification.message)) {
       return false;
+    }
+
+    // Keep the renderer safe even if a stale cache or live update briefly
+    // supplies the same backend row twice before the service refreshes.
+    const backendId = notification.backendId || notification.notificationId || null;
+    if (backendId) {
+      const backendKey = String(backendId);
+      if (seenBackendIds.has(backendKey)) return false;
+      seenBackendIds.add(backendKey);
     }
 
     const title = String(notification.title || '').trim().toLowerCase();

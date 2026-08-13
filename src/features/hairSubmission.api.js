@@ -1,4 +1,5 @@
 import { supabase } from '../api/supabase/client';
+import { resolveEstimatedLengthCm } from '../utils/hairLength';
 import { hairSubmissionStorageBucket } from './hairSubmission.constants';
 import { resolveDatabaseUserId } from './profile/api/profile.api';
 import { logAppError, logAppEvent } from '../utils/appErrors';
@@ -423,7 +424,7 @@ const screeningStringOrDefault = (value, fallback) => (
 );
 
 const normalizeAiScreeningInsertPayload = (payload = {}) => {
-  const estimatedLength = numberOrDefault(payload?.estimated_length, 0);
+  const estimatedLength = resolveEstimatedLengthCm(payload) ?? 0;
   const normalizedPayload = {
     ...payload,
     estimated_length: estimatedLength,
@@ -633,7 +634,7 @@ const normalizeAiScreening = (row) => {
     ? row.analysis_result
     : {};
 
-  return ({
+  const screening = ({
   ...analysisResult,
   id: row?.ai_screening_id || analysisResult?.ai_screening_id || null,
   ai_screening_id: row?.ai_screening_id || null,
@@ -674,6 +675,11 @@ const normalizeAiScreening = (row) => {
   analysis_result: analysisResult,
   created_at: row?.created_at || null,
   });
+
+  return {
+    ...screening,
+    estimated_length: resolveEstimatedLengthCm(screening),
+  };
 };
 
 const normalizeDonorRecommendation = (row) => ({

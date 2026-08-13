@@ -351,10 +351,18 @@ export const fetchActiveGuardianConsent = async (userIdentifier) => {
         guardian_email,
         guardian_contact_number,
         consent_status,
+        consent_method,
+        consent_text_snapshot,
         minor_donation_allowed,
         ai_image_processing_allowed,
         public_posting_allowed,
-        consented_at
+        consented_at,
+        revoked_at,
+        guardian_id_file_path,
+        consent_document_file_path,
+        guardian_id_verification_status,
+        guardian_id_reviewed_by,
+        guardian_id_reviewed_at
       `)
       .eq('user_id', userIdResult.data)
       .eq('consent_status', 'Active')

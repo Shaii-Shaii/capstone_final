@@ -13,6 +13,13 @@ export const useRoleRedirect = () => {
 
     // Reconstruct the actual route path for cleaner comparison (e.g. "", "auth/access")
     const currentPath = segments.join('/');
+    const isPasswordRecoveryRoute = currentPath === 'auth/reset-password';
+
+    // Supabase creates a short-lived authenticated recovery session so the
+    // user can call updateUser({ password }). It must not be treated as a
+    // normal login and redirected to a role home before the password form is
+    // submitted.
+    if (isPasswordRecoveryRoute) return;
 
     // 1. Define explicitly which routes unauthenticated users are allowed to see
     const isPublicAuthRoute = 

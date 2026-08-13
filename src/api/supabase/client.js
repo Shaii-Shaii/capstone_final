@@ -1,4 +1,5 @@
 import 'react-native-url-polyfill/auto';
+import './webCryptoPolyfill';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient } from '@supabase/supabase-js';
 
@@ -192,6 +193,14 @@ export const supabase = hasSupabaseConfig
   ? createClient(supabaseUrl, supabasePublishableKey, {
       auth: {
         storage: createSanitizedAuthStorage(AsyncStorage),
+        // Recovery emails use the PKCE authorization-code flow. Persisting
+        // the verifier lets the native app exchange the email `code` after
+        // the deep link opens the reset screen.
+        // Keep one flow for web and native. The native WebCrypto compatibility
+        // layer above supplies secure SHA-256 challenges through expo-crypto.
+        // Mixing PKCE and implicit between requests makes recovery links
+        // intermittently unusable.
+        flowType: 'pkce',
         autoRefreshToken: false,
         persistSession: true,
         detectSessionInUrl: false,

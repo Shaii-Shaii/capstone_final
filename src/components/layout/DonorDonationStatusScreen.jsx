@@ -111,6 +111,20 @@ const getFriendlyDonationModuleError = (error = '') => {
   return text;
 };
 
+const getFriendlyDonationActionError = (error = '', fallback = 'Unable to save the donation right now.') => {
+  const text = String(error?.message || error || '').trim();
+  const normalized = text.toLowerCase();
+
+  if (
+    normalized.includes('record "old" has no field "input_method"')
+    || (normalized.includes('input_method') && normalized.includes('column'))
+  ) {
+    return 'The donation records need a one-time system update before this item can be saved. Please try again after the update is applied.';
+  }
+
+  return text || fallback;
+};
+
 const YES_NO_OPTIONS = [
   { label: 'Yes', value: 'yes' },
   { label: 'No', value: 'no' },
@@ -798,6 +812,8 @@ const getTimelineStageDescription = (stage = {}) => {
   switch (stage?.key) {
     case 'event_rsvp':
       return 'Your RSVP is approved for this donation drive.';
+    case 'donation_ready_to_send':
+      return 'Your logistic donation is submitted, its waybill QR is ready, and it is recorded as sent by you for drop-off or shipment. Print the waybill and securely attach it to the outside of the donation package.';
     case 'waybill_ready':
       return 'The waybill QR is prepared from the saved hair record. Use this paper or printed QR for the next scans.';
     case 'cut_and_ship':
@@ -1044,7 +1060,11 @@ function HairEligibilityPromptModal({
   actionTitle = 'Start First Hair Check',
   iconName = 'chart-line',
 }) {
+  const insets = useSafeAreaInsets();
+  const { height: viewportHeight } = useWindowDimensions();
   if (!visible) return null;
+
+  const availableHeight = Math.max(360, viewportHeight - insets.top - insets.bottom - theme.spacing.lg * 2);
 
   return (
     <Modal
@@ -1055,9 +1075,22 @@ function HairEligibilityPromptModal({
       statusBarTranslucent
       navigationBarTranslucent
     >
-      <View style={styles.hairEligibilityModalOverlay}>
+      <View style={[
+        styles.hairEligibilityModalOverlay,
+        {
+          paddingTop: Math.max(insets.top, theme.spacing.md),
+          paddingBottom: Math.max(insets.bottom, theme.spacing.md),
+        },
+      ]}>
         <Pressable style={styles.modalBackdrop} onPress={onClose} />
-        <View style={[styles.hairEligibilityModalCard, { backgroundColor: roles.pageBackground, borderColor: roles.defaultCardBorder }]}>
+        <View style={[
+          styles.hairEligibilityModalCard,
+          {
+            backgroundColor: roles.pageBackground,
+            borderColor: roles.defaultCardBorder,
+            maxHeight: availableHeight,
+          },
+        ]}>
           <Pressable
             onPress={onClose}
             style={styles.hairEligibilityModalCloseBtn}
@@ -1067,46 +1100,56 @@ function HairEligibilityPromptModal({
           >
             <MaterialCommunityIcons name="close" size={22} color={roles.primaryActionBackground} />
           </Pressable>
-          <View style={[styles.hairEligibilityModalIconWrap, { backgroundColor: roles.iconPrimarySurface }]}>
-            <MaterialCommunityIcons name={iconName} size={34} color={roles.primaryActionBackground} />
-          </View>
-          <Text style={[styles.hairEligibilityModalTitle, { color: roles.headingText }]}>{title}</Text>
-          <Text style={[styles.hairEligibilityModalMessage, { color: roles.bodyText }]}>{message}</Text>
-          {detailItems.length ? (
-            <View style={styles.hairEligibilityDetailList}>
-              {detailItems.map((item, index) => (
-                <View
-                  key={`${item.title || 'detail'}-${index}`}
-                  style={[styles.hairEligibilityDetailRow, { backgroundColor: roles.supportCardBackground }]}
-                >
-                  <MaterialCommunityIcons
-                    name={item.icon || 'information-outline'}
-                    size={17}
-                    color={roles.primaryActionBackground}
-                  />
-                  <View style={styles.hairEligibilityDetailCopy}>
-                    {item.title ? (
-                      <Text style={[styles.hairEligibilityDetailTitle, { color: roles.headingText }]}>
-                        {item.title}
-                      </Text>
-                    ) : null}
-                    <Text style={[styles.hairEligibilityDetailText, { color: roles.bodyText }]}>
-                      {item.body}
-                    </Text>
-                  </View>
-                </View>
-              ))}
+          <ScrollView
+            style={styles.hairEligibilityModalScroll}
+            contentContainerStyle={styles.hairEligibilityModalScrollContent}
+            showsVerticalScrollIndicator
+            keyboardShouldPersistTaps="handled"
+            nestedScrollEnabled
+          >
+            <View style={[styles.hairEligibilityModalIconWrap, { backgroundColor: roles.iconPrimarySurface }]}>
+              <MaterialCommunityIcons name={iconName} size={34} color={roles.primaryActionBackground} />
             </View>
-          ) : null}
-          <GradientActionButton
-            title={actionTitle}
-            onPress={onStartHairCheck}
-            fullWidth={false}
-            textColor={roles.primaryActionText}
-            style={styles.hairEligibilityModalAction}
-            buttonStyle={styles.hairEligibilityModalActionButton}
-            textStyle={styles.hairEligibilityModalActionText}
-          />
+            <Text style={[styles.hairEligibilityModalTitle, { color: roles.headingText }]}>{title}</Text>
+            <Text style={[styles.hairEligibilityModalMessage, { color: roles.bodyText }]}>{message}</Text>
+            {detailItems.length ? (
+              <View style={styles.hairEligibilityDetailList}>
+                {detailItems.map((item, index) => (
+                  <View
+                    key={`${item.title || 'detail'}-${index}`}
+                    style={[styles.hairEligibilityDetailRow, { backgroundColor: roles.supportCardBackground }]}
+                  >
+                    <MaterialCommunityIcons
+                      name={item.icon || 'information-outline'}
+                      size={17}
+                      color={roles.primaryActionBackground}
+                    />
+                    <View style={styles.hairEligibilityDetailCopy}>
+                      {item.title ? (
+                        <Text style={[styles.hairEligibilityDetailTitle, { color: roles.headingText }]}>
+                          {item.title}
+                        </Text>
+                      ) : null}
+                      <Text style={[styles.hairEligibilityDetailText, { color: roles.bodyText }]}>
+                        {item.body}
+                      </Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            ) : null}
+          </ScrollView>
+          <View style={[styles.hairEligibilityModalFooter, { borderTopColor: roles.defaultCardBorder }]}>
+            <GradientActionButton
+              title={actionTitle}
+              onPress={onStartHairCheck}
+              fullWidth={false}
+              textColor={roles.primaryActionText}
+              style={styles.hairEligibilityModalAction}
+              buttonStyle={styles.hairEligibilityModalActionButton}
+              textStyle={styles.hairEligibilityModalActionText}
+            />
+          </View>
         </View>
       </View>
     </Modal>
@@ -3862,7 +3905,7 @@ function DonationTimelineStatusScreen({
             const isCurrent = stage.state === 'current';
             const isCancelled = stage.state === 'cancelled';
             const canOpenWaybill = !isEventDonation
-              && stage.key === 'waybill_ready'
+              && ['waybill_ready', 'donation_ready_to_send'].includes(stage.key)
               && Boolean(onViewDonationQr);
             const isActionableStage = canOpenWaybill;
             const stageAction = onViewDonationQr;
@@ -3955,7 +3998,7 @@ function DonationTimelineStatusScreen({
                   {isActionableStage ? (
                     <View style={styles.timelineStageAction}>
                       <Text style={[styles.timelineStageActionText, { color: roles.primaryActionBackground }]}>
-                        Open QR
+                        {stage.key === 'donation_ready_to_send' ? 'Open Waybill QR' : 'Open QR'}
                       </Text>
                       <MaterialCommunityIcons name="arrow-right" size={16} color={roles.primaryActionBackground} />
                     </View>
@@ -4268,6 +4311,7 @@ export function DonorDonationStatusScreen() {
   const [isHairEligibilityPromptOpen, setIsHairEligibilityPromptOpen] = React.useState(false);
   const [isTutorialOpen, setIsTutorialOpen] = React.useState(false);
   const [isDonationMethodModalOpen, setIsDonationMethodModalOpen] = React.useState(false);
+  const [isPreparingLogisticDonation, setIsPreparingLogisticDonation] = React.useState(false);
   const [selectedLogisticMethod, setSelectedLogisticMethod] = React.useState('');
   const [pendingWalkInSubmission, setPendingWalkInSubmission] = React.useState(null);
   const [walkInScheduleReturnScreen, setWalkInScheduleReturnScreen] = React.useState(
@@ -4302,8 +4346,14 @@ export function DonorDonationStatusScreen() {
   ].map((part) => String(part || '').trim()).filter(Boolean).join(' ') || profile?.email || 'Account owner';
 
   // â”€â”€ Load module data
+  const moduleDataLoadPromiseRef = React.useRef(null);
   const loadModuleData = React.useCallback(async ({ silent = false } = {}) => {
     if (!user?.id) return;
+    if (moduleDataLoadPromiseRef.current) {
+      return await moduleDataLoadPromiseRef.current;
+    }
+
+    const performLoad = async () => {
     if (!silent && !moduleDataRef.current) {
       setIsLoading(true);
     }
@@ -4327,6 +4377,17 @@ export function DonorDonationStatusScreen() {
     setIsRefreshing(false);
     if (result.error) setScreenError(getFriendlyDonationModuleError(result.error));
     return mergedResult;
+    };
+
+    const loadPromise = performLoad();
+    moduleDataLoadPromiseRef.current = loadPromise;
+    try {
+      return await loadPromise;
+    } finally {
+      if (moduleDataLoadPromiseRef.current === loadPromise) {
+        moduleDataLoadPromiseRef.current = null;
+      }
+    }
   }, [profile?.user_id, user?.id]);
 
   const handleRefreshModuleData = React.useCallback(async () => {
@@ -5157,7 +5218,7 @@ export function DonorDonationStatusScreen() {
     setModuleFeedback({
       message: draftResult.success
         ? 'Hair details saved. Staff will issue the waybill QR after submission.'
-        : (draftResult.error || 'Could not save donation details right now.'),
+        : getFriendlyDonationActionError(draftResult.error, 'Could not save donation details right now.'),
       variant: draftResult.success ? 'success' : 'error',
     });
     await loadModuleData();
@@ -5198,11 +5259,22 @@ export function DonorDonationStatusScreen() {
   }, [hasHairScanLog, isAiEligible, isProfileComplete, moduleData?.latestScreening, router]);
 
   const handleAddLogisticDonation = React.useCallback(async () => {
-    const freshModuleData = await loadModuleData({ silent: true });
+    if (isPreparingLogisticDonation) return;
+
+    let eligibilityData = moduleDataRef.current || moduleData;
+    if (!eligibilityData) {
+      setIsPreparingLogisticDonation(true);
+      try {
+        eligibilityData = await loadModuleData({ silent: true });
+      } finally {
+        setIsPreparingLogisticDonation(false);
+      }
+    }
+
     const freshHasHairScanLog = Boolean(
-      freshModuleData?.latestScreening && freshModuleData?.latestAnalysisEntry?.submission
+      eligibilityData?.latestScreening && eligibilityData?.latestAnalysisEntry?.submission
     );
-    const freshIsAiEligible = Boolean(freshModuleData?.isAiEligible);
+    const freshIsAiEligible = Boolean(eligibilityData?.isAiEligible);
 
     if (!freshHasHairScanLog || !freshIsAiEligible) {
       setIsHairEligibilityPromptOpen(true);
@@ -5215,7 +5287,7 @@ export function DonorDonationStatusScreen() {
     setSelectedRecipient({ type: 'organization', patient: null });
     setSelectedDonationStatusItem(null);
     setIsDonationMethodModalOpen(true);
-  }, [loadModuleData]);
+  }, [isPreparingLogisticDonation, loadModuleData, moduleData]);
 
   const handleChooseLogisticMethod = React.useCallback((method) => {
     setSelectedLogisticMethod(method);
@@ -5388,7 +5460,10 @@ export function DonorDonationStatusScreen() {
       setIsSavingManual(false);
 
       if (!result.success) {
-        setManualFeedback({ message: result.error || 'Could not update details. Please try again.', variant: 'error' });
+        setManualFeedback({
+          message: getFriendlyDonationActionError(result.error, 'Could not update details. Please try again.'),
+          variant: 'error',
+        });
         return;
       }
 
@@ -5441,7 +5516,10 @@ export function DonorDonationStatusScreen() {
       setIsSavingManual(false);
 
       if (!result.success) {
-        setManualFeedback({ message: result.error || 'Could not save this hair item. Please try again.', variant: 'error' });
+        setManualFeedback({
+          message: getFriendlyDonationActionError(result.error, 'Could not save this hair item. Please try again.'),
+          variant: 'error',
+        });
         return;
       }
 
@@ -5501,7 +5579,10 @@ export function DonorDonationStatusScreen() {
         router.navigate('/donor/guardian-consent');
         return;
       }
-      setManualFeedback({ message: result.error || 'Could not save details. Please try again.', variant: 'error' });
+      setManualFeedback({
+        message: getFriendlyDonationActionError(result.error, 'Could not save details. Please try again.'),
+        variant: 'error',
+      });
       return;
     }
 
@@ -5524,7 +5605,7 @@ export function DonorDonationStatusScreen() {
           ? selectedLogisticMethod === 'dropoff'
             ? 'Hair details saved. Choose your drop-off appointment.'
             : 'Hair details saved. Continue to submit donation details for staff waybill issuance.'
-          : (draftResult.error || 'Details saved but donation flow could not be started.'),
+          : getFriendlyDonationActionError(draftResult.error, 'Details saved but donation flow could not be started.'),
         variant: draftResult.success ? 'success' : 'error',
       });
       if (draftResult.success && selectedLogisticMethod === 'dropoff') {
@@ -6307,10 +6388,10 @@ export function DonorDonationStatusScreen() {
         message: itemsToSubmit.length > 1
           ? hasEventLinkedSubmission
             ? `${itemsToSubmit.length} hair record(s) submitted. Staff will issue the waybill QR from the website.`
-            : `${itemsToSubmit.length} hair record(s) submitted. Independent waybill QR is ready.`
+            : `${itemsToSubmit.length} logistic donation record(s) submitted and recorded as sent. Print each waybill QR and attach it securely to its package.`
           : hasEventLinkedSubmission
             ? 'Donation submitted. Staff will issue your waybill QR from the website.'
-            : 'Donation submitted. Independent waybill QR is ready.',
+            : 'Logistic donation submitted and recorded as sent by you. Print the waybill QR and attach it securely to the outside of the package for drop-off or shipment.',
         variant: 'success',
       });
       await loadModuleData();
@@ -6713,17 +6794,20 @@ export function DonorDonationStatusScreen() {
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Add donation"
+        disabled={isPreparingLogisticDonation}
         onPress={handleAddLogisticDonation}
         style={({ pressed }) => [
           styles.logisticFab,
           {
             backgroundColor: roles.primaryActionBackground,
-            opacity: pressed ? 0.92 : 1,
+            opacity: isPreparingLogisticDonation ? 0.72 : pressed ? 0.92 : 1,
           },
         ]}
       >
         <MaterialCommunityIcons name="plus" size={22} color={roles.primaryActionText} />
-        <Text style={[styles.logisticFabText, { color: roles.primaryActionText }]}>Add Donation</Text>
+        <Text style={[styles.logisticFabText, { color: roles.primaryActionText }]}>
+          {isPreparingLogisticDonation ? 'Checking eligibility...' : 'Add Donation'}
+        </Text>
       </Pressable>
     </View>
   ) : null;
@@ -9669,11 +9753,8 @@ const styles = StyleSheet.create({
     maxWidth: 440,
     borderRadius: 28,
     borderWidth: 1,
-    paddingHorizontal: theme.spacing.lg,
-    paddingTop: theme.spacing.xl,
-    paddingBottom: theme.spacing.lg,
-    alignItems: 'center',
-    gap: theme.spacing.md,
+    paddingTop: theme.spacing.lg,
+    overflow: 'hidden',
     ...theme.shadows.soft,
   },
   hairEligibilityModalCloseBtn: {
@@ -9689,7 +9770,19 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: theme.spacing.sm,
+    marginTop: theme.spacing.xs,
+    alignSelf: 'center',
+  },
+  hairEligibilityModalScroll: {
+    flexShrink: 1,
+    minHeight: 0,
+    width: '100%',
+  },
+  hairEligibilityModalScrollContent: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.md,
+    paddingBottom: theme.spacing.md,
+    gap: theme.spacing.md,
   },
   hairEligibilityModalTitle: {
     fontFamily: theme.typography.fontFamily,
@@ -9731,10 +9824,16 @@ const styles = StyleSheet.create({
     lineHeight: theme.typography.semantic.bodySm * theme.typography.lineHeights.relaxed,
   },
   hairEligibilityModalAction: {
-    marginTop: theme.spacing.xs,
     alignSelf: 'center',
     width: '100%',
     maxWidth: 320,
+  },
+  hairEligibilityModalFooter: {
+    width: '100%',
+    borderTopWidth: 1,
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.md,
+    paddingBottom: theme.spacing.lg,
   },
   hairEligibilityModalActionButton: {
     minHeight: 56,

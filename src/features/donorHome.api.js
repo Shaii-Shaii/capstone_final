@@ -8,6 +8,80 @@ const donationDriveRequestsTable = 'Event_Requests';
 const donationDriveRegistrationsTable = 'Event_Attendees';
 const hairSubmissionsTable = 'Hair_Submissions';
 const hairSubmissionDetailsTable = 'Hair_Submission_Details';
+const TRANSIENT_READ_MAX_ATTEMPTS = 2;
+const TRANSIENT_READ_RETRY_DELAY_MS = 450;
+
+const waitFor = (milliseconds = 0) => new Promise((resolve) => {
+  setTimeout(resolve, Math.max(0, Number(milliseconds) || 0));
+});
+
+const isStatementTimeoutError = (error) => (
+  String(error?.code || '').trim() === '57014'
+  || String(error?.message || '').toLowerCase().includes('statement timeout')
+);
+
+const isConnectionTimeoutError = (error) => {
+  const code = String(error?.code || '').trim().toUpperCase();
+  const message = String(error?.message || '').toLowerCase();
+  return (
+    code === 'PGRST003'
+    || code.startsWith('08')
+    || message.includes('connection timeout')
+    || message.includes('network request failed')
+    || message.includes('failed to fetch')
+  );
+};
+
+const isTransientReadError = (error) => (
+  isStatementTimeoutError(error) || isConnectionTimeoutError(error)
+);
+
+const createFriendlyTransientReadError = (error) => ({
+  code: String(error?.code || '').trim() || 'TEMPORARY_READ_UNAVAILABLE',
+  details: null,
+  hint: 'Retry the request after a moment.',
+  message: isConnectionTimeoutError(error)
+    ? 'We could not reach the server. Check your connection and try again.'
+    : 'The server took too long to load your event registrations. Please try again.',
+  isTransient: true,
+  technicalMessage: String(error?.message || ''),
+});
+
+const executeTransientRegistrationRead = async ({ queryFactory, scope, extras = {} }) => {
+  let latestResult = { data: null, error: null };
+
+  for (let attempt = 1; attempt <= TRANSIENT_READ_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      latestResult = await queryFactory();
+    } catch (error) {
+      latestResult = { data: null, error };
+    }
+
+    if (!latestResult?.error || !isTransientReadError(latestResult.error)) {
+      return latestResult;
+    }
+
+    if (attempt < TRANSIENT_READ_MAX_ATTEMPTS) {
+      logAppEvent(`${scope}.retry`, 'Event registrations were temporarily unavailable. Retrying the read.', {
+        ...extras,
+        attempt,
+        errorCode: latestResult.error?.code || null,
+        errorType: isConnectionTimeoutError(latestResult.error) ? 'connection_timeout' : 'statement_timeout',
+      }, 'info');
+      await waitFor(TRANSIENT_READ_RETRY_DELAY_MS * attempt);
+    }
+  }
+
+  const friendlyError = createFriendlyTransientReadError(latestResult.error);
+  logAppEvent(`${scope}.temporarily_unavailable`, friendlyError.message, {
+    ...extras,
+    attempts: TRANSIENT_READ_MAX_ATTEMPTS,
+    errorCode: friendlyError.code,
+    errorType: isConnectionTimeoutError(latestResult.error) ? 'connection_timeout' : 'statement_timeout',
+  }, 'warn');
+
+  return { ...latestResult, error: friendlyError };
+};
 
 const donationDriveSelect = `
   event_request_id:Event_Request_ID,
@@ -503,19 +577,25 @@ const findExistingDriveRegistration = async (driveId, databaseUserId) => {
     return { data: null, error: null };
   }
 
-  const result = await supabase
-    .from(donationDriveRegistrationsTable)
-    .select(donationDriveRegistrationSelect)
-    .eq('Event_Request_ID', driveId)
-    .eq('User_ID', databaseUserId)
-    .order('Updated_At', { ascending: false });
+  const result = await executeTransientRegistrationRead({
+    scope: 'donor_home.drive_registration.lookup',
+    extras: { table: donationDriveRegistrationsTable, driveId, databaseUserId },
+    queryFactory: () => supabase
+      .from(donationDriveRegistrationsTable)
+      .select(donationDriveRegistrationSelect)
+      .eq('Event_Request_ID', driveId)
+      .eq('User_ID', databaseUserId)
+      .order('Updated_At', { ascending: false }),
+  });
 
   if (result.error) {
-    logAppError('donor_home.drive_registration.lookup', result.error, {
-      table: donationDriveRegistrationsTable,
-      driveId,
-      databaseUserId,
-    });
+    if (!result.error?.isTransient) {
+      logAppError('donor_home.drive_registration.lookup', result.error, {
+        table: donationDriveRegistrationsTable,
+        driveId,
+        databaseUserId,
+      });
+    }
 
     return {
       data: null,
@@ -567,19 +647,25 @@ const findDriveRegistrationsByUserIdAndDriveIds = async (driveIds = [], database
     };
   }
 
-  const result = await supabase
-    .from(donationDriveRegistrationsTable)
-    .select(donationDriveRegistrationSelect)
-    .eq('User_ID', databaseUserId)
-    .in('Event_Request_ID', driveIds)
-    .order('Updated_At', { ascending: false });
+  const result = await executeTransientRegistrationRead({
+    scope: 'donor_home.drive_registrations.by_drive_ids',
+    extras: { table: donationDriveRegistrationsTable, databaseUserId, driveIds },
+    queryFactory: () => supabase
+      .from(donationDriveRegistrationsTable)
+      .select(donationDriveRegistrationSelect)
+      .eq('User_ID', databaseUserId)
+      .in('Event_Request_ID', driveIds)
+      .order('Updated_At', { ascending: false }),
+  });
 
   if (result.error) {
-    logAppError('donor_home.drive_registrations.by_drive_ids', result.error, {
-      table: donationDriveRegistrationsTable,
-      databaseUserId,
-      driveIds,
-    });
+    if (!result.error?.isTransient) {
+      logAppError('donor_home.drive_registrations.by_drive_ids', result.error, {
+        table: donationDriveRegistrationsTable,
+        databaseUserId,
+        driveIds,
+      });
+    }
 
     return {
       data: new Map(),
@@ -626,17 +712,23 @@ export const fetchDonationDriveRegistrationsByUserId = async (databaseUserId) =>
     };
   }
 
-  const result = await supabase
-    .from(donationDriveRegistrationsTable)
-    .select(donationDriveRegistrationSelect)
-    .eq('User_ID', databaseUserId)
-    .order('Updated_At', { ascending: false });
+  const result = await executeTransientRegistrationRead({
+    scope: 'donor_home.drive_registrations',
+    extras: { table: donationDriveRegistrationsTable, databaseUserId },
+    queryFactory: () => supabase
+      .from(donationDriveRegistrationsTable)
+      .select(donationDriveRegistrationSelect)
+      .eq('User_ID', databaseUserId)
+      .order('Updated_At', { ascending: false }),
+  });
 
   if (result.error) {
-    logAppError('donor_home.drive_registrations', result.error, {
-      table: donationDriveRegistrationsTable,
-      databaseUserId,
-    });
+    if (!result.error?.isTransient) {
+      logAppError('donor_home.drive_registrations', result.error, {
+        table: donationDriveRegistrationsTable,
+        databaseUserId,
+      });
+    }
 
     return {
       data: [],

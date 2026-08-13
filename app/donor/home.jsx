@@ -2238,7 +2238,12 @@ export default function DonorHomeScreen() {
       || registeredDrivesResult.error
       || requirementResult?.error
     );
-    setHomeError(loadFailed ? 'Some updates could not load.' : '');
+    const friendlyRegistrationError = registeredDrivesResult.error?.isTransient
+      ? registeredDrivesResult.error.message
+      : '';
+    setHomeError(loadFailed
+      ? (friendlyRegistrationError || 'Some updates could not load. Pull down to try again.')
+      : '');
     setIsLoadingHome(false);
 
   }, [profile?.user_id, user?.id]);

@@ -337,6 +337,14 @@ const getNotificationIdentityKey = (notification = {}) => {
   ]);
   const referenceType = normalizeTextToken(notification.referenceType || '');
   const referenceId = String(notification.referenceId || '').trim();
+
+  // Notification_ID is the canonical identity. Local and derived copies can
+  // have different text, but they must still merge into one backend record.
+  const backendId = notification.backendId || notification.notificationId || null;
+  if (backendId) {
+    return `backend:${String(backendId)}`;
+  }
+
   if (referenceScopedTypes.has(notification.type) && referenceType && referenceId) {
     return `reference:${notification.type}:${referenceType}:${referenceId}`;
   }
@@ -347,11 +355,6 @@ const getNotificationIdentityKey = (notification = {}) => {
 
   if (notification.dedupeKey) {
     return `dedupe:${notification.dedupeKey}`;
-  }
-
-  const backendId = notification.backendId || notification.notificationId || null;
-  if (backendId) {
-    return `backend:${backendId}`;
   }
 
   const type = normalizeTextToken(notification.type || 'system_update');

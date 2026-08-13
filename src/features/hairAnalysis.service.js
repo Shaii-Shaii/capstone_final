@@ -2,6 +2,7 @@ import { invokeEdgeFunction } from '../api/supabase/client';
 import { hairAnalysisFunctionName, hairSubmissionImageTypes } from './hairSubmission.constants';
 import { normalizeHairAnalyzerAnswers } from './hairSubmission.schema';
 import { getErrorMessage, logAppError, logAppEvent } from '../utils/appErrors';
+import { alignScreeningWithMinimumLength, resolveEstimatedLengthCm } from '../utils/hairLength';
 
 const HAIR_ANALYSIS_MAX_INVOKE_ATTEMPTS = 2;
 const HAIR_ANALYSIS_RETRYABLE_STATUS = new Set([500, 502, 503, 504]);
@@ -112,7 +113,7 @@ const hasVisibleDandruffEvidence = (value = '') => {
   return /\b(dandruff|flakes?|flaking|white particles?|yellow particles?|flake-like|dandruff-like|scaly|buildup)\b/i.test(normalized);
 };
 
-const normalizeAnalysis = (data) => {
+const normalizeAnalysis = (data, donationRequirementContext = null) => {
   const perViewNotes = normalizeViewNotes(data?.per_view_notes || []);
   const scalpCoverageNotes = data?.scalp_coverage_notes || 'No clear scalp coverage issue was reported.';
   const scalpFindingEvidenceText = [
@@ -125,12 +126,12 @@ const normalizeAnalysis = (data) => {
   ].filter(Boolean).join(' ');
   const dandruffDetected = data?.dandruff_detected === true || hasVisibleDandruffEvidence(scalpFindingEvidenceText);
 
-  return {
+  return alignScreeningWithMinimumLength({
     is_hair_detected: data?.is_hair_detected !== false,
     invalid_image_reason: data?.invalid_image_reason || '',
     missing_views: Array.isArray(data?.missing_views) ? data.missing_views : [],
     per_view_notes: perViewNotes,
-    estimated_length: toNumberOrDefault(data?.estimated_length, 0),
+    estimated_length: resolveEstimatedLengthCm(data) ?? 0,
     detected_color: data?.detected_color || 'Black',
     detected_texture: data?.detected_texture || 'Straight',
     detected_density: data?.detected_density || 'Medium',
@@ -170,7 +171,7 @@ const normalizeAnalysis = (data) => {
     donation_readiness_note: data?.donation_readiness_note || '',
     history_assessment: data?.history_assessment || '',
     recommendations: normalizeRecommendations(data?.recommendations || []),
-  };
+  }, donationRequirementContext);
 };
 
 const hasStructuredAnalysisContent = (analysis) => Boolean(
@@ -804,7 +805,7 @@ export const analyzeHairPhotos = async ({
     const normalizedAnalysis = normalizeAnalysis({
       ...analysisPayload,
       recommendations: analysisPayload?.recommendations || functionResult.data?.recommendations || [],
-    });
+    }, donationRequirementContext);
 
     if (isLowDetailPlaceholderAnalysis(normalizedAnalysis)) {
       logAppEvent('hairAnalysis.invoke', 'Rejected low-detail AI provider response instead of showing fallback values.', {

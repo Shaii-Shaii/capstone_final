@@ -39,6 +39,7 @@ import { hairAnalyzerQuestionChoices } from '../../features/hairSubmission.const
 import { buildProfileCompletionMeta } from '../../features/profile/services/profile.service';
 import { validateHairPhotosBeforeAnalysis } from '../../features/photoPreflight.service';
 import { logAppEvent } from '../../utils/appErrors';
+import { resolveEstimatedLengthCm } from '../../utils/hairLength';
 
 let NativeVisionCamera = null;
 let NativeFaceCamera = null;
@@ -566,7 +567,7 @@ const formatDensityScore = (value) => {
 };
 
 const buildDonationAssessment = ({ analysis = {}, donationRequirement = null }) => {
-  const totalLengthCm = Number(analysis?.estimated_length);
+  const totalLengthCm = Number(resolveEstimatedLengthCm(analysis));
   const configuredMinimumCm = Number(donationRequirement?.minimum_hair_length_cm);
   const minimumLengthCm = Number.isFinite(configuredMinimumCm) && configuredMinimumCm > 0
     ? configuredMinimumCm
@@ -612,17 +613,28 @@ const buildDonationAssessment = ({ analysis = {}, donationRequirement = null }) 
         ? 'Your hair length may be enough, but the scan found a concern that needs review before donation.'
       : shortEndpoint
         ? `Not eligible for donation yet. Donatable length is measured from the lower cheek or neck to the lowest visible ends, and the current endpoint appears above the required ${minimumInches.toFixed(1)} inches.`
-        : (analysis?.donation_readiness_note || 'Your hair is not ready for donation yet. Continue hair care and check again after more growth.'),
+        : isLengthDetected && minimumInches
+          ? `Not eligible for donation yet. The estimated donation length is ${totalInches.toFixed(1)} inches, below the ${minimumInches.toFixed(1)}-inch requirement. Continue caring for and growing your hair before checking again.`
+          : 'Your hair is not ready for donation yet. Continue hair care and check again after more growth.',
   };
 };
 
-const buildDonationReadyAnalysis = (analysis = {}, donationAssessment = {}) => {
-  if (!donationAssessment.isDonationReady) return analysis;
+const buildDonationAlignedAnalysis = (analysis = {}, donationAssessment = {}) => {
+  const decision = donationAssessment.isDonationReady
+    ? 'Eligible for hair donation'
+    : 'Not eligible for donation yet';
+  const trackingStatus = donationAssessment.isDonationReady
+    ? 'Ready for donation'
+    : 'Not eligible for donation yet';
 
   return {
     ...analysis,
-    decision: 'Eligible for hair donation',
+    decision,
     donation_readiness_note: donationAssessment.summary,
+    improvement_tracking_status: trackingStatus,
+    improvement_recommendation: donationAssessment.isDonationReady
+      ? analysis?.improvement_recommendation
+      : donationAssessment.summary,
     summary: analysis?.summary || donationAssessment.summary,
   };
 };
@@ -2947,7 +2959,11 @@ export function DonorHairSubmissionScreen() {
     setRegisteredEventDrives(registeredDrives);
 
     if (submissionsResult.error || registeredDrivesResult.error) {
-      setHistoryError('Calendar history could not be loaded right now.');
+      setHistoryError(
+        registeredDrivesResult.error?.isTransient
+          ? registeredDrivesResult.error.message
+          : 'Calendar history could not be loaded right now. Pull down to try again.',
+      );
     }
 
     setIsLoadingHistory(false);
@@ -2973,7 +2989,7 @@ export function DonorHairSubmissionScreen() {
     }
 
     const donationAssessment = buildDonationAssessment({ analysis, donationRequirement });
-    const analysisForReview = buildDonationReadyAnalysis(analysis, donationAssessment);
+    const analysisForReview = buildDonationAlignedAnalysis(analysis, donationAssessment);
     const defaults = buildHairReviewDefaultValues(analysisForReview);
 
     setAnalysisReviewValues({
@@ -3148,7 +3164,7 @@ export function DonorHairSubmissionScreen() {
   const saveConfirmedAnalysis = async () => {
     if (!analysis) return;
     const donationAssessment = buildDonationAssessment({ analysis, donationRequirement });
-    const analysisForSave = buildDonationReadyAnalysis(analysis, donationAssessment);
+    const analysisForSave = buildDonationAlignedAnalysis(analysis, donationAssessment);
 
     logAppEvent('donor_hair_submission.confirmation', 'User confirmed AI result for saving.', {
       userId: user?.id || null,
@@ -4075,7 +4091,7 @@ export function DonorHairSubmissionScreen() {
       case 3:
         if (analysis) {
           const donationAssessment = buildDonationAssessment({ analysis, donationRequirement });
-          const displayAnalysis = buildDonationReadyAnalysis(analysis, donationAssessment);
+          const displayAnalysis = buildDonationAlignedAnalysis(analysis, donationAssessment);
           const sideProfileIndex = requiredViews.findIndex((view) => view?.key === 'side_profile');
           const frontViewIndex = requiredViews.findIndex((view) => view?.key === 'front_view');
           const scanPhoto = photos[sideProfileIndex]?.uri
@@ -4830,6 +4846,7 @@ export function DonorHairSubmissionScreen() {
         dateKey={selectedHistoryDate}
         entries={selectedHistoryEntries}
         events={selectedHistoryEvents}
+        donationRequirement={donationRequirement}
         onClose={() => {
           setSelectedHistoryDate('');
           setSelectedHistoryEntries([]);

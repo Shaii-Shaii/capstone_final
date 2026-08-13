@@ -59,6 +59,7 @@ import { hairSubmissionStorageBucket } from './hairSubmission.constants';
 import { notificationTypes } from './notification.constants';
 import { buildImmediateNotificationEvents, recordNotifications } from './notification.service';
 import { canSubmitHairDonation, mapDonationPermissionError } from './donorCompliance.service';
+import { resolveEstimatedLengthCm } from '../utils/hairLength';
 
 const ELIGIBLE_DECISIONS = new Set([
   'eligible',
@@ -314,7 +315,7 @@ const buildAiConditionReasons = (screening = null) => {
 
 const buildLengthRequirementMessage = ({ screening = null, minimumLengthCm = 0 }) => {
   const logMessage = getScreeningLogMessage(screening);
-  const estimatedLengthInches = convertLengthToInches(screening?.estimated_length, 'cm');
+  const estimatedLengthInches = convertLengthToInches(resolveEstimatedLengthCm(screening), 'cm');
   const minimumInches = toRoundedNumber(minimumLengthCm / CM_PER_INCH, 1);
   const measuredMessage = estimatedLengthInches
     ? `Latest hair analysis estimated ${estimatedLengthInches} inches.`
@@ -399,7 +400,7 @@ const evaluateManualDonationEligibility = ({ manualDetails = {}, donationRequire
 
 export const evaluateAiDonationEligibility = ({ screening = null, detail = null, donationRequirement = null }) => {
   const minimumLengthCm = resolveMinimumLengthCm(donationRequirement);
-  const normalizedLengthCm = toRoundedNumber(screening?.estimated_length, 1);
+  const normalizedLengthCm = toRoundedNumber(resolveEstimatedLengthCm(screening), 1);
   const reasons = [];
   const conditionReasons = screening ? buildAiConditionReasons(screening) : [];
   const inferredEligibleFromFields = screeningLooksDonationReady({
@@ -2446,28 +2447,12 @@ const resolveTimelineStages = ({
 
   const baseStages = eventStageEntries || walkInStageEntries || [
     {
-      key: 'donation_submitted',
-      label: 'Donation Submitted',
-      statusLabel: submission?.status || '',
-      savedNote: 'Donation record is saved for independent shipment.',
-      evidenceAt: donationSubmittedEvidenceAt,
-      entry: submission,
-    },
-    {
-      key: 'waybill_ready',
-      label: 'Waybill QR Ready',
-      statusLabel: submission?.qr_status || readyEntry?.status || '',
-      savedNote: readyEntry?.description || 'Print the waybill QR and attach it to the parcel or hair bundle.',
-      evidenceAt: waybillEvidenceAt || readyEvidenceAt,
-      parcelImages,
-    },
-    {
-      key: 'sent_by_donor',
-      label: 'Sent by Donor',
-      statusLabel: transitEntry?.status || (matchesAnyToken(logistics?.shipment_status, ['transit', 'shipped']) ? logistics?.shipment_status : ''),
-      savedNote: transitEntry?.description || 'The hair parcel was sent with the printed waybill attached.',
-      evidenceAt: transitEvidenceAt,
-      entry: transitEntry,
+      key: 'donation_ready_to_send',
+      label: 'Donation Submitted & Sent by Donor',
+      statusLabel: 'Waybill ready',
+      savedNote: 'Your logistic donation is submitted, its waybill QR is ready, and it is recorded as sent by you for drop-off or shipment. Print the waybill and securely attach it to the outside of your donation package.',
+      evidenceAt: transitEvidenceAt || waybillEvidenceAt || readyEvidenceAt || donationSubmittedEvidenceAt,
+      entry: transitEntry || readyEntry || submission,
       parcelImages,
     },
     {
@@ -2524,7 +2509,13 @@ const resolveTimelineStages = ({
     ? reachedStageIndexes[reachedStageIndexes.length - 1]
     : 0;
   const hasConfirmedDonorShipment = !isEventFlow && !isWalkInFlow && Boolean(transitEvidenceAt);
-  const resolvedCurrentIndex = hasConfirmedDonorShipment
+  const hasPreparedIndependentDonation = !isEventFlow && !isWalkInFlow && Boolean(
+    transitEvidenceAt
+    || waybillEvidenceAt
+    || readyEvidenceAt
+    || donationSubmittedEvidenceAt
+  );
+  const resolvedCurrentIndex = hasConfirmedDonorShipment || hasPreparedIndependentDonation
     ? Math.min(latestReachedIndex + 1, baseStages.length - 1)
     : (isEventFlow && submission?.submission_id && latestReachedIndex === 0
       ? Math.min(1, baseStages.length - 1)
@@ -3224,8 +3215,19 @@ export const getDonorDonationsModuleData = async ({ userId, databaseUserId, driv
   let productionTimelineError = null;
   let appointment = null;
   let appointmentError = null;
+  const prefetchedActiveFlowRecord = activeSubmission?.submission_id
+    ? submissionFlowRecords.find((record) => (
+        Number(record?.submission_id) === Number(activeSubmission.submission_id)
+      )) || null
+    : null;
 
-  if (activeSubmission?.submission_id && activeDetail?.submission_detail_id) {
+  if (prefetchedActiveFlowRecord) {
+    logistics = prefetchedActiveFlowRecord.logistics || null;
+    trackingEntries = prefetchedActiveFlowRecord.trackingEntries || [];
+    parcelImages = prefetchedActiveFlowRecord.parcelImages || [];
+    appointment = prefetchedActiveFlowRecord.appointment || null;
+    productionTimeline = prefetchedActiveFlowRecord.production || null;
+  } else if (activeSubmission?.submission_id && activeDetail?.submission_detail_id) {
     const [logisticsResult, trackingResult, parcelImagesResult, appointmentResult] = await Promise.all([
       fetchHairSubmissionLogisticsBySubmissionId(activeSubmission.submission_id),
       fetchHairBundleTrackingHistory({
@@ -3246,7 +3248,7 @@ export const getDonorDonationsModuleData = async ({ userId, databaseUserId, driv
     appointmentError = appointmentResult.error;
   }
 
-  if (activeSubmission?.bundle_id) {
+  if (activeSubmission?.bundle_id && !prefetchedActiveFlowRecord) {
     const productionTimelineResult = await fetchDonationTimelineProductionByBundleId(activeSubmission.bundle_id);
     productionTimeline = productionTimelineResult.data || null;
     productionTimelineError = productionTimelineResult.error || null;
@@ -4055,13 +4057,46 @@ export const ensureIndependentDonationQr = async ({
       });
     }
 
+    if (!isWalkInDonation) {
+      const deliveryNote = 'The donor submitted the logistic donation for delivery with the printed waybill QR attached to the outside of the package.';
+      const logisticsUpdate = await upsertSubmissionLogistics({
+        submissionId: submission.submission_id,
+        logisticsType: logistics?.logistics_type || 'independent_shipping',
+        shipmentStatus: 'Shipped',
+        notes: deliveryNote,
+      });
+      if (logisticsUpdate.error) {
+        return {
+          success: false,
+          error: logisticsUpdate.error.message || 'The donation was submitted, but its delivery status could not be saved.',
+        };
+      }
+
+      const deliveryTrackingResult = await createHairBundleTrackingEntry({
+        submission_id: submission.submission_id,
+        submission_detail_id: generatedDetails[0]?.submission_detail_id || null,
+        status: 'sent_by_donor',
+        title: 'Donation submitted and sent by donor',
+        description: deliveryNote,
+        changed_by: databaseUserId,
+      });
+      if (deliveryTrackingResult.error) {
+        return {
+          success: false,
+          error: deliveryTrackingResult.error.message || 'The donation was submitted, but its delivery timeline could not be saved.',
+        };
+      }
+    }
+
     await persistDonationNotifications({
       userId,
       notifications: [
         buildDonationNotification({
           dedupeKey: `${notificationTypes.logisticsUpdated}:${submission.submission_id}:independent-submitted`,
-          title: 'Independent donation submitted',
-          message: 'Print each QR label and attach it to the parcel or hair bundle before shipping.',
+          title: 'Donation submitted and waybill ready',
+          message: isWalkInDonation
+            ? 'Print each QR label, attach it to the donation package, and bring it to your scheduled drop-off.'
+            : 'Print each QR label and securely attach it to the outside of the donation package before drop-off or shipment.',
           createdAt: submittedAt,
           referenceId: submission.submission_id,
         }),
@@ -4453,7 +4488,8 @@ export const addDonationBundleFromAnalysis = async ({
     donorIsMinor,
   });
 
-  const estimatedLengthInches = convertLengthToInches(screening?.estimated_length, 'cm');
+  const normalizedEstimatedLengthCm = resolveEstimatedLengthCm(screening);
+  const estimatedLengthInches = convertLengthToInches(normalizedEstimatedLengthCm, 'cm');
 
   const detailResult = await createHairSubmissionDetail({
     submission_id: submission.submission_id,
@@ -4484,7 +4520,7 @@ export const addDonationBundleFromAnalysis = async ({
   await createAiScreening({
     submission_id: submission.submission_id,
     submission_detail_id: detailResult.data.submission_detail_id,
-    estimated_length: screening?.estimated_length ?? null,
+    estimated_length: normalizedEstimatedLengthCm,
     detected_color: screening?.detected_color || null,
     detected_texture: screening?.detected_texture || null,
     detected_density: screening?.detected_density || null,

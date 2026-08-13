@@ -83,6 +83,23 @@ const createSessionFromOAuthRedirect = async (url) => {
     };
   }
 
+  // Some Supabase email templates return a one-time token hash instead of a
+  // PKCE code. Recovery links must be verified explicitly on mobile because
+  // detectSessionInUrl is disabled for the native client.
+  if (params.token_hash || (params.token && params.type === 'recovery')) {
+    const result = await supabase.auth.verifyOtp({
+      token_hash: params.token_hash || params.token,
+      type: params.type || 'recovery',
+    });
+    return {
+      data: {
+        session: result.data?.session || null,
+        user: result.data?.user || result.data?.session?.user || null,
+      },
+      error: result.error || null,
+    };
+  }
+
   if (params.access_token && params.refresh_token) {
     const result = await supabase.auth.setSession({
       access_token: params.access_token,

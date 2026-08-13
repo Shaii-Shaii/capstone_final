@@ -3,6 +3,7 @@ import { getProfile } from '../../profile/services/profile.service';
 import { ensureProfileInfrastructure, fetchSystemUserByAuthUserId } from '../../profile/api/profile.api';
 import { authMessages } from '../../../constants/auth';
 import * as Linking from 'expo-linking';
+import { Platform } from 'react-native';
 import { isPasswordReuse, reusedPasswordMessage } from '../../../utils/passwordRules';
 import { logAppError, logAppEvent, writeAuditLog } from '../../../utils/appErrors';
 import { emptyResolvedTheme, theme } from '../../../design-system/theme';
@@ -24,7 +25,12 @@ const loginErrorCodes = {
 
 const signupErrorCodes = {
   emailAlreadyRegistered: 'EMAIL_ALREADY_REGISTERED',
+  invalidEmail: 'INVALID_EMAIL',
   weakPassword: 'WEAK_PASSWORD',
+  rateLimited: 'RATE_LIMITED',
+  emailDeliveryFailed: 'EMAIL_DELIVERY_FAILED',
+  signupUnavailable: 'SIGNUP_UNAVAILABLE',
+  securityCheckFailed: 'SECURITY_CHECK_FAILED',
   network: 'NETWORK_ERROR',
   unexpected: 'UNEXPECTED_ERROR',
 };
@@ -38,6 +44,7 @@ const googleAuthErrorCodes = {
 };
 
 const APP_SCHEME = 'donivra';
+const MOBILE_RESET_REDIRECT = `${APP_SCHEME}://auth/reset-password`;
 
 const normalizeVisualValue = (value) => {
   if (typeof value !== 'string') return '';
@@ -71,11 +78,24 @@ const buildUserFacingLoginError = (message, code = loginErrorCodes.unexpected) =
   return error;
 };
 
-const buildUserFacingSignupError = (message, code = signupErrorCodes.unexpected) => {
+const buildUserFacingSignupError = (message, code = signupErrorCodes.unexpected, sourceError = null) => {
   const error = new Error(message);
   error.code = code;
+  error.backendCode = sourceError?.code || null;
+  error.status = sourceError?.status || null;
   return error;
 };
+
+const isExpectedSignupFailure = (error) => [
+  signupErrorCodes.emailAlreadyRegistered,
+  signupErrorCodes.invalidEmail,
+  signupErrorCodes.weakPassword,
+  signupErrorCodes.rateLimited,
+  signupErrorCodes.emailDeliveryFailed,
+  signupErrorCodes.signupUnavailable,
+  signupErrorCodes.securityCheckFailed,
+  signupErrorCodes.network,
+].includes(error?.code);
 
 const getFriendlyAuthError = (error) => {
   const msg = String(error?.message || '').trim();
@@ -97,35 +117,105 @@ const getFriendlyAuthError = (error) => {
 const getFriendlySignupError = (error) => {
   const msg = String(error?.message || '').trim();
   const normalized = msg.toLowerCase();
+  const backendCode = String(error?.code || '').trim().toLowerCase();
 
   if (
-    normalized.includes('already registered')
+    backendCode === 'user_already_exists'
+    || backendCode === 'email_exists'
+    || normalized.includes('already registered')
     || normalized.includes('user already exists')
     || normalized.includes('already been registered')
     || normalized.includes('identities')
   ) {
-    return buildUserFacingSignupError('Email already exists', signupErrorCodes.emailAlreadyRegistered);
+    return buildUserFacingSignupError(
+      'An account already uses this email. Try logging in or reset your password.',
+      signupErrorCodes.emailAlreadyRegistered,
+      error
+    );
   }
 
-  if (normalized.includes('weak password')) {
+  if (
+    backendCode === 'email_address_invalid'
+    || normalized.includes('invalid email')
+    || normalized.includes('email address is invalid')
+    || (normalized.includes('validate email') && normalized.includes('invalid'))
+    || normalized.includes('disposable email')
+  ) {
+    return buildUserFacingSignupError(
+      'Please use a valid email address that can receive messages.',
+      signupErrorCodes.invalidEmail,
+      error
+    );
+  }
+
+  if (backendCode === 'weak_password' || normalized.includes('weak password')) {
     return buildUserFacingSignupError(
       'Your password is too weak. Use uppercase, lowercase, numbers, and a special character.',
-      signupErrorCodes.weakPassword
+      signupErrorCodes.weakPassword,
+      error
     );
   }
 
   if (normalized.includes('same password') || normalized.includes('new password should be different')) {
-    return buildUserFacingSignupError(reusedPasswordMessage, signupErrorCodes.weakPassword);
+    return buildUserFacingSignupError(reusedPasswordMessage, signupErrorCodes.weakPassword, error);
+  }
+
+  if (
+    backendCode === 'over_email_send_rate_limit'
+    || backendCode === 'over_request_rate_limit'
+    || backendCode === 'rate_limit_exceeded'
+    || normalized.includes('rate limit')
+    || normalized.includes('too many requests')
+  ) {
+    return buildUserFacingSignupError(
+      'Too many signup attempts were made. Please wait a few minutes, then try again.',
+      signupErrorCodes.rateLimited,
+      error
+    );
+  }
+
+  if (backendCode === 'signup_disabled' || normalized.includes('signups not allowed') || normalized.includes('signup is disabled')) {
+    return buildUserFacingSignupError(
+      'Account creation is temporarily unavailable. Please try again later.',
+      signupErrorCodes.signupUnavailable,
+      error
+    );
+  }
+
+  if (backendCode === 'captcha_failed' || normalized.includes('captcha')) {
+    return buildUserFacingSignupError(
+      'We could not complete the security check. Please try again.',
+      signupErrorCodes.securityCheckFailed,
+      error
+    );
+  }
+
+  if (
+    normalized.includes('error sending confirmation email')
+    || normalized.includes('failed to send')
+    || normalized.includes('email provider')
+    || normalized.includes('smtp')
+  ) {
+    return buildUserFacingSignupError(
+      'We could not send the verification email right now. Please wait a moment and try again.',
+      signupErrorCodes.emailDeliveryFailed,
+      error
+    );
   }
 
   if (isNetworkErrorMessage(normalized)) {
     return buildUserFacingSignupError(
       'We could not connect right now. Please check your internet and try again.',
-      signupErrorCodes.network
+      signupErrorCodes.network,
+      error
     );
   }
 
-  return buildUserFacingSignupError('Something went wrong. Please try again.');
+  return buildUserFacingSignupError(
+    'We could not create your account right now. Please try again in a moment.',
+    signupErrorCodes.unexpected,
+    error
+  );
 };
 
 const getFriendlyGoogleAuthError = (error) => {
@@ -261,6 +351,7 @@ const resolveVisualTheme = ({ uiSettings = {}, preset = {} } = {}) => {
  */
 const getFriendlyError = (error) => {
   const msg = error.message || '';
+  const normalized = msg.toLowerCase();
   if (msg.toLowerCase().includes('invalid login credentials')) {
     return new Error('Invalid Credentials');
   }
@@ -287,6 +378,12 @@ const getFriendlyError = (error) => {
   }
   if (msg.toLowerCase().includes('auth session missing')) {
     return new Error('Your session is no longer active. Please log in again and retry the password change.');
+  }
+  if (normalized.includes('redirect') && (normalized.includes('not allowed') || normalized.includes('invalid'))) {
+    return new Error('Password reset is not configured for this mobile app. Please contact support.');
+  }
+  if (normalized.includes('rate limit') || normalized.includes('too many requests')) {
+    return new Error('Too many reset requests. Please wait a few minutes and try again.');
   }
   if (isNetworkErrorMessage(msg)) {
     return new Error('We could not connect right now. Please check your internet and try again.');
@@ -478,11 +575,19 @@ export const register = async (email, password, additionalData = {}) => {
     return { user: data.user, session: data.session, error: null };
 
   } catch (error) {
-    logAppError('auth.signup', error, {
+    const signupLogExtras = {
       email,
       role: additionalData.role || null,
       errorCode: error?.code || null,
-    });
+      backendCode: error?.backendCode || null,
+      status: error?.status || null,
+    };
+
+    if (isExpectedSignupFailure(error)) {
+      logAppEvent('auth.signup.failed', error?.message || 'Signup could not be completed.', signupLogExtras, 'info');
+    } else {
+      logAppError('auth.signup', error, signupLogExtras);
+    }
 
     await writeAuditLog({
       userEmail: email,
@@ -914,9 +1019,23 @@ export const recoverSessionFromAuthUrl = async (url) => {
 
 export const sendPasswordReset = async (email) => {
   try {
-    const redirectTo = Linking.createURL('/auth/reset-password', { scheme: APP_SCHEME });
+    // Keep the native callback stable so it exactly matches the Supabase
+    // allow-list. Linking.createURL can produce an environment-specific URL
+    // (for example an Expo development URL), which causes recovery links to
+    // return without their token on a standalone Android build.
+    const redirectTo = Platform.OS === 'web'
+      ? Linking.createURL('/auth/reset-password')
+      : MOBILE_RESET_REDIRECT;
     const { error } = await AuthAPI.sendPasswordResetEmail({ email, redirectTo });
-    if (error) throw getFriendlyError(error);
+    if (error) {
+      const friendlyError = getFriendlyError(error);
+      logAppError('auth.password_reset_failed', friendlyError.message, {
+        rawMessage: error.message || '',
+        redirectTo,
+        emailDomain: String(email || '').split('@')[1] || '',
+      });
+      throw friendlyError;
+    }
     return { success: true, error: null };
   } catch (error) {
     return { success: false, error: error.message };

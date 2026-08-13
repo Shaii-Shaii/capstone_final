@@ -1,8 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { View, StyleSheet, Text, Pressable, Alert, ScrollView, Modal, KeyboardAvoidingView, Platform, useWindowDimensions, Image, Linking, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
+import Constants from 'expo-constants';
+import * as FileSystem from 'expo-file-system/legacy';
 import { Controller, useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
@@ -44,7 +47,6 @@ import {
 } from '../src/features/hairSubmission.api';
 import {
   fetchActiveGuardianConsent,
-  fetchActiveLegalDocument,
   getDonorProfileBadge,
   GUARDIAN_CONSENT_TEXT,
   saveGuardianConsent,
@@ -57,6 +59,141 @@ const APP_VERSION_LABEL = 'Donivra v1.0.0';
 const PROFILE_ACTION_BORDER_GRAD = ['#5f2f12', '#8e4f24', '#c8864f', '#ffe7ac', '#c8864f', '#8e4f24', '#5f2f12'];
 const PROFILE_ACTION_FILL_GRAD = ['#8a111d', '#740c15', '#5c0910'];
 const PROFILE_ACTION_MUTED_FILL_GRAD = ['#f7f2eb', '#f1ebe4'];
+
+const resolvePdfViewer = () => {
+  if (Constants?.appOwnership === 'expo') return null;
+  try {
+    const pdfModule = require('react-native-pdf');
+    return pdfModule?.default || pdfModule;
+  } catch (_error) {
+    return null;
+  }
+};
+
+const Pdf = resolvePdfViewer();
+
+const getDocumentUri = (value) => {
+  if (typeof value === 'string') return value.trim();
+  if (!value || typeof value !== 'object') return '';
+  return String(value.publicUrl || value.url || value.uri || value.previewUri || '').trim();
+};
+
+const isPdfDocument = (value, uri) => (
+  String(value?.contentType || value?.mimeType || '').toLowerCase().includes('pdf')
+  || /\.pdf(?:$|[?#])/i.test(uri)
+);
+
+const getDocumentFileName = (value, uri) => {
+  const suppliedName = typeof value === 'object' ? value.fileName || value.name : '';
+  if (suppliedName) return String(suppliedName).replace(/[^a-z0-9._-]/gi, '_');
+  const pathName = uri.split('?')[0].split('/').pop();
+  return pathName || `donivra-medical-document.${isPdfDocument(value, uri) ? 'pdf' : 'jpg'}`;
+};
+
+function PatientMedicalDocumentModal({ visible, onClose, documentValue, roles }) {
+  const [isDownloading, setIsDownloading] = useState(false);
+  const uri = getDocumentUri(documentValue);
+  const isPdf = isPdfDocument(documentValue, uri);
+
+  useEffect(() => {
+    if (!visible) setIsDownloading(false);
+  }, [visible]);
+
+  const handleDownload = async () => {
+    if (!uri || isDownloading) return;
+    setIsDownloading(true);
+    let temporaryUri = '';
+    try {
+      if (!FileSystem.documentDirectory) throw new Error('Device storage is not available right now.');
+      const fileName = `${Date.now()}-${getDocumentFileName(documentValue, uri)}`;
+
+      if (Platform.OS === 'android') {
+        // Android's app document directory is private and does not appear in
+        // the user's Downloads app. SAF lets the user grant access to a public
+        // folder (normally Downloads) and writes the file there.
+        const saf = FileSystem.StorageAccessFramework;
+        if (!saf?.requestDirectoryPermissionsAsync || !saf?.createFileAsync) {
+          throw new Error('Public device storage is not available in this build.');
+        }
+
+        const initialFolder = saf.getUriForDirectoryInRoot?.('Download') || null;
+        const permission = await saf.requestDirectoryPermissionsAsync(initialFolder);
+        if (!permission?.granted || !permission.directoryUri) return;
+
+        temporaryUri = `${FileSystem.cacheDirectory || FileSystem.documentDirectory}donivra-${fileName}`;
+        const result = await FileSystem.downloadAsync(uri, temporaryUri);
+        const base64 = await FileSystem.readAsStringAsync(result.uri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        const mimeType = isPdf
+          ? 'application/pdf'
+          : String(documentValue?.contentType || documentValue?.mimeType || 'image/jpeg');
+        const savedUri = await saf.createFileAsync(permission.directoryUri, fileName, mimeType);
+        await saf.writeAsStringAsync(savedUri, base64, { encoding: FileSystem.EncodingType.Base64 });
+        Alert.alert('Download complete', 'The medical document was saved to the folder you selected. Choose Downloads to find it in your device storage.');
+      } else {
+        const directoryUri = `${FileSystem.documentDirectory}medical-documents/`;
+        const targetUri = `${directoryUri}${fileName}`;
+        await FileSystem.makeDirectoryAsync(directoryUri, { intermediates: true }).catch(() => {});
+        const result = await FileSystem.downloadAsync(uri, targetUri);
+        const fileInfo = await FileSystem.getInfoAsync(result.uri);
+        if (!fileInfo.exists) throw new Error('The document could not be saved locally.');
+        Alert.alert('Download complete', 'The medical document was saved to Donivra local storage.');
+      }
+    } catch (error) {
+      Alert.alert('Download failed', error?.message || 'Unable to download the medical document.');
+    } finally {
+      if (temporaryUri) await FileSystem.deleteAsync(temporaryUri, { idempotent: true }).catch(() => {});
+      setIsDownloading(false);
+    }
+  };
+
+  const handleOpenExternally = async () => {
+    if (!uri) return;
+    try {
+      if (await Linking.canOpenURL(uri)) await Linking.openURL(uri);
+      else Alert.alert('Cannot open file', 'This document cannot be opened on this device.');
+    } catch (error) {
+      Alert.alert('Cannot open file', error?.message || 'Unable to open the medical document.');
+    }
+  };
+
+  return (
+    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
+      <SafeAreaView style={[styles.documentModal, { backgroundColor: roles.pageBackground }]} edges={['top', 'bottom']}>
+        <View style={[styles.documentModalHeader, { backgroundColor: roles.primaryActionBackground }]}>
+          <Text style={styles.documentModalTitle}>Medical Document</Text>
+          <Pressable accessibilityLabel="Close medical document" onPress={onClose} style={styles.documentModalClose}>
+            <AppIcon name="close" state="default" color="#fff" />
+          </Pressable>
+        </View>
+        <View style={styles.documentModalContent}>
+          {isPdf && Pdf ? (
+            <Pdf source={{ uri, cache: true }} style={styles.documentPdf} trustAllCerts={false} />
+          ) : !isPdf ? (
+            <Image source={{ uri }} style={styles.documentImage} resizeMode="contain" />
+          ) : (
+            <View style={styles.documentUnavailable}>
+              <AppIcon name="file-pdf-box" state="default" color={roles.primaryActionBackground} size="xl" />
+              <Text style={[styles.documentUnavailableTitle, { color: roles.headingText }]}>PDF preview unavailable</Text>
+              <Text style={[styles.documentUnavailableText, { color: roles.bodyText }]}>Open the file externally to view it.</Text>
+              <AppButton title="Open externally" onPress={handleOpenExternally} />
+            </View>
+          )}
+        </View>
+        <View style={styles.documentModalActions}>
+          <AppButton
+            title={isDownloading ? 'Preparing file...' : 'Download document'}
+            leading={<AppIcon name="download" state="default" color="#fff" />}
+            onPress={handleDownload}
+            loading={isDownloading}
+            disabled={!uri || isDownloading}
+          />
+        </View>
+      </SafeAreaView>
+    </Modal>
+  );
+}
 const formatPhilippineMobileInput = (value) => String(value || '').replace(/\D/g, '').slice(0, 11);
 
 const getMaximumBirthdate = () => {
@@ -284,10 +421,8 @@ export default function ProfileScreen() {
   const [activeProfilePicker, setActiveProfilePicker] = useState('');
   const [guardianConsent, setGuardianConsent] = useState(null);
   const [isGuardianConsentModalOpen, setIsGuardianConsentModalOpen] = useState(false);
+  const [isMedicalDocumentModalOpen, setIsMedicalDocumentModalOpen] = useState(false);
   const [isSavingGuardianConsent, setIsSavingGuardianConsent] = useState(false);
-  const [guardianConsentDocument, setGuardianConsentDocument] = useState(null);
-  const [guardianConsentDocumentError, setGuardianConsentDocumentError] = useState('');
-  const [isLoadingGuardianConsentDocument, setIsLoadingGuardianConsentDocument] = useState(false);
   const [guardianConsentForm, setGuardianConsentForm] = useState({
     guardianFullName: '',
     guardianRelationship: '',
@@ -480,7 +615,8 @@ export default function ProfileScreen() {
   const isMinorProfileDraft = setupDonorAgeBadge && setupDonorAgeBadge.category !== 'Adult';
   const isAdultDonorBadge = setupDonorAgeBadge?.category === 'Adult';
   const hasActiveGuardianConsent = Boolean(guardianConsent?.guardian_consent_id || guardianConsent?.Guardian_Consent_ID);
-  const guardianConsentText = guardianConsentDocument?.content || guardianConsentDocument?.summary || GUARDIAN_CONSENT_TEXT;
+  const guardianConsentText = guardianConsent?.consent_text_snapshot
+    || GUARDIAN_CONSENT_TEXT;
   const passwordStrengthMessage = getPasswordStrengthMessage(watchedNewPassword);
   const passwordStrengthVariant = watchedNewPassword
     ? passwordStrengthMessage === 'Strong password'
@@ -535,22 +671,9 @@ export default function ProfileScreen() {
     setGuardianConsentErrors({});
   }, [isSavingGuardianConsent]);
 
-  const openGuardianConsentModal = useCallback(async () => {
+  const openGuardianConsentModal = useCallback(() => {
     setIsGuardianConsentModalOpen(true);
-    if (guardianConsentDocument || isLoadingGuardianConsentDocument) return;
-
-    setGuardianConsentDocumentError('');
-    setIsLoadingGuardianConsentDocument(true);
-    const result = await fetchActiveLegalDocument('Guardian Consent');
-    setIsLoadingGuardianConsentDocument(false);
-
-    if (result.error) {
-      setGuardianConsentDocumentError(result.error.message || 'Guardian consent document could not be loaded.');
-      return;
-    }
-
-    setGuardianConsentDocument(result.data);
-  }, [guardianConsentDocument, isLoadingGuardianConsentDocument]);
+  }, []);
 
   const submitGuardianConsent = useCallback(async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -677,12 +800,7 @@ export default function ProfileScreen() {
     }
 
     try {
-      const canOpen = await Linking.canOpenURL(patientMedicalDocument);
-      if (!canOpen) {
-        setFloatingFeedback('error', 'Cannot Open File', 'The linked document cannot be opened on this device.');
-        return;
-      }
-      await Linking.openURL(patientMedicalDocument);
+      setIsMedicalDocumentModalOpen(true);
     } catch (error) {
       setFloatingFeedback('error', 'Cannot Open File', error?.message || 'Unable to open the medical document.');
     }
@@ -1042,6 +1160,13 @@ export default function ProfileScreen() {
             />
           </View>
         </View>
+
+        <PatientMedicalDocumentModal
+          visible={isMedicalDocumentModalOpen}
+          onClose={() => setIsMedicalDocumentModalOpen(false)}
+          documentValue={patientMedicalDocument}
+          roles={roles}
+        />
 
         <View style={styles.profileSection}>
           <SectionTitleRow
@@ -1650,12 +1775,10 @@ export default function ProfileScreen() {
 
                   <View style={styles.guardianConsentNotice}>
                     <Text style={styles.guardianConsentNoticeTitle}>
-                      {guardianConsentDocument?.title || 'Guardian Consent Agreement'}
+                      Guardian Consent Agreement
                     </Text>
                     <Text style={styles.guardianConsentNoticeText}>
-                      {isLoadingGuardianConsentDocument
-                        ? 'Loading guardian consent document...'
-                        : guardianConsentDocumentError || guardianConsentText}
+                      {guardianConsentText}
                     </Text>
                   </View>
 
@@ -2940,6 +3063,65 @@ const styles = StyleSheet.create({
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.caption,
     color: theme.colors.textError,
+  },
+  documentModal: {
+    flex: 1,
+  },
+  documentModalHeader: {
+    minHeight: 64,
+    paddingHorizontal: theme.spacing.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  documentModalTitle: {
+    color: '#fff',
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.titleSm,
+    fontWeight: theme.typography.weights.bold,
+  },
+  documentModalClose: {
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  documentModalContent: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: theme.spacing.md,
+  },
+  documentPdf: {
+    flex: 1,
+    width: '100%',
+  },
+  documentImage: {
+    width: '100%',
+    height: '100%',
+  },
+  documentUnavailable: {
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    padding: theme.spacing.xl,
+  },
+  documentUnavailableTitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.titleSm,
+    fontWeight: theme.typography.weights.bold,
+    textAlign: 'center',
+  },
+  documentUnavailableText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.body,
+    textAlign: 'center',
+  },
+  documentModalActions: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.md,
+    paddingBottom: theme.spacing.xl,
+    alignItems: 'center',
+    gap: theme.spacing.sm,
   },
   modalKeyboardWrap: {
     flex: 1,

@@ -4,7 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { HairLogDetailModal } from '../../src/components/hair/HairLogDetailModal';
 import { DonorTopBar } from '../../src/components/donor/DonorTopBar';
-import { fetchHairSubmissionsByUserId } from '../../src/features/hairSubmission.api';
+import { fetchHairSubmissionsByUserId, fetchLatestDonationRequirement } from '../../src/features/hairSubmission.api';
 import { useNotifications } from '../../src/hooks/useNotifications';
 import { useAuth } from '../../src/providers/AuthProvider';
 import { resolveThemeRoles, theme } from '../../src/design-system/theme';
@@ -31,6 +31,7 @@ export default function DonorHairCheckDetailsScreen() {
     mode: 'badge',
   });
   const [entry, setEntry] = React.useState(null);
+  const [donationRequirement, setDonationRequirement] = React.useState(null);
   const [error, setError] = React.useState('');
 
   React.useEffect(() => {
@@ -42,8 +43,12 @@ export default function DonorHairCheckDetailsScreen() {
         return;
       }
 
-      const result = await fetchHairSubmissionsByUserId(user.id, 30);
+      const [result, requirementResult] = await Promise.all([
+        fetchHairSubmissionsByUserId(user.id, 30),
+        fetchLatestDonationRequirement(),
+      ]);
       if (!mounted) return;
+      setDonationRequirement(requirementResult.data || null);
 
       const submissions = Array.isArray(result.data) ? result.data : [];
       for (const submission of submissions) {
@@ -89,6 +94,7 @@ export default function DonorHairCheckDetailsScreen() {
           pageMode
           dateKey={toDateKey(entry.screening?.created_at)}
           entries={[entry]}
+          donationRequirement={donationRequirement}
           onClose={() => router.back()}
         />
       </SafeAreaView>

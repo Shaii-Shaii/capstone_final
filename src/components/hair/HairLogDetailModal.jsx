@@ -19,6 +19,7 @@ import {
 } from '../../features/hairSubmission.api';
 import { resolveThemeRoles, theme } from '../../design-system/theme';
 import { useAuth } from '../../providers/AuthProvider';
+import { alignScreeningWithMinimumLength, formatEstimatedLengthInches } from '../../utils/hairLength';
 
 const CAPTURE_NOISE_PATTERNS = [
   'retake', 'lighting', 'image quality', 'photo quality', 'clearer photo',
@@ -178,13 +179,6 @@ const formatCountdown = (milliseconds = 0) => {
   return `${seconds}s`;
 };
 
-const formatLengthLabel = (value) => {
-  const numericValue = Number(value);
-  if (!Number.isFinite(numericValue) || numericValue <= 0) return 'Not detected';
-  const inches = numericValue / 2.54;
-  return `${inches.toFixed(1)} inches`;
-};
-
 const formatDensityScore = (value) => {
   const score = Number(value);
   return Number.isFinite(score) ? `${Math.round(score)} / 100` : 'Not enough data';
@@ -264,6 +258,7 @@ export function HairLogDetailModal({
   events = [],
   onClose,
   pageMode = false,
+  donationRequirement = null,
 }) {
   const { resolvedTheme } = useAuth();
   const roles = resolveThemeRoles(resolvedTheme);
@@ -370,7 +365,7 @@ export function HairLogDetailModal({
 
   if (!visible || (!activeEntry?.screening && !events.length)) return null;
 
-  const screening = activeEntry?.screening || null;
+  const screening = alignScreeningWithMinimumLength(activeEntry?.screening || null, donationRequirement);
   const hasScreening = Boolean(screening);
   const assessment = hasScreening
     ? getCanonicalHairAssessment(screening)
@@ -413,7 +408,7 @@ export function HairLogDetailModal({
   const assessmentMetrics = [
     { label: 'Condition', value: screening?.detected_condition || 'Not detected' },
     { label: 'Donation decision', value: screening?.decision || 'Not detected' },
-    { label: 'Length', value: formatLengthLabel(screening?.estimated_length) },
+    { label: 'Length', value: formatEstimatedLengthInches(screening) },
     { label: 'Color', value: screening?.detected_color || 'Not detected' },
     { label: 'Texture', value: screening?.detected_texture || 'Not detected' },
     { label: 'Density', value: screening?.detected_density || 'Not detected' },
