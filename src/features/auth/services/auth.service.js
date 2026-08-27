@@ -86,6 +86,10 @@ const buildUserFacingSignupError = (message, code = signupErrorCodes.unexpected,
   return error;
 };
 
+const isMissingSupabaseConfigError = (error) => (
+  String(error?.message || '').trim().toLowerCase().includes('supabase environment variables are not configured')
+);
+
 const isExpectedSignupFailure = (error) => [
   signupErrorCodes.emailAlreadyRegistered,
   signupErrorCodes.invalidEmail,
@@ -748,7 +752,8 @@ export const getResolvedSystemTheme = async () => {
     ]);
 
     if (uiSettingsResult.error) {
-      const isNetworkFailure = isNetworkErrorMessage(uiSettingsResult.error?.message);
+      const isNetworkFailure = isNetworkErrorMessage(uiSettingsResult.error?.message)
+        || isMissingSupabaseConfigError(uiSettingsResult.error);
       if (isNetworkFailure) {
         logAppEvent(
           'auth.theme.ui_settings_unavailable',
@@ -764,7 +769,8 @@ export const getResolvedSystemTheme = async () => {
     }
 
     if (defaultPresetResult.error) {
-      const isNetworkFailure = isNetworkErrorMessage(defaultPresetResult.error?.message);
+      const isNetworkFailure = isNetworkErrorMessage(defaultPresetResult.error?.message)
+        || isMissingSupabaseConfigError(defaultPresetResult.error);
       if (isNetworkFailure) {
         logAppEvent(
           'auth.theme.theme_preset_unavailable',

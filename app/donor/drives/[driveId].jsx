@@ -8,7 +8,6 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  UIManager,
   useWindowDimensions,
   View,
 } from 'react-native';
@@ -33,35 +32,10 @@ import {
 import { DONOR_PERMISSION_REASONS } from '../../../src/features/donorCompliance.service';
 import { supabase } from '../../../src/api/supabase/client';
 import { resolveThemeRoles, theme } from '../../../src/design-system/theme';
+import { Map, Camera, Marker } from '@maplibre/maplibre-react-native';
 
 const DRIVE_REALTIME_DEBOUNCE_MS = 380;
-
-const resolveNativeMapComponents = () => {
-  if (!UIManager.getViewManagerConfig?.('AIRMap')) {
-    return {
-      MapView: null,
-      Marker: null,
-      PROVIDER_GOOGLE: null,
-    };
-  }
-
-  try {
-    const maps = require('react-native-maps');
-    return {
-      MapView: maps.default,
-      Marker: maps.Marker,
-      PROVIDER_GOOGLE: maps.PROVIDER_GOOGLE,
-    };
-  } catch (_error) {
-    return {
-      MapView: null,
-      Marker: null,
-      PROVIDER_GOOGLE: null,
-    };
-  }
-};
-
-const NativeMapComponents = resolveNativeMapComponents();
+const OPENFREEMAP_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
 
 const formatDriveDate = (startDate, endDate) => {
   if (!startDate) return 'Date to follow';
@@ -140,12 +114,12 @@ const buildDirectionsUrl = (drive = null) => {
   if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
     const coordinate = `${latitude},${longitude}`;
     if (Platform.OS === 'ios') return `http://maps.apple.com/?daddr=${coordinate}`;
-    return `https://www.google.com/maps/dir/?api=1&destination=${coordinate}`;
+    return `geo:${coordinate}?q=${coordinate}`;
   }
 
   const address = drive?.address_label || drive?.location_label || '';
   if (!address) return '';
-  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`;
+  return `geo:0,0?q=${encodeURIComponent(address)}`;
 };
 
 const getDriveCoordinates = (drive = null) => {
@@ -199,16 +173,7 @@ function EventMapPreview({ drive }) {
   const roles = useResponsiveThemeRoles(resolvedTheme);
   const coordinates = getDriveCoordinates(drive);
   const directionsUrl = buildDirectionsUrl(drive);
-  const NativeMapView = NativeMapComponents.MapView;
-  const NativeMapMarker = NativeMapComponents.Marker;
-  const mapRegion = coordinates
-    ? {
-        ...coordinates,
-        latitudeDelta: 0.01,
-        longitudeDelta: 0.01,
-      }
-    : null;
-  const canRenderNativeMap = Boolean(mapRegion && NativeMapView && NativeMapMarker);
+  const mapCoordinate = coordinates ? [coordinates.longitude, coordinates.latitude] : null;
 
   const handleOpenDirections = React.useCallback(async () => {
     if (!directionsUrl) return;
@@ -224,26 +189,15 @@ function EventMapPreview({ drive }) {
         { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder },
       ]}
     >
-      {canRenderNativeMap ? (
-        <NativeMapView
-          provider={Platform.OS === 'android' ? NativeMapComponents.PROVIDER_GOOGLE : undefined}
-          style={styles.mapNativeView}
-          initialRegion={mapRegion}
-          mapType="standard"
-          liteMode={Platform.OS === 'android'}
-          scrollEnabled={false}
-          zoomEnabled={false}
-          rotateEnabled={false}
-          pitchEnabled={false}
-          toolbarEnabled={false}
-          moveOnMarkerPress={false}
-        >
-          <NativeMapMarker
-            coordinate={coordinates}
-            title={drive?.event_title || 'Donation drive'}
-            description={getMapPreviewLabel(drive)}
-          />
-        </NativeMapView>
+      {mapCoordinate ? (
+        <Map style={styles.mapNativeView} mapStyle={OPENFREEMAP_STYLE} scrollEnabled={false} rotateEnabled={false} pitchEnabled={false}>
+          <Camera initialViewState={{ center: mapCoordinate, zoom: 14 }} />
+          <Marker id={`drive-${drive?.event_request_id || drive?.Event_Request_ID || 'location'}`} lngLat={mapCoordinate}>
+            <View style={styles.mapMarker}>
+              <MaterialCommunityIcons name="map-marker-radius-outline" size={34} color={roles.primaryActionBackground} />
+            </View>
+          </Marker>
+        </Map>
       ) : (
         <View style={styles.mapFallback}>
           <MaterialCommunityIcons name="map-marker-radius-outline" size={34} color={roles.primaryActionBackground} />
@@ -255,6 +209,12 @@ function EventMapPreview({ drive }) {
           </Text>
         </View>
       )}
+
+      {mapCoordinate ? (
+        <Text style={styles.mapAttribution}>
+          © OpenStreetMap contributors © OpenFreeMap
+        </Text>
+      ) : null}
 
       {directionsUrl ? (
         <Pressable
@@ -1117,6 +1077,21 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     width: '100%',
     height: '100%',
+  },
+  mapMarker: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  mapAttribution: {
+    position: 'absolute',
+    left: theme.spacing.xs,
+    bottom: theme.spacing.xs,
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+    backgroundColor: 'rgba(255, 255, 255, 0.86)',
+    color: '#374151',
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
   },
   mapFallback: {
     ...StyleSheet.absoluteFillObject,

@@ -10,6 +10,18 @@ This is an [Expo](https://expo.dev) project created with [`create-expo-app`](htt
    npm install
    ```
 
+   Create a local environment file before running the app:
+
+   ```bash
+   copy .env.example .env
+   ```
+
+   Fill in `EXPO_PUBLIC_SUPABASE_URL` and
+   `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` from the Supabase project settings.
+   The app intentionally falls back to a signed-out/local theme when these
+   values are missing, so a fresh clone does not crash; authenticated features
+   require the values to be configured locally.
+
 2. Start the native mobile app with Expo CLI
 
    ```bash
