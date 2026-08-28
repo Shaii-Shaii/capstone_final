@@ -1,8 +1,10 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import * as Haptics from 'expo-haptics';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { DashboardLayout } from '../../src/components/layout/DashboardLayout';
+import { DashboardHeaderSurface } from '../../src/components/layout/DashboardHeaderSurface';
 import { DonorTopBar } from '../../src/components/donor/DonorTopBar';
 import { AppButton } from '../../src/components/ui/AppButton';
 import { AppCard } from '../../src/components/ui/AppCard';
@@ -15,9 +17,9 @@ import { useNotifications } from '../../src/hooks/useNotifications';
 import { submitDonorFeedback } from '../../src/features/feedback.api';
 
 const FEEDBACK_TYPES = [
-  { key: 'issue', label: 'Issue', icon: 'error' },
-  { key: 'suggestion', label: 'Suggestion', icon: 'sparkle' },
-  { key: 'experience', label: 'Experience', icon: 'success' },
+  { key: 'issue', label: 'Issue', helper: 'Report a problem', icon: 'alert-circle-outline' },
+  { key: 'suggestion', label: 'Suggestion', helper: 'Share an idea', icon: 'lightbulb-outline' },
+  { key: 'experience', label: 'Experience', helper: 'Tell us how it went', icon: 'heart-outline' },
 ];
 const MIN_MESSAGE_LENGTH = 10;
 const MAX_MESSAGE_LENGTH = 2000;
@@ -25,7 +27,13 @@ const MAX_MESSAGE_LENGTH = 2000;
 export default function DonorFeedbackScreen() {
   const router = useRouter();
   const { user, profile, resolvedTheme } = useAuth();
-  const { unreadCount } = useNotifications(user?.id, 'donor');
+  const { unreadCount } = useNotifications({
+    role: 'donor',
+    userId: user?.id,
+    userEmail: user?.email || profile?.email || '',
+    databaseUserId: profile?.user_id,
+    mode: 'badge',
+  });
   const roles = resolveThemeRoles(resolvedTheme);
   const [selectedType, setSelectedType] = React.useState(FEEDBACK_TYPES[0].key);
   const [message, setMessage] = React.useState('');
@@ -70,13 +78,14 @@ export default function DonorFeedbackScreen() {
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setFeedback({
       type: 'success',
-      title: 'Feedback submitted',
-      message: 'Your feedback was saved to the database.',
+      title: 'Thank you for helping us improve',
+      message: 'Your feedback was sent to the Donivra team.',
     });
   }, [message, profile?.user_id, selectedType]);
 
   const messageLength = message.trim().length;
   const canSubmit = messageLength >= MIN_MESSAGE_LENGTH && !isSubmitting;
+  const remainingRequiredCharacters = Math.max(MIN_MESSAGE_LENGTH - messageLength, 0);
 
   const handleSelectType = React.useCallback(async (type) => {
     setSelectedType(type);
@@ -99,16 +108,18 @@ export default function DonorFeedbackScreen() {
   return (
     <DashboardLayout
       header={(
-        <DonorTopBar
-          title="Feedback"
-          subtitle="Send a note to the team"
-          showBack
-          showFeedbackAction={false}
-          unreadCount={unreadCount}
-          onBackPress={() => router.back()}
-          onNotificationsPress={() => router.navigate('/donor/notifications')}
-          onProfilePress={() => router.navigate('/profile')}
-        />
+        <DashboardHeaderSurface>
+          <DonorTopBar
+            title="Feedback"
+            subtitle="Help us improve Donivra"
+            showBack
+            showFeedbackAction={false}
+            unreadCount={unreadCount}
+            onBackPress={() => router.back()}
+            onNotificationsPress={() => router.navigate('/donor/notifications')}
+            onProfilePress={() => router.navigate('/profile')}
+          />
+        </DashboardHeaderSurface>
       )}
       navItems={donorDashboardNavItems}
       activeNavKey=""
@@ -127,13 +138,33 @@ export default function DonorFeedbackScreen() {
         />
       ) : null}
 
-      <AppCard variant="outline" radius="md" padding="md" style={styles.card}>
+      <LinearGradient
+        colors={[theme.colors.palette.wine900, theme.colors.palette.wine700]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.feedbackIntro}
+      >
+        <View style={styles.feedbackIntroIcon}>
+          <AppIcon name="message-text-outline" size="lg" color="#FFFFFF" />
+        </View>
+        <View style={styles.feedbackIntroCopy}>
+          <Text style={styles.feedbackIntroTitle}>We would love to hear from you</Text>
+          <Text style={styles.feedbackIntroText}>Share a problem, an idea, or your experience. Your message helps us make the app better.</Text>
+        </View>
+      </LinearGradient>
+
+      <AppCard variant="outline" radius="lg" padding="md" style={[styles.card, { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder }]}>
         <View style={styles.formHeader}>
-          <Text style={[styles.formTitle, { color: roles.headingText }]}>Category</Text>
-          <Text style={[styles.formMeta, { color: roles.metaText }]}>Saved with your donor account</Text>
+          <View style={[styles.formStep, { backgroundColor: roles.primaryActionBackground }]}>
+            <Text style={[styles.formStepText, { color: roles.primaryActionText }]}>1</Text>
+          </View>
+          <View style={styles.formHeaderCopy}>
+            <Text style={[styles.formTitle, { color: roles.headingText }]}>What would you like to share?</Text>
+            <Text style={[styles.formMeta, { color: roles.metaText }]}>Choose the option that best matches your message.</Text>
+          </View>
         </View>
 
-        <View style={[styles.typeGrid, { borderColor: roles.defaultCardBorder }]}>
+        <View style={styles.typeGrid}>
           {FEEDBACK_TYPES.map((item) => {
             const isActive = item.key === selectedType;
             return (
@@ -142,55 +173,80 @@ export default function DonorFeedbackScreen() {
                 onPress={() => handleSelectType(item.key)}
                 accessibilityRole="button"
                 accessibilityState={{ selected: isActive }}
-                style={({ pressed }) => [
+                style={[
                   styles.typeButton,
                   {
-                    backgroundColor: isActive ? roles.supportCardBackground : 'transparent',
-                    borderColor: isActive ? roles.defaultCardBorder : 'transparent',
+                    backgroundColor: isActive ? roles.iconPrimarySurface : roles.pageBackground,
+                    borderColor: isActive ? roles.primaryActionBackground : roles.defaultCardBorder,
                   },
-                  pressed ? styles.typeButtonPressed : null,
                 ]}
               >
-                <AppIcon name={item.icon} size="sm" color={isActive ? roles.iconPrimaryColor : roles.metaText} />
-                <Text style={[styles.typeButtonLabel, { color: isActive ? roles.headingText : roles.metaText }]}>
-                  {item.label}
-                </Text>
+                <View style={styles.typeButtonContent}>
+                  <View style={[styles.typeIcon, { backgroundColor: isActive ? roles.primaryActionBackground : roles.defaultCardBackground }]}>
+                    <AppIcon name={item.icon} size="md" color={isActive ? roles.primaryActionText : roles.primaryActionBackground} />
+                  </View>
+                  <Text style={[styles.typeButtonLabel, { color: roles.headingText }]}>{item.label}</Text>
+                  <Text numberOfLines={2} style={[styles.typeButtonHelper, { color: roles.metaText }]}>{item.helper}</Text>
+                  {isActive ? (
+                    <View style={[styles.typeSelected, { backgroundColor: roles.primaryActionBackground }]}>
+                      <AppIcon name="check" size="sm" color={roles.primaryActionText} />
+                    </View>
+                  ) : null}
+                </View>
               </Pressable>
             );
           })}
         </View>
 
         <View style={styles.fieldGroup}>
+          <View style={styles.formHeader}>
+            <View style={[styles.formStep, { backgroundColor: roles.primaryActionBackground }]}>
+              <Text style={[styles.formStepText, { color: roles.primaryActionText }]}>2</Text>
+            </View>
+            <View style={styles.formHeaderCopy}>
+              <Text style={[styles.formTitle, { color: roles.headingText }]}>Tell us more</Text>
+              <Text style={[styles.formMeta, { color: roles.metaText }]}>A clear description helps the team understand your feedback.</Text>
+            </View>
+          </View>
           <View style={styles.fieldHeader}>
-            <Text style={[styles.label, { color: roles.headingText }]}>Message</Text>
-            <Text style={[styles.counter, { color: messageLength >= MIN_MESSAGE_LENGTH ? roles.metaText : roles.iconPrimaryColor }]}>
-              {messageLength}
-            </Text>
+            <Text style={[styles.label, { color: roles.headingText }]}>Your message</Text>
+            <Text style={[styles.counter, { color: roles.metaText }]}>{messageLength}/{MAX_MESSAGE_LENGTH}</Text>
           </View>
           <TextInput
             value={message}
             onChangeText={handleMessageChange}
             multiline
             textAlignVertical="top"
-            placeholder="Describe the issue, suggestion, or experience."
+            placeholder="What happened, or what would you like us to improve?"
             placeholderTextColor={roles.metaText}
             style={[
               styles.messageInput,
               {
                 color: roles.headingText,
-                backgroundColor: 'transparent',
+                backgroundColor: roles.pageBackground,
                 borderColor: roles.defaultCardBorder,
               },
             ]}
           />
           <Text style={[styles.helperText, { color: roles.metaText }]}>
-            Minimum {MIN_MESSAGE_LENGTH} characters.
+            {remainingRequiredCharacters > 0
+              ? `Add ${remainingRequiredCharacters} more ${remainingRequiredCharacters === 1 ? 'character' : 'characters'} to continue.`
+              : 'Your message is ready to send.'}
           </Text>
+        </View>
+
+        <View style={[styles.privacyNote, { backgroundColor: roles.iconPrimarySurface }]}>
+          <AppIcon name="shield" size="sm" color={roles.primaryActionBackground} />
+          <Text style={[styles.privacyNoteText, { color: roles.bodyText }]}>Your feedback is linked to your account so the team can review it properly.</Text>
         </View>
 
         <View style={styles.submitRow}>
           <AppButton
-            title={isSubmitting ? 'Submitting...' : 'Submit feedback'}
+            title={isSubmitting
+              ? 'Sending feedback...'
+              : canSubmit
+                ? 'Send feedback'
+                : `Write ${remainingRequiredCharacters} more`}
             onPress={handleSubmit}
             loading={isSubmitting}
             disabled={!canSubmit}
@@ -204,52 +260,127 @@ export default function DonorFeedbackScreen() {
 }
 
 const styles = StyleSheet.create({
+  feedbackIntro: {
+    minHeight: 126,
+    borderRadius: theme.radius.xl,
+    padding: theme.spacing.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    overflow: 'hidden',
+    ...theme.shadows.card,
+  },
+  feedbackIntroIcon: {
+    width: 50,
+    height: 50,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.24)',
+  },
+  feedbackIntroCopy: {
+    flex: 1,
+    gap: 5,
+  },
+  feedbackIntroTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.titleSm,
+    fontWeight: theme.typography.weights.bold,
+    color: '#FFFFFF',
+  },
+  feedbackIntroText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+    lineHeight: 19,
+    color: '#F9EDEF',
+  },
   card: {
-    gap: theme.spacing.sm,
-    borderRadius: 12,
-    shadowOpacity: 0,
-    elevation: 0,
+    gap: theme.spacing.lg,
+    borderRadius: theme.radius.xl,
+    ...theme.shadows.soft,
   },
   formHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  formStep: {
+    width: 30,
+    height: 30,
+    borderRadius: theme.radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  formStepText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    fontWeight: theme.typography.weights.bold,
+  },
+  formHeaderCopy: {
+    flex: 1,
     gap: 2,
   },
   formTitle: {
     fontFamily: theme.typography.fontFamilyDisplay,
-    fontSize: theme.typography.compact.bodyLg,
+    fontSize: theme.typography.semantic.body,
+    fontWeight: theme.typography.weights.bold,
   },
   formMeta: {
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.caption,
   },
   typeGrid: {
-    minHeight: 44,
-    borderRadius: 10,
-    borderWidth: 1,
-    padding: 3,
     flexDirection: 'row',
-    gap: 3,
+    gap: theme.spacing.xs,
   },
   typeButton: {
     flex: 1,
-    minHeight: 38,
+    minHeight: 108,
     borderWidth: 1,
-    borderRadius: 8,
-    paddingHorizontal: 6,
-    flexDirection: 'row',
+    borderRadius: theme.radius.lg,
+    overflow: 'hidden',
+  },
+  typeButtonContent: {
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 5,
+    gap: 4,
+    paddingHorizontal: 4,
+    paddingVertical: theme.spacing.sm,
   },
-  typeButtonPressed: {
-    opacity: 0.86,
+  typeIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: theme.radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   typeButtonLabel: {
     fontFamily: theme.typography.fontFamily,
     fontSize: 11,
     fontWeight: theme.typography.weights.bold,
+    textAlign: 'center',
+  },
+  typeButtonHelper: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    lineHeight: 13,
+    textAlign: 'center',
+  },
+  typeSelected: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    width: 18,
+    height: 18,
+    borderRadius: theme.radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   fieldGroup: {
-    gap: 6,
+    gap: theme.spacing.sm,
   },
   fieldHeader: {
     flexDirection: 'row',
@@ -268,9 +399,9 @@ const styles = StyleSheet.create({
     fontWeight: theme.typography.weights.semibold,
   },
   messageInput: {
-    minHeight: 128,
+    minHeight: 148,
     borderWidth: 1,
-    borderRadius: 10,
+    borderRadius: theme.radius.lg,
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.sm,
     fontFamily: theme.typography.fontFamily,
@@ -281,10 +412,23 @@ const styles = StyleSheet.create({
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.caption,
   },
+  privacyNote: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: theme.spacing.sm,
+    borderRadius: theme.radius.md,
+    padding: theme.spacing.md,
+  },
+  privacyNoteText: {
+    flex: 1,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 17,
+  },
   submitRow: {
     marginTop: theme.spacing.xs,
   },
   submitButton: {
-    borderRadius: 12,
+    borderRadius: theme.radius.lg,
   },
 });

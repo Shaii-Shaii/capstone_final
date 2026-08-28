@@ -70,6 +70,7 @@ function GoogleButton({ onPress, disabled, loading, roles }) {
   return (
     <Pressable
       accessibilityRole="button"
+      accessibilityLabel="Sign up with Google"
       disabled={isInactive}
       onPress={onPress}
       style={({ pressed }) => [
@@ -82,18 +83,20 @@ function GoogleButton({ onPress, disabled, loading, roles }) {
         isInactive ? styles.disabledButton : null,
       ]}
     >
-      {loading ? (
-        <ActivityIndicator color={roles.headingText} />
-      ) : (
-        <>
-          <View style={styles.googleLogoSlot}>
-            <Image source={googleLogo} style={styles.googleLogo} resizeMode="contain" />
-          </View>
-          <Text style={[styles.socialButtonText, { color: roles.headingText }]}>
-            Sign up with Google
-          </Text>
-        </>
-      )}
+      <View style={styles.socialButtonContent}>
+        {loading ? (
+          <ActivityIndicator color={roles.headingText} />
+        ) : (
+          <>
+            <View style={styles.googleLogoSlot}>
+              <Image source={googleLogo} style={styles.googleLogo} resizeMode="contain" />
+            </View>
+            <Text style={[styles.socialButtonText, { color: roles.headingText }]}>
+              Sign up with Google
+            </Text>
+          </>
+        )}
+      </View>
     </Pressable>
   );
 }
@@ -409,13 +412,20 @@ const styles = StyleSheet.create({
 
   // Google button
   socialButton: {
+    width: '100%',
     minHeight: 50,
     borderWidth: 1,
     borderRadius: 14,
+    overflow: 'hidden',
+  },
+  socialButtonContent: {
+    width: '100%',
+    minHeight: 48,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.lg,
   },
   googleLogo: {
     width: 18,

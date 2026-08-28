@@ -1921,12 +1921,45 @@ export const getHairSubmissionImageSignedUrl = async (path, expiresIn = 3600) =>
     return { data: '', error: new Error('Image path is required.') };
   }
 
+  const rawPath = String(path).trim();
+  if (/^(data:|file:|content:|blob:)/i.test(rawPath)) {
+    return { data: rawPath, error: null };
+  }
+
+  let objectPath = rawPath;
+  const directUrlFallback = /^https?:\/\//i.test(rawPath) ? rawPath : '';
+
+  if (directUrlFallback) {
+    try {
+      const parsedUrl = new URL(rawPath);
+      const storageMarker = '/storage/v1/object/';
+      const markerIndex = parsedUrl.pathname.indexOf(storageMarker);
+      if (markerIndex >= 0) {
+        const storageSegments = parsedUrl.pathname
+          .slice(markerIndex + storageMarker.length)
+          .split('/')
+          .filter(Boolean);
+        if (['public', 'sign', 'authenticated'].includes(storageSegments[0])) storageSegments.shift();
+        if (storageSegments[0] === hairSubmissionStorageBucket) storageSegments.shift();
+        objectPath = decodeURIComponent(storageSegments.join('/'));
+      } else {
+        return { data: directUrlFallback, error: null };
+      }
+    } catch {
+      return { data: directUrlFallback, error: null };
+    }
+  }
+
+  objectPath = objectPath
+    .replace(/^\/+/, '')
+    .replace(new RegExp(`^${hairSubmissionStorageBucket.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\/`), '');
+
   const result = await supabase.storage
     .from(hairSubmissionStorageBucket)
-    .createSignedUrl(path, expiresIn);
+    .createSignedUrl(objectPath, expiresIn);
 
   return {
-    data: result.data?.signedUrl || '',
+    data: result.data?.signedUrl || directUrlFallback,
     error: result.error,
   };
 };

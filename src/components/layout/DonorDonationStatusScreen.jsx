@@ -14,12 +14,10 @@ import { SectionTitleRow } from '../ui/SectionTitleRow';
 import { AppInput } from '../ui/AppInput';
 import { StatusBanner } from '../ui/StatusBanner';
 import { DonivraLoadingOverlay } from '../ui/DonivraLoadingOverlay';
-import { DonorTopBar } from '../donor/DonorTopBar';
-import { DonorTutorialModal } from '../donor/DonorTutorialModal';
+import { DonorTabHeader } from '../donor/DonorTabHeader';
 import { donorDashboardNavItems } from '../../constants/dashboard';
 import { useAuth } from '../../providers/AuthProvider';
 import { useNotifications } from '../../hooks/useNotifications';
-import { useAuthActions } from '../../features/auth/hooks/useAuthActions';
 import { supabase } from '../../api/supabase/client';
 import {
   buildDonationTrackingQrPayload,
@@ -4270,7 +4268,6 @@ export function DonorDonationStatusScreen() {
   const isMobileViewport = width < 768;
   const roles = resolveThemeRoles(resolvedTheme, { isMobile: isMobileViewport });
   const headerPrimaryColor = resolvedTheme?.primaryColor || roles.primaryActionBackground;
-  const { logout, isLoggingOut } = useAuthActions();
   const { unreadCount } = useNotifications({
     role: 'donor',
     userId: user?.id,
@@ -4309,7 +4306,6 @@ export function DonorDonationStatusScreen() {
   const [isSavingBundle, setIsSavingBundle] = React.useState(false);
   const [isCancelModalOpen, setIsCancelModalOpen] = React.useState(false);
   const [isHairEligibilityPromptOpen, setIsHairEligibilityPromptOpen] = React.useState(false);
-  const [isTutorialOpen, setIsTutorialOpen] = React.useState(false);
   const [isDonationMethodModalOpen, setIsDonationMethodModalOpen] = React.useState(false);
   const [isPreparingLogisticDonation, setIsPreparingLogisticDonation] = React.useState(false);
   const [selectedLogisticMethod, setSelectedLogisticMethod] = React.useState('');
@@ -4336,8 +4332,6 @@ export function DonorDonationStatusScreen() {
   // When the user picks a view manually, stop auto-routing away from it.
   const hasManualDonationViewSelectionRef = React.useRef(false);
 
-  const avatarInitials = `${profile?.first_name?.[0] || ''}${profile?.last_name?.[0] || ''}`.trim();
-  const firstName = String(profile?.first_name || '').trim();
   const accountDonorName = [
     profile?.first_name,
     profile?.middle_name,
@@ -6822,31 +6816,14 @@ export function DonorDonationStatusScreen() {
         screenVariant="default"
         floatingOverlay={null}
         header={(
-          <View style={[styles.dashboardHeaderSurface, { backgroundColor: headerPrimaryColor }]}>
-            <DonorTopBar
-              title={firstName || 'Donor'}
-              subtitle="Hair Donor"
-              avatarInitials={avatarInitials}
-              avatarUri={profile?.avatar_url || profile?.photo_path || ''}
-              unreadCount={unreadCount}
-              showRefreshAction
-              showTutorialAction
-              onRefreshPress={handleRefreshModuleData}
-              onTutorialPress={() => setIsTutorialOpen(true)}
-              onNotificationsPress={() => router.navigate('/donor/notifications')}
-              onProfilePress={() => router.navigate('/profile')}
-              onLogoutPress={logout}
-              isLoggingOut={isLoggingOut}
-              isRefreshing={isRefreshing}
-            />
-          </View>
+          <DonorTabHeader
+            unreadCount={unreadCount}
+            showRefreshAction
+            onRefreshPress={handleRefreshModuleData}
+            isRefreshing={isRefreshing}
+          />
         )}
       >
-        <DonorTutorialModal
-          visible={isTutorialOpen}
-          tabKey={activeDonationTabKey === 'logistic' ? 'donateLogistic' : 'donateHairEvent'}
-          onClose={() => setIsTutorialOpen(false)}
-        />
         <ManualEntryModal
           visible
           form={manualForm}
@@ -6890,31 +6867,14 @@ export function DonorDonationStatusScreen() {
         <DonivraLoadingOverlay visible label="Loading donation details..." />
       ) : null}
       header={(
-        <View style={[styles.dashboardHeaderSurface, { backgroundColor: headerPrimaryColor }]}>
-          <DonorTopBar
-            title={firstName || 'Donor'}
-            subtitle="Hair Donor"
-            avatarInitials={avatarInitials}
-            avatarUri={profile?.avatar_url || profile?.photo_path || ''}
-            unreadCount={unreadCount}
-            showRefreshAction
-            showTutorialAction
-            onRefreshPress={handleRefreshModuleData}
-            onTutorialPress={() => setIsTutorialOpen(true)}
-            onNotificationsPress={() => router.navigate('/donor/notifications')}
-            onProfilePress={() => router.navigate('/profile')}
-            onLogoutPress={logout}
-            isLoggingOut={isLoggingOut}
-            isRefreshing={isRefreshing}
-          />
-        </View>
+        <DonorTabHeader
+          unreadCount={unreadCount}
+          showRefreshAction
+          onRefreshPress={handleRefreshModuleData}
+          isRefreshing={isRefreshing}
+        />
       )}
     >
-      <DonorTutorialModal
-        visible={isTutorialOpen}
-        tabKey={activeDonationTabKey === 'logistic' ? 'donateLogistic' : 'donateHairEvent'}
-        onClose={() => setIsTutorialOpen(false)}
-      />
       {screenError ? (
         <StatusBanner
           message={screenError}
@@ -7196,11 +7156,6 @@ export function DonorDonationStatusScreen() {
 // â”€â”€â”€ Styles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const styles = StyleSheet.create({
-  dashboardHeaderSurface: {
-    marginHorizontal: -theme.layout.screenPaddingX,
-    paddingHorizontal: 0,
-    paddingVertical: theme.spacing.xs,
-  },
   page: {
     gap: theme.spacing.xl,
   },

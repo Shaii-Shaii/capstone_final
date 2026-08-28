@@ -1,8 +1,10 @@
 import * as Haptics from "expo-haptics";
+import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import React from "react";
 import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { DonorTopBar } from "../../src/components/donor/DonorTopBar";
+import { DashboardHeaderSurface } from "../../src/components/layout/DashboardHeaderSurface";
 import { DashboardLayout } from "../../src/components/layout/DashboardLayout";
 import { AppButton } from "../../src/components/ui/AppButton";
 import { AppCard } from "../../src/components/ui/AppCard";
@@ -15,9 +17,9 @@ import { useNotifications } from "../../src/hooks/useNotifications";
 import { useAuth } from "../../src/providers/AuthProvider";
 
 const FEEDBACK_TYPES = [
-  { key: "issue", label: "Issue", icon: "error" },
-  { key: "suggestion", label: "Suggestion", icon: "sparkle" },
-  { key: "experience", label: "Experience", icon: "success" },
+  { key: "issue", label: "Issue", helper: "Report a problem", icon: "alert-circle-outline" },
+  { key: "suggestion", label: "Suggestion", helper: "Share an idea", icon: "lightbulb-outline" },
+  { key: "experience", label: "Experience", helper: "Tell us how it went", icon: "heart-outline" },
 ];
 const MIN_MESSAGE_LENGTH = 10;
 const MAX_MESSAGE_LENGTH = 2000;
@@ -78,13 +80,22 @@ export default function PatientFeedbackScreen() {
     );
     setFeedback({
       type: "success",
-      title: "Feedback submitted",
-      message: "Thank you. Your feedback was sent to the Donivra team.",
+      title: "Thank you for helping us improve",
+      message: "Your feedback was sent to the Donivra team.",
     });
   }, [message, profile?.user_id, selectedType]);
 
   const messageLength = message.trim().length;
   const canSubmit = messageLength >= MIN_MESSAGE_LENGTH && !isSubmitting;
+  const remainingRequiredCharacters = Math.max(
+    MIN_MESSAGE_LENGTH - messageLength,
+    0,
+  );
+
+  const handleSelectType = React.useCallback(async (type) => {
+    setSelectedType(type);
+    await Haptics.selectionAsync();
+  }, []);
 
   const handleMessageChange = React.useCallback((value) => {
     if (value.length > MAX_MESSAGE_LENGTH) {
@@ -102,18 +113,20 @@ export default function PatientFeedbackScreen() {
   return (
     <DashboardLayout
       header={
-        <DonorTopBar
-          title="Feedback"
-          subtitle="Help us improve your experience"
-          showBack
-          showFeedbackAction={false}
-          unreadCount={unreadCount}
-          onBackPress={() => router.back()}
-          onNotificationsPress={() =>
-            router.navigate("/patient/notifications")
-          }
-          onProfilePress={() => router.navigate("/profile")}
-        />
+        <DashboardHeaderSurface>
+          <DonorTopBar
+            title="Feedback"
+            subtitle="Help us improve Donivra"
+            showBack
+            showFeedbackAction={false}
+            unreadCount={unreadCount}
+            onBackPress={() => router.back()}
+            onNotificationsPress={() =>
+              router.navigate("/patient/notifications")
+            }
+            onProfilePress={() => router.navigate("/profile")}
+          />
+        </DashboardHeaderSurface>
       }
       navItems={patientDashboardNavItems}
       activeNavKey=""
@@ -132,29 +145,43 @@ export default function PatientFeedbackScreen() {
         />
       ) : null}
 
-      <View style={styles.intro}>
-        <Text style={[styles.introTitle, { color: roles.headingText }]}>
-          Share your feedback
-        </Text>
-        <Text style={[styles.introBody, { color: roles.bodyText }]}>
-          Tell us about an issue, suggestion, or experience. Your feedback
-          helps us improve patient care.
-        </Text>
-      </View>
+      <LinearGradient
+        colors={[theme.colors.palette.wine900, theme.colors.palette.wine700]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.feedbackIntro}
+      >
+        <View style={styles.feedbackIntroIcon}>
+          <AppIcon name="message-text-outline" size="lg" color="#FFFFFF" />
+        </View>
+        <View style={styles.feedbackIntroCopy}>
+          <Text style={styles.feedbackIntroTitle}>We would love to hear from you</Text>
+          <Text style={styles.feedbackIntroText}>
+            Share a problem, an idea, or your experience. Your message helps us make the app better.
+          </Text>
+        </View>
+      </LinearGradient>
 
       <AppCard
         variant="outline"
         radius="lg"
         padding="md"
-        style={styles.card}
+        style={[
+          styles.card,
+          {
+            backgroundColor: roles.defaultCardBackground,
+            borderColor: roles.defaultCardBorder,
+          },
+        ]}
       >
         <View style={styles.formHeader}>
-          <Text style={[styles.formTitle, { color: roles.headingText }]}>
-            Category
-          </Text>
-          <Text style={[styles.formMeta, { color: roles.metaText }]}>
-            Select the option that best fits your message
-          </Text>
+          <View style={[styles.formStep, { backgroundColor: roles.primaryActionBackground }]}>
+            <Text style={[styles.formStepText, { color: roles.primaryActionText }]}>1</Text>
+          </View>
+          <View style={styles.formHeaderCopy}>
+            <Text style={[styles.formTitle, { color: roles.headingText }]}>What would you like to share?</Text>
+            <Text style={[styles.formMeta, { color: roles.metaText }]}>Choose the option that best matches your message.</Text>
+          </View>
         </View>
 
         <View style={styles.typeGrid}>
@@ -163,51 +190,51 @@ export default function PatientFeedbackScreen() {
             return (
               <Pressable
                 key={item.key}
-                onPress={async () => {
-                  setSelectedType(item.key);
-                  await Haptics.selectionAsync();
-                }}
-                accessibilityRole="radio"
-                accessibilityState={{ checked: isActive }}
-                style={({ pressed }) => [
+                onPress={() => handleSelectType(item.key)}
+                accessibilityRole="button"
+                accessibilityState={{ selected: isActive }}
+                style={[
                   styles.typeButton,
                   {
                     backgroundColor: isActive
-                      ? roles.supportCardBackground
+                      ? roles.iconPrimarySurface
                       : roles.pageBackground,
                     borderColor: isActive
                       ? roles.primaryActionBackground
                       : roles.defaultCardBorder,
                   },
-                  pressed ? styles.typeButtonPressed : null,
                 ]}
               >
-                <AppIcon
-                  name={item.icon}
-                  size="sm"
-                  color={
-                    isActive
-                      ? roles.primaryActionBackground
-                      : roles.metaText
-                  }
-                />
-                <Text
-                  style={[
-                    styles.typeButtonLabel,
-                    { color: isActive ? roles.headingText : roles.metaText },
-                  ]}
-                >
-                  {item.label}
-                </Text>
+                <View style={styles.typeButtonContent}>
+                  <View style={[styles.typeIcon, { backgroundColor: isActive ? roles.primaryActionBackground : roles.defaultCardBackground }]}>
+                    <AppIcon name={item.icon} size="md" color={isActive ? roles.primaryActionText : roles.primaryActionBackground} />
+                  </View>
+                  <Text style={[styles.typeButtonLabel, { color: roles.headingText }]}>{item.label}</Text>
+                  <Text numberOfLines={2} style={[styles.typeButtonHelper, { color: roles.metaText }]}>{item.helper}</Text>
+                  {isActive ? (
+                    <View style={[styles.typeSelected, { backgroundColor: roles.primaryActionBackground }]}>
+                      <AppIcon name="check" size="sm" color={roles.primaryActionText} />
+                    </View>
+                  ) : null}
+                </View>
               </Pressable>
             );
           })}
         </View>
 
         <View style={styles.fieldGroup}>
+          <View style={styles.formHeader}>
+            <View style={[styles.formStep, { backgroundColor: roles.primaryActionBackground }]}>
+              <Text style={[styles.formStepText, { color: roles.primaryActionText }]}>2</Text>
+            </View>
+            <View style={styles.formHeaderCopy}>
+              <Text style={[styles.formTitle, { color: roles.headingText }]}>Tell us more</Text>
+              <Text style={[styles.formMeta, { color: roles.metaText }]}>A clear description helps the team understand your feedback.</Text>
+            </View>
+          </View>
           <View style={styles.fieldHeader}>
             <Text style={[styles.label, { color: roles.headingText }]}>
-              Message
+              Your message
             </Text>
             <Text style={[styles.counter, { color: roles.metaText }]}>
               {messageLength}/{MAX_MESSAGE_LENGTH}
@@ -218,7 +245,7 @@ export default function PatientFeedbackScreen() {
             onChangeText={handleMessageChange}
             multiline
             textAlignVertical="top"
-            placeholder="Describe your feedback in detail..."
+            placeholder="What happened, or what would you like us to improve?"
             placeholderTextColor={roles.metaText}
             maxLength={MAX_MESSAGE_LENGTH}
             style={[
@@ -231,17 +258,29 @@ export default function PatientFeedbackScreen() {
             ]}
           />
           <Text style={[styles.helperText, { color: roles.metaText }]}>
-            Please provide at least {MIN_MESSAGE_LENGTH} characters.
+            {remainingRequiredCharacters > 0
+              ? `Add ${remainingRequiredCharacters} more ${remainingRequiredCharacters === 1 ? "character" : "characters"} to continue.`
+              : "Your message is ready to send."}
           </Text>
         </View>
 
+        <View style={[styles.privacyNote, { backgroundColor: roles.iconPrimarySurface }]}>
+          <AppIcon name="shield" size="sm" color={roles.primaryActionBackground} />
+          <Text style={[styles.privacyNoteText, { color: roles.bodyText }]}>Your feedback is linked to your account so the team can review it properly.</Text>
+        </View>
+
         <AppButton
-          title={isSubmitting ? "Submitting..." : "Submit Feedback"}
+          title={isSubmitting
+            ? "Sending feedback..."
+            : canSubmit
+              ? "Send feedback"
+              : `Write ${remainingRequiredCharacters} more`}
           onPress={handleSubmit}
           loading={isSubmitting}
           disabled={!canSubmit}
           leading={<AppIcon name="feedback" size="sm" state="inverse" />}
           fullWidth
+          style={styles.submitButton}
         />
       </AppCard>
     </DashboardLayout>
@@ -249,27 +288,66 @@ export default function PatientFeedbackScreen() {
 }
 
 const styles = StyleSheet.create({
-  intro: {
-    gap: theme.spacing.xs,
-    marginBottom: theme.spacing.md,
+  feedbackIntro: {
+    minHeight: 126,
+    borderRadius: theme.radius.xl,
+    padding: theme.spacing.lg,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing.md,
+    overflow: "hidden",
+    ...theme.shadows.card,
   },
-  introTitle: {
+  feedbackIntroIcon: {
+    width: 50,
+    height: 50,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255, 255, 255, 0.14)",
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.24)",
+  },
+  feedbackIntroCopy: {
+    flex: 1,
+    gap: 5,
+  },
+  feedbackIntroTitle: {
     fontFamily: theme.typography.fontFamilyDisplay,
     fontSize: theme.typography.semantic.titleSm,
     fontWeight: theme.typography.weights.bold,
+    color: "#FFFFFF",
   },
-  introBody: {
+  feedbackIntroText: {
     fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.semantic.bodySm,
-    lineHeight:
-      theme.typography.semantic.bodySm * theme.typography.lineHeights.relaxed,
+    fontSize: theme.typography.compact.bodySm,
+    lineHeight: 19,
+    color: "#F9EDEF",
   },
   card: {
-    gap: theme.spacing.md,
-    shadowOpacity: 0,
-    elevation: 0,
+    gap: theme.spacing.lg,
+    borderRadius: theme.radius.xl,
+    ...theme.shadows.soft,
   },
   formHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing.sm,
+  },
+  formStep: {
+    width: 30,
+    height: 30,
+    borderRadius: theme.radius.full,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  formStepText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    fontWeight: theme.typography.weights.bold,
+  },
+  formHeaderCopy: {
+    flex: 1,
     gap: 2,
   },
   formTitle: {
@@ -287,24 +365,50 @@ const styles = StyleSheet.create({
   },
   typeButton: {
     flex: 1,
-    minHeight: 48,
+    minHeight: 108,
     borderWidth: 1,
-    borderRadius: theme.radius.md,
-    paddingHorizontal: 4,
+    borderRadius: theme.radius.lg,
+    overflow: "hidden",
+  },
+  typeButtonContent: {
+    flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    gap: 3,
+    gap: 4,
+    paddingHorizontal: 4,
+    paddingVertical: theme.spacing.sm,
   },
-  typeButtonPressed: {
-    opacity: 0.78,
+  typeIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: theme.radius.full,
+    alignItems: "center",
+    justifyContent: "center",
   },
   typeButtonLabel: {
     fontFamily: theme.typography.fontFamily,
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: theme.typography.weights.bold,
+    textAlign: "center",
+  },
+  typeButtonHelper: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    lineHeight: 13,
+    textAlign: "center",
+  },
+  typeSelected: {
+    position: "absolute",
+    top: 6,
+    right: 6,
+    width: 18,
+    height: 18,
+    borderRadius: theme.radius.full,
+    alignItems: "center",
+    justifyContent: "center",
   },
   fieldGroup: {
-    gap: theme.spacing.xs,
+    gap: theme.spacing.sm,
   },
   fieldHeader: {
     flexDirection: "row",
@@ -323,7 +427,7 @@ const styles = StyleSheet.create({
   messageInput: {
     minHeight: 148,
     borderWidth: 1,
-    borderRadius: theme.radius.md,
+    borderRadius: theme.radius.lg,
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.sm,
     fontFamily: theme.typography.fontFamily,
@@ -334,5 +438,21 @@ const styles = StyleSheet.create({
   helperText: {
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.caption,
+  },
+  privacyNote: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: theme.spacing.sm,
+    borderRadius: theme.radius.md,
+    padding: theme.spacing.md,
+  },
+  privacyNoteText: {
+    flex: 1,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 17,
+  },
+  submitButton: {
+    borderRadius: theme.radius.lg,
   },
 });

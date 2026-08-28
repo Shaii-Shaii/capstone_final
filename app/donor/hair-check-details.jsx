@@ -4,6 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { HairLogDetailModal } from '../../src/components/hair/HairLogDetailModal';
 import { DonorTopBar } from '../../src/components/donor/DonorTopBar';
+import { DashboardHeaderSurface } from '../../src/components/layout/DashboardHeaderSurface';
 import { fetchHairSubmissionsByUserId, fetchLatestDonationRequirement } from '../../src/features/hairSubmission.api';
 import { useNotifications } from '../../src/hooks/useNotifications';
 import { useAuth } from '../../src/providers/AuthProvider';
@@ -22,7 +23,7 @@ export default function DonorHairCheckDetailsScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
   const screeningId = Array.isArray(params.screeningId) ? params.screeningId[0] : params.screeningId;
-  const { user, profile, resolvedTheme } = useAuth();
+  const { user, resolvedTheme } = useAuth();
   const roles = resolveThemeRoles(resolvedTheme);
   const { unreadCount } = useNotifications({
     role: 'donor',
@@ -80,15 +81,16 @@ export default function DonorHairCheckDetailsScreen() {
   if (entry) {
     return (
       <SafeAreaView style={[styles.page, { backgroundColor: roles.pageBackground }]}>
-        <View style={[styles.header, { backgroundColor: resolvedTheme?.primaryColor || roles.primaryActionBackground }]}>
+        <DashboardHeaderSurface style={styles.header}>
           <DonorTopBar
-            title={profile?.first_name || 'Donor'}
-            subtitle="Hair Donor"
+            showBack
+            title="Hair check result"
+            subtitle="Review your saved analysis"
             unreadCount={unreadCount}
+            onBackPress={() => router.back()}
             onNotificationsPress={() => router.navigate('/donor/notifications')}
-            onProfilePress={() => router.navigate('/profile')}
           />
-        </View>
+        </DashboardHeaderSurface>
         <HairLogDetailModal
           visible
           pageMode
@@ -96,6 +98,7 @@ export default function DonorHairCheckDetailsScreen() {
           entries={[entry]}
           donationRequirement={donationRequirement}
           onClose={() => router.back()}
+          onStartAnalysis={() => router.replace('/donor/donations?mode=scan')}
         />
       </SafeAreaView>
     );
@@ -117,7 +120,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   header: {
-    paddingVertical: theme.spacing.xs,
+    marginHorizontal: 0,
   },
   state: {
     flex: 1,

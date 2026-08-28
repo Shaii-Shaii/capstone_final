@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { ScreenContainer } from '../../../src/components/ui/ScreenContainer';
 import { AppButton } from '../../../src/components/ui/AppButton';
@@ -35,7 +36,26 @@ import { resolveThemeRoles, theme } from '../../../src/design-system/theme';
 import { Map, Camera, Marker } from '@maplibre/maplibre-react-native';
 
 const DRIVE_REALTIME_DEBOUNCE_MS = 380;
-const OPENFREEMAP_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
+const EVENT_MAP_STYLE = {
+  version: 8,
+  sources: {
+    openStreetMap: {
+      type: 'raster',
+      tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+      tileSize: 256,
+      attribution: '© OpenStreetMap contributors',
+    },
+  },
+  layers: [
+    {
+      id: 'openStreetMapRaster',
+      type: 'raster',
+      source: 'openStreetMap',
+      minzoom: 0,
+      maxzoom: 19,
+    },
+  ],
+};
 
 const formatDriveDate = (startDate, endDate) => {
   if (!startDate) return 'Date to follow';
@@ -109,10 +129,9 @@ const isPresentRegistration = (registration = null) => {
 };
 
 const buildDirectionsUrl = (drive = null) => {
-  const latitude = Number(drive?.latitude);
-  const longitude = Number(drive?.longitude);
-  if (Number.isFinite(latitude) && Number.isFinite(longitude)) {
-    const coordinate = `${latitude},${longitude}`;
+  const coordinates = getDriveCoordinates(drive);
+  if (coordinates) {
+    const coordinate = `${coordinates.latitude},${coordinates.longitude}`;
     if (Platform.OS === 'ios') return `http://maps.apple.com/?daddr=${coordinate}`;
     return `geo:${coordinate}?q=${coordinate}`;
   }
@@ -125,7 +144,9 @@ const buildDirectionsUrl = (drive = null) => {
 const getDriveCoordinates = (drive = null) => {
   const latitude = Number(drive?.latitude);
   const longitude = Number(drive?.longitude);
-  return Number.isFinite(latitude) && Number.isFinite(longitude)
+  const isValidLatitude = Number.isFinite(latitude) && latitude >= -90 && latitude <= 90;
+  const isValidLongitude = Number.isFinite(longitude) && longitude >= -180 && longitude <= 180;
+  return isValidLatitude && isValidLongitude
     ? { latitude, longitude }
     : null;
 };
@@ -147,7 +168,13 @@ function EventTopBar({ title, onBack }) {
   const roles = useResponsiveThemeRoles(resolvedTheme);
 
   return (
-    <View style={[styles.topBar, { backgroundColor: roles.primaryActionBackground }]}>
+    <LinearGradient
+      colors={[theme.colors.palette.wine900, roles.primaryActionBackground, theme.colors.palette.wine700]}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={styles.topBar}
+    >
+      <View pointerEvents="none" style={styles.topBarGlow} />
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Go back"
@@ -164,7 +191,7 @@ function EventTopBar({ title, onBack }) {
         {title}
       </Text>
       <View style={styles.topBarSpacer} />
-    </View>
+    </LinearGradient>
   );
 }
 
@@ -190,7 +217,7 @@ function EventMapPreview({ drive }) {
       ]}
     >
       {mapCoordinate ? (
-        <Map style={styles.mapNativeView} mapStyle={OPENFREEMAP_STYLE} scrollEnabled={false} rotateEnabled={false} pitchEnabled={false}>
+        <Map style={styles.mapNativeView} mapStyle={EVENT_MAP_STYLE} scrollEnabled={false} rotateEnabled={false} pitchEnabled={false}>
           <Camera initialViewState={{ center: mapCoordinate, zoom: 14 }} />
           <Marker id={`drive-${drive?.event_request_id || drive?.Event_Request_ID || 'location'}`} lngLat={mapCoordinate}>
             <View style={styles.mapMarker}>
@@ -212,7 +239,7 @@ function EventMapPreview({ drive }) {
 
       {mapCoordinate ? (
         <Text style={styles.mapAttribution}>
-          © OpenStreetMap contributors © OpenFreeMap
+          © OpenStreetMap contributors
         </Text>
       ) : null}
 
@@ -221,15 +248,10 @@ function EventMapPreview({ drive }) {
           onPress={handleOpenDirections}
           accessibilityRole="button"
           accessibilityLabel="Open event location in maps"
-          style={({ pressed }) => [
-            styles.mapDirectionsOverlay,
-            pressed ? styles.pressed : null,
-          ]}
+          style={[styles.mapDirectionsButton, { backgroundColor: roles.primaryActionBackground }]}
         >
-          <View style={[styles.mapDirectionsBadge, { backgroundColor: roles.defaultCardBackground }]}>
-            <MaterialCommunityIcons name="directions" size={15} color={roles.primaryActionBackground} />
-            <Text style={[styles.mapDirectionsText, { color: roles.headingText }]}>Directions</Text>
-          </View>
+          <MaterialCommunityIcons name="directions" size={16} color={roles.primaryActionText} />
+          <Text style={[styles.mapDirectionsText, { color: roles.primaryActionText }]}>Directions</Text>
         </Pressable>
       ) : null}
     </View>
@@ -281,16 +303,22 @@ function HairEligibilitySection({
   const icon = hasScannedButNotEligible ? 'alert-circle-outline' : 'hair-dryer-outline';
   const surfaceColor = roles.defaultCardBackground;
   const borderColor = roles.defaultCardBorder;
-  const title = hasScannedButNotEligible ? 'Not eligible yet' : 'Hair scan required';
+  const title = hasScannedButNotEligible ? 'Donation option unavailable' : 'Hair analysis needed';
+  const suppliedMessage = String(hairEligibilityMessage || '').trim();
+  const displayMessage = hasScannedButNotEligible
+    ? (/uploaded photos show/i.test(suppliedMessage)
+      ? 'Your latest Hair Analysis is not eligible for donation yet. You can still attend this event.'
+      : suppliedMessage || 'Your latest result is not eligible for donation yet. You can still attend this event.')
+    : 'Complete Hair Analysis to unlock the donation option. You may still attend this event.';
 
   return (
-    <View style={[styles.eligibilityBanner, { backgroundColor: surfaceColor, borderColor }]}>
-      <View style={[styles.eligibilityIconWrap, { backgroundColor: roles.pageBackground }]}>
+    <View style={[styles.eligibilityBanner, { backgroundColor: surfaceColor, borderColor, borderLeftColor: roles.primaryActionBackground }]}>
+      <View style={[styles.eligibilityIconWrap, { backgroundColor: roles.iconPrimarySurface }]}>
         <MaterialCommunityIcons name={icon} size={18} color={primaryTextColor} />
       </View>
       <View style={styles.eligibilityContent}>
         <Text style={[styles.eligibilityTitle, { color: primaryTextColor }]}>{title}</Text>
-        <Text style={[styles.eligibilityMessage, { color: primaryTextColor }]}>{hairEligibilityMessage}</Text>
+        <Text style={[styles.eligibilityMessage, { color: primaryTextColor }]}>{displayMessage}</Text>
         {!hasHairScanLog && onScanPress ? (
           <Pressable
             onPress={onScanPress}
@@ -299,7 +327,7 @@ function HairEligibilitySection({
             accessibilityLabel="Go to Hair Scan"
           >
             <Text style={[styles.eligibilityScanLinkText, { color: primaryTextColor }]}>
-              Scan
+              Check eligibility
             </Text>
           </Pressable>
         ) : null}
@@ -349,7 +377,6 @@ function EventRsvpQrCard({ drive }) {
 
 function EventDetailsPanel({
   drive,
-  shownRegistrationCount = 0,
   isRegisteredForDrive = false,
   actionTitle,
   actionDisabled = false,
@@ -367,17 +394,8 @@ function EventDetailsPanel({
   const roles = useResponsiveThemeRoles(resolvedTheme);
   const primaryTextColor = resolvedTheme?.primaryTextColor || roles.headingText;
   const directionsUrl = buildDirectionsUrl(drive);
-  const shownCount = Number(shownRegistrationCount) || 0;
   const overviewText = drive?.event_overview
     || 'Join this Donivra hair donation drive and help provide meaningful support to people who need wigs and care.';
-  const isVoluntaryRegistration = String(drive?.registration?.attendee_type || '').trim().toLowerCase() === 'voluntary';
-  const attendanceMeta = isRegisteredForDrive
-    ? isVoluntaryRegistration
-      ? 'Voluntary attendee. You can observe or inquire at the event.'
-      : (isPresentRegistration(drive?.registration)
-        ? 'You are marked present.'
-        : 'You are counted for this event.')
-    : 'RSVP to be counted.';
   const canDonateAndParticipate = hasHairScanLog && isAiEligible && !ended && !isRegisteredForDrive;
   const canAttendOnly = !ended && !isRegisteredForDrive;
   const shouldShowRegisteredAction = ended || (isRegisteredForDrive && !actionDisabled);
@@ -385,97 +403,108 @@ function EventDetailsPanel({
   return (
     <View style={styles.detailsBlock}>
       <View style={styles.detailsCopy}>
-        <Text style={[styles.eventTitle, { color: primaryTextColor }]}>
-          {drive?.event_title || 'Donation drive'}
-        </Text>
+        <Text style={[styles.sectionEyebrow, { color: roles.primaryActionBackground }]}>ABOUT THE EVENT</Text>
+        <Text style={[styles.sectionHeading, { color: primaryTextColor }]}>A meaningful day for hair donation</Text>
         <Text style={[styles.eventDescription, { color: primaryTextColor }]}>
           {overviewText}
         </Text>
       </View>
 
-      <View style={styles.detailIconList}>
+      <Text style={[styles.sectionHeading, styles.sectionHeadingSpaced, { color: primaryTextColor }]}>When and where</Text>
+      <View style={[styles.detailIconList, { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder }]}>
         <DetailIconRow
           icon="calendar-month-outline"
           value={formatDriveDate(drive?.start_date, drive?.end_date)}
         />
+        <View style={[styles.detailDivider, { backgroundColor: roles.defaultCardBorder }]} />
         <DetailIconRow
           icon="clock-outline"
           value={formatDriveTime(drive?.start_date, drive?.end_date) || 'Time to follow'}
         />
+        <View style={[styles.detailDivider, { backgroundColor: roles.defaultCardBorder }]} />
         <DetailIconRow
           icon="map-marker-outline"
           value={drive?.address_label || drive?.location_label || 'Location to follow'}
-          meta={directionsUrl ? 'Tap map for directions' : ''}
           onPress={directionsUrl ? () => Linking.openURL(directionsUrl) : null}
         />
       </View>
 
-      {shouldShowRegisteredAction ? (
-        <AppButton
-          title={actionTitle || 'RSVP'}
-          onPress={onRsvpPress}
-          loading={isSubmittingRsvp}
-          disabled={actionDisabled}
-          size="sm"
-          style={styles.rsvpButton}
-        />
-      ) : !isRegisteredForDrive && !ended ? (
-        <View style={styles.participationOptions}>
-          <Text style={[styles.participationTitle, { color: primaryTextColor }]}>Choose how you will join</Text>
-          <AppButton
-            title="Donate and participate"
-            onPress={onRsvpPress}
-            loading={isSubmittingRsvp}
-            disabled={!canDonateAndParticipate || isSubmittingAttendOnly}
-            size="sm"
-            style={styles.participationButton}
-            leading={<MaterialCommunityIcons name="gift-outline" size={16} color={roles.primaryActionText} />}
-          />
-          <AppButton
-            title="Attend only"
-            variant="outline"
-            onPress={onAttendOnlyPress}
-            loading={isSubmittingAttendOnly}
-            disabled={!canAttendOnly || isSubmittingRsvp}
-            size="sm"
-            style={styles.participationButton}
-            textColorOverride={primaryTextColor}
-            leading={<MaterialCommunityIcons name="account-eye-outline" size={16} color={primaryTextColor} />}
-          />
-          <Text style={[styles.participationHelper, { color: primaryTextColor }]}>
-            Attend-only RSVPs are saved as voluntary attendees for visitors who want to observe or inquire without donating hair.
-          </Text>
-        </View>
-      ) : null}
-
-      <HairEligibilitySection
-        isRegisteredForDrive={isRegisteredForDrive}
-        hasHairScanLog={hasHairScanLog}
-        isAiEligible={isAiEligible}
-        hairEligibilityMessage={hairEligibilityMessage}
-        ended={ended}
-        onScanPress={onScanPress}
-      />
-
       <EventRsvpQrCard drive={drive} />
 
+      <Text style={[styles.sectionHeading, styles.sectionHeadingSpaced, { color: primaryTextColor }]}>Event location</Text>
       <EventMapPreview drive={drive} />
 
-      <View style={styles.attendingSection}>
-        <Text style={[styles.sectionHeading, { color: primaryTextColor }]}>Who&apos;s Attending</Text>
-        <View style={[styles.attendingCard, { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder }]}>
-          <View style={[styles.attendingIcon, { backgroundColor: roles.pageBackground }]}>
-            <MaterialCommunityIcons name="account-group-outline" size={18} color={primaryTextColor} />
-          </View>
-          <View style={styles.attendingCopy}>
-            <Text style={[styles.attendingCount, { color: primaryTextColor }]}>
-              {shownCount > 0 ? `${shownCount} attending` : 'No registered donors yet'}
-            </Text>
-            <Text style={[styles.attendingMeta, { color: primaryTextColor }]}>
-              {attendanceMeta}
-            </Text>
-          </View>
-        </View>
+      <View style={styles.joinSection}>
+        <HairEligibilitySection
+          isRegisteredForDrive={isRegisteredForDrive}
+          hasHairScanLog={hasHairScanLog}
+          isAiEligible={isAiEligible}
+          hairEligibilityMessage={hairEligibilityMessage}
+          ended={ended}
+          onScanPress={onScanPress}
+        />
+
+        {shouldShowRegisteredAction ? (
+          <AppButton
+            title={actionTitle || 'RSVP'}
+            onPress={onRsvpPress}
+            loading={isSubmittingRsvp}
+            disabled={actionDisabled}
+            size="sm"
+            style={styles.rsvpButton}
+          />
+        ) : !isRegisteredForDrive && !ended ? (
+          <LinearGradient
+            colors={[roles.defaultCardBackground, roles.iconPrimarySurface]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={[styles.participationOptions, { borderColor: roles.defaultCardBorder }]}
+          >
+            <View style={styles.participationHeader}>
+              <View style={[styles.participationHeaderIcon, { backgroundColor: roles.primaryActionBackground }]}>
+                <MaterialCommunityIcons
+                  name={canDonateAndParticipate ? 'account-heart-outline' : 'account-group-outline'}
+                  size={20}
+                  color={roles.primaryActionText}
+                />
+              </View>
+              <View style={styles.participationHeaderCopy}>
+                <Text style={[styles.participationTitle, { color: primaryTextColor }]}>
+                  {canDonateAndParticipate ? 'Choose your RSVP' : 'Attend as a guest'}
+                </Text>
+                <Text style={[styles.participationSubtitle, { color: roles.bodyText }]}>
+                  {canDonateAndParticipate
+                    ? 'Your hair check is eligible. Donate or attend as a guest.'
+                    : 'Your RSVP will be saved as an event attendee.'}
+                </Text>
+              </View>
+            </View>
+
+            {canDonateAndParticipate ? (
+              <AppButton
+                title="Donate and participate"
+                onPress={onRsvpPress}
+                loading={isSubmittingRsvp}
+                disabled={isSubmittingAttendOnly}
+                size="sm"
+                style={styles.participationButton}
+                leading={<MaterialCommunityIcons name="gift-outline" size={16} color={roles.primaryActionText} />}
+              />
+            ) : null}
+
+            <AppButton
+              title={canDonateAndParticipate ? 'Attend only' : 'RSVP as attendee'}
+              variant="outline"
+              onPress={onAttendOnlyPress}
+              loading={isSubmittingAttendOnly}
+              disabled={!canAttendOnly || isSubmittingRsvp}
+              size="sm"
+              style={styles.participationButton}
+              textColorOverride={primaryTextColor}
+              leading={<MaterialCommunityIcons name="account-check-outline" size={16} color={primaryTextColor} />}
+            />
+          </LinearGradient>
+        ) : null}
       </View>
     </View>
   );
@@ -904,16 +933,37 @@ export default function DonorDriveDetailRoute() {
               ) : (
                 <View style={styles.heroFallback}>
                   <MaterialCommunityIcons name="calendar-heart" size={52} color={roles.primaryActionBackground} />
-                  <Text numberOfLines={2} style={[styles.heroFallbackTitle, { color: roles.headingText }]}>
-                    {drive.event_title || 'Donation drive'}
-                  </Text>
                 </View>
               )}
+              <LinearGradient
+                pointerEvents="none"
+                colors={['transparent', 'rgba(31, 4, 9, 0.18)', 'rgba(31, 4, 9, 0.92)']}
+                locations={[0.34, 0.58, 1]}
+                style={styles.heroScrim}
+              />
+              <View style={styles.heroContent}>
+                <View style={styles.heroBadgeRow}>
+                  <View style={styles.heroBadge}>
+                    <MaterialCommunityIcons name="calendar-heart" size={13} color="#5A0B14" />
+                    <Text style={styles.heroBadgeText}>{drive?.is_public === false ? 'PRIVATE EVENT' : 'DONATION EVENT'}</Text>
+                  </View>
+                  <View style={styles.heroAttendeePill}>
+                    <MaterialCommunityIcons name="account-group-outline" size={14} color="#FFFFFF" />
+                    <Text style={styles.heroAttendeeText}>{shownRegistrationCount} joining</Text>
+                  </View>
+                </View>
+                <Text numberOfLines={2} style={styles.heroEventTitle}>{drive.event_title || 'Donation drive'}</Text>
+                <View style={styles.heroDateRow}>
+                  <MaterialCommunityIcons name="calendar-month-outline" size={14} color="#F8EDEF" />
+                  <Text numberOfLines={1} style={styles.heroDateText}>
+                    {formatDriveDate(drive?.start_date, drive?.end_date)}
+                  </Text>
+                </View>
+              </View>
             </View>
 
             <EventDetailsPanel
               drive={drive}
-              shownRegistrationCount={shownRegistrationCount}
               isRegisteredForDrive={isRegisteredForDrive}
               actionTitle={actionTitle}
               actionDisabled={actionDisabled}
@@ -949,7 +999,7 @@ const styles = StyleSheet.create({
   },
   detailContent: {
     paddingHorizontal: theme.spacing.md,
-    paddingTop: 0,
+    paddingTop: theme.spacing.md,
   },
   topBar: {
     minHeight: 64,
@@ -959,6 +1009,18 @@ const styles = StyleSheet.create({
     gap: theme.spacing.sm,
     paddingHorizontal: theme.spacing.md,
     marginBottom: 0,
+    overflow: 'hidden',
+    position: 'relative',
+    ...theme.shadows.sm,
+  },
+  topBarGlow: {
+    position: 'absolute',
+    width: 138,
+    height: 138,
+    borderRadius: theme.radius.full,
+    right: -42,
+    top: -88,
+    backgroundColor: 'rgba(255, 255, 255, 0.09)',
   },
   topBarButton: {
     width: 40,
@@ -988,11 +1050,12 @@ const styles = StyleSheet.create({
     marginBottom: theme.spacing.sm,
   },
   hero: {
-    height: 228,
-    marginHorizontal: -theme.spacing.md,
-    borderRadius: 0,
+    height: 286,
+    borderRadius: theme.radius.xl,
     overflow: 'hidden',
-    marginBottom: theme.spacing.md,
+    marginBottom: theme.spacing.lg,
+    position: 'relative',
+    ...theme.shadows.card,
   },
   heroImage: {
     width: '100%',
@@ -1006,11 +1069,72 @@ const styles = StyleSheet.create({
     padding: theme.spacing.lg,
     gap: theme.spacing.sm,
   },
-  heroFallbackTitle: {
-    textAlign: 'center',
-    fontFamily: theme.typography.fontFamilyDisplay,
-    fontSize: theme.typography.semantic.bodyLg,
+  heroScrim: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  heroContent: {
+    position: 'absolute',
+    left: theme.spacing.md,
+    right: theme.spacing.md,
+    bottom: theme.spacing.md,
+    gap: theme.spacing.xs,
+  },
+  heroBadgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: theme.spacing.sm,
+  },
+  heroBadge: {
+    minHeight: 25,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: theme.spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: '#F8EDEF',
+  },
+  heroBadgeText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
     fontWeight: theme.typography.weights.bold,
+    letterSpacing: 0.7,
+    color: '#5A0B14',
+  },
+  heroAttendeePill: {
+    minHeight: 25,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: theme.spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: 'rgba(255, 255, 255, 0.16)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.28)',
+  },
+  heroAttendeeText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 10,
+    fontWeight: theme.typography.weights.semibold,
+    color: '#FFFFFF',
+  },
+  heroEventTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.titleSm,
+    fontWeight: theme.typography.weights.bold,
+    lineHeight: theme.typography.semantic.titleSm * theme.typography.lineHeights.snug,
+    color: '#FFFFFF',
+  },
+  heroDateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  heroDateText: {
+    flex: 1,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    color: '#F8EDEF',
   },
   sectionGap: {
     marginBottom: theme.spacing.lg,
@@ -1029,9 +1153,16 @@ const styles = StyleSheet.create({
     fontWeight: theme.typography.weights.bold,
   },
   detailIconList: {
-    gap: theme.spacing.sm,
-    marginTop: theme.spacing.xs,
-    marginBottom: theme.spacing.md,
+    borderWidth: 1,
+    borderRadius: theme.radius.lg,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    marginBottom: theme.spacing.lg,
+    ...theme.shadows.soft,
+  },
+  detailDivider: {
+    height: StyleSheet.hairlineWidth,
+    marginLeft: 46,
   },
   detailIconRow: {
     flexDirection: 'row',
@@ -1064,9 +1195,9 @@ const styles = StyleSheet.create({
     lineHeight: theme.typography.compact.caption * 1.35,
   },
   mapPreview: {
-    marginTop: theme.spacing.md,
-    height: 180,
-    borderRadius: 14,
+    marginTop: theme.spacing.sm,
+    height: 210,
+    borderRadius: theme.radius.xl,
     borderWidth: 1,
     overflow: 'hidden',
     position: 'relative',
@@ -1103,25 +1234,25 @@ const styles = StyleSheet.create({
     gap: 4,
     zIndex: 2,
   },
-  mapDirectionsOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    zIndex: 3,
-  },
-  mapDirectionsBadge: {
+  mapDirectionsButton: {
     position: 'absolute',
     right: theme.spacing.sm,
     bottom: theme.spacing.sm,
-    minHeight: 32,
-    borderRadius: 16,
-    paddingHorizontal: theme.spacing.sm,
+    zIndex: 4,
+    minHeight: 38,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: theme.spacing.md,
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     gap: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.46)',
     shadowColor: theme.colors.shadow,
-    shadowOpacity: 0.14,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 3 },
-    elevation: 3,
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 5,
   },
   mapDirectionsText: {
     fontFamily: theme.typography.fontFamily,
@@ -1143,14 +1274,14 @@ const styles = StyleSheet.create({
     paddingBottom: theme.spacing.lg,
   },
   detailsCopy: {
-    gap: theme.spacing.sm,
-    marginBottom: theme.spacing.md,
+    gap: theme.spacing.xs,
+    marginBottom: theme.spacing.lg,
   },
-  eventTitle: {
-    fontFamily: theme.typography.fontFamilyDisplay,
-    fontSize: theme.typography.semantic.bodyLg,
+  sectionEyebrow: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 10,
     fontWeight: theme.typography.weights.bold,
-    lineHeight: theme.typography.semantic.bodyLg * theme.typography.lineHeights.snug,
+    letterSpacing: 1.1,
   },
   eventDescription: {
     fontFamily: theme.typography.fontFamily,
@@ -1208,25 +1339,46 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.backgroundPrimary,
   },
   participationOptions: {
-    marginTop: theme.spacing.sm,
-    marginBottom: theme.spacing.lg,
-    gap: theme.spacing.md,
+    gap: theme.spacing.sm,
+    borderWidth: 1,
+    borderRadius: theme.radius.xl,
+    padding: theme.spacing.lg,
+    overflow: 'hidden',
+    ...theme.shadows.soft,
+  },
+  participationHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    marginBottom: theme.spacing.xs,
+  },
+  participationHeaderIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  participationHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
   },
   participationTitle: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.bodySm,
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.body,
     fontWeight: theme.typography.weights.bold,
+  },
+  participationSubtitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
   },
   participationButton: {
     width: '100%',
   },
-  participationHelper: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.caption,
-    lineHeight: theme.typography.compact.caption * 1.55,
-  },
-  attendingSection: {
-    marginTop: theme.spacing.md,
+  joinSection: {
+    marginTop: theme.spacing.xl,
+    gap: theme.spacing.md,
   },
   sectionHeading: {
     fontFamily: theme.typography.fontFamilyDisplay,
@@ -1234,37 +1386,8 @@ const styles = StyleSheet.create({
     fontWeight: theme.typography.weights.bold,
     marginBottom: theme.spacing.sm,
   },
-  attendingCard: {
-    borderWidth: 1,
-    borderRadius: 14,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.md,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-  },
-  attendingIcon: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-  },
-  attendingCopy: {
-    flex: 1,
-    minWidth: 0,
-  },
-  attendingCount: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.bodySm,
-    fontWeight: theme.typography.weights.bold,
-  },
-  attendingMeta: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.caption,
-    lineHeight: theme.typography.compact.caption * 1.4,
-    marginTop: 2,
+  sectionHeadingSpaced: {
+    marginTop: theme.spacing.xs,
   },
   accessCodeInput: {
     minHeight: 48,
@@ -1371,14 +1494,15 @@ const styles = StyleSheet.create({
     paddingVertical: theme.spacing.xs,
   },
   eligibilityBanner: {
-    marginBottom: theme.spacing.lg,
     borderWidth: 1,
-    borderRadius: 8,
+    borderLeftWidth: 4,
+    borderRadius: theme.radius.lg,
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.md,
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: theme.spacing.sm,
+    ...theme.shadows.soft,
   },
   eligibilityIconWrap: {
     width: 34,

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import '../globals.css';
 import { Animated, Easing, Image, Platform, StyleSheet, Text, View } from 'react-native';
 import { Slot } from 'expo-router';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -10,6 +11,7 @@ import { AuthProvider, useAuth } from '../src/providers/AuthProvider';
 import { usePushNotifications } from '../src/hooks/usePushNotifications';
 import { useRoleRedirect } from '../src/hooks/useRoleRedirect';
 import { bundledBrandLogoSource, normalizeResolvedTheme, resolveBrandLogoSource } from '../src/design-system/theme';
+import { GluestackUIProvider } from '../src/components/gluestack-ui/gluestack-ui-provider';
 
 // ─── Duration ──────────────────────────────────────────────────────────────
 const SPLASH_DURATION_MS = 4800;
@@ -512,9 +514,11 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <StatusBar style="light" translucent backgroundColor="transparent" />
-      <AuthProvider>
-        <RootLayoutNav />
-      </AuthProvider>
+      <GluestackUIProvider mode="light">
+        <AuthProvider>
+          <RootLayoutNav />
+        </AuthProvider>
+      </GluestackUIProvider>
     </GestureHandlerRootView>
   );
 }

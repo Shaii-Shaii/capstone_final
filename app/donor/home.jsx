@@ -4,29 +4,27 @@ import {
   Animated,
   Image,
   Modal,
-  PanResponder,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
-  useWindowDimensions,
   View,
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import LottieView from 'lottie-react-native';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { DashboardLayout } from '../../src/components/layout/DashboardLayout';
 import { AppButton } from '../../src/components/ui/AppButton';
 import { AppCard } from '../../src/components/ui/AppCard';
-import { EmptyDataState } from '../../src/components/ui/EmptyDataState';
 import { DonationEventsEmptyState } from '../../src/components/ui/DonationEventsEmptyState';
 import { GradientActionButton } from '../../src/components/ui/GradientActionButton';
 import { AppIcon } from '../../src/components/ui/AppIcon';
 import { StatusBanner } from '../../src/components/ui/StatusBanner';
 import { DonivraLoadingOverlay } from '../../src/components/ui/DonivraLoadingOverlay';
-import { DonorTopBar } from '../../src/components/donor/DonorTopBar';
-import { DonorTutorialModal } from '../../src/components/donor/DonorTutorialModal';
+import { DonorTabHeader } from '../../src/components/donor/DonorTabHeader';
 import { SectionTitleRow } from '../../src/components/ui/SectionTitleRow';
 import { donorDashboardNavItems } from '../../src/constants/dashboard';
 import {
@@ -40,12 +38,19 @@ import {
   unlockPrivateEventAccess,
 } from '../../src/features/donorHome.api';
 import { getDonorDonationsModuleData } from '../../src/features/donorDonations.service';
-import { useAuthActions } from '../../src/features/auth/hooks/useAuthActions';
 import { useNotifications } from '../../src/hooks/useNotifications';
 import { useAuth } from '../../src/providers/AuthProvider';
 import { resolveThemeRoles, theme } from '../../src/design-system/theme';
 import { supabase } from '../../src/api/supabase/client';
 import { buildProfileCompletionMeta } from '../../src/features/profile/services/profile.service';
+import {
+  getCanonicalHairAssessment,
+  getHairScreeningMood,
+  getScreeningEntriesNewestFirst,
+} from '../../src/features/hairScreeningPresentation';
+import { setCachedHairAnalysisHomeData } from '../../src/features/hairAnalysisHomeCache';
+import { Badge, BadgeText } from '../../src/components/gluestack-ui/badge';
+import { Button } from '../../src/components/gluestack-ui/button';
 
 const formatDayLabel = (value) => (
   new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(new Date(value))
@@ -290,78 +295,11 @@ const normalizeConditionTone = (condition = '') => {
   };
 };
 
-const hasNegatedCareConcern = (text = '') => (
-  /\b(no|not|without)\s+(?:visible\s+|significant\s+|major\s+)?(?:damage|dryness|frizz|breakage|split\s+ends?|issues?)\b/i.test(text)
-  || /\bno\s+significant\s+damage\s+or\s+issues\b/i.test(text)
-  || /\bsealed\s+ends?\b/i.test(text)
-);
-
-const hasExplicitCareConcern = (text = '') => {
-  const normalized = String(text || '').toLowerCase();
-  const negated = hasNegatedCareConcern(normalized);
-  if (/(split\s+ends?|split\s+tips?|breakage|brittle|fray(?:ed|ing)|frizz|flyaways|oily|greasy|stressed\s+ends)/i.test(normalized)) {
-    return true;
-  }
-  if (/(dry|dull|damage|damaged|needs care|not eligible|improve)/i.test(normalized) && !negated) {
-    return true;
-  }
-  return false;
-};
-
-const getCanonicalHairAssessment = (screening = null) => {
-  if (!screening) {
-    return { label: 'No result', needsCare: false, issueLabel: 'No result' };
-  }
-
-  const combined = [
-    screening.detected_condition,
-    screening.visible_damage_notes,
-    screening.summary,
-    screening.decision,
-  ].filter(Boolean).join(' ');
-  const condition = String(screening.detected_condition || '').trim();
-  const metrics = deriveHairMetrics(screening);
-  const metricConcern = (
-    Number(metrics.dryness) >= 6
-    || Number(metrics.damage) >= 6
-    || Number(metrics.frizz) >= 6
-    || Number(metrics.oiliness) >= 7
-  );
-  const explicitConcern = hasExplicitCareConcern(combined);
-  const needsCare = explicitConcern || metricConcern;
-
-  if (!needsCare && (/healthy|good|eligible/i.test(combined) || condition)) {
-    return { label: condition || 'Healthy', needsCare: false, issueLabel: 'Good result' };
-  }
-
-  const issueLabel = [
-    Number(metrics.damage) >= 6 || /split|breakage|damage|fray|stressed/i.test(combined) ? 'Damage' : '',
-    Number(metrics.dryness) >= 6 || /dry|dull/i.test(combined) ? 'Dryness' : '',
-    Number(metrics.frizz) >= 6 || /frizz|flyaway/i.test(combined) ? 'Frizz' : '',
-    Number(metrics.oiliness) >= 7 || /oily|greasy/i.test(combined) ? 'Oiliness' : '',
-  ].filter(Boolean)[0] || 'Needs care';
-
-  return {
-    label: condition && !/healthy/i.test(condition) ? condition : issueLabel,
-    needsCare: true,
-    issueLabel,
-  };
-};
-
-const getScreeningEntries = (submissions = []) => (
-  submissions
-    .flatMap((submission) => (submission?.ai_screenings || []).map((screening) => ({ submission, screening })))
-    .filter((entry) => entry.screening?.created_at)
-    .sort((left, right) => new Date(right.screening.created_at).getTime() - new Date(left.screening.created_at).getTime())
-);
+const getScreeningEntries = getScreeningEntriesNewestFirst;
 
 const WEEK_DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const HOME_REALTIME_DEBOUNCE_MS = 420;
 const HOME_CACHE_FRESH_MS = 60000;
-const PRIVATE_ACCESS_FAB_SIZE = 48;
-const PRIVATE_ACCESS_FAB_EDGE_PADDING = 12;
-const PRIVATE_ACCESS_FAB_TOP_PADDING = 96;
-const PRIVATE_ACCESS_FAB_BOTTOM_PADDING = 112;
 
 const withOpacity = (color, opacity) => {
   if (!color || typeof color !== 'string') return color;
@@ -479,6 +417,18 @@ const buildRegisteredEventsByDate = (registeredEventDrives = []) => {
   });
 
   return markers;
+};
+
+const getRegisteredEventActivityType = (drive = null) => {
+  const registration = drive?.registration || drive || {};
+  const attendanceStatus = String(registration?.attendance_status || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+  if (['attended', 'present', 'checkedin', 'completed'].some((value) => attendanceStatus.includes(value))) {
+    return 'Attended event';
+  }
+
+  const registrationStatus = String(registration?.registration_status || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+  if (registrationStatus.includes('cancel')) return 'Cancelled event';
+  return 'Registered event';
 };
 
 const buildHairActivityCalendarCells = (
@@ -663,78 +613,7 @@ function HairConditionWidget({ screening, onViewDetail }) {
   );
 }
 
-function RecentHairLogWidget({ hairSubmissions, latestRecommendation, onOpenLog, onOpenHistory }) {
-  const { resolvedTheme } = useAuth();
-  const roles = resolveThemeRoles(resolvedTheme);
-  const headingFont = resolvedTheme?.secondaryFontFamily || theme.typography.fontFamilyDisplay;
-  const bodyFont = resolvedTheme?.fontFamily || theme.typography.fontFamily;
-  // eslint-disable-next-line no-unused-vars
-  const _latestRecommendation = latestRecommendation;
-  const allEntries = React.useMemo(() => getScreeningEntries(hairSubmissions), [hairSubmissions]);
-  const entries = allEntries.slice(0, 3);
-  const totalCount = allEntries.length;
-
-  if (!entries.length) {
-    return (
-      <EmptyDataState
-        title="No hair checks yet"
-        message="Run CheckHair to create your first hair log and analysis."
-        compact
-        showCountBadge={false}
-        variant="analysis"
-        style={[
-          styles.recentLogEmpty,
-          {
-            backgroundColor: roles.pageBackground,
-          },
-        ]}
-      />
-    );
-  }
-
-  return (
-    <View style={[styles.recentLogFlatCard, { backgroundColor: roles.pageBackground, borderColor: roles.defaultCardBorder }]}>
-      {entries.map((entry, index) => {
-        const assessment = getCanonicalHairAssessment(entry.screening);
-        const needsCare = assessment.needsCare;
-        const dotColor = needsCare ? '#c46a18' : '#54b86f';
-        return (
-          <React.Fragment key={`log-${entry.screening?.ai_screening_id || index}`}>
-            {index > 0 && <View style={[styles.recentLogDivider, { backgroundColor: roles.defaultCardBorder }]} />}
-            <Pressable
-              onPress={() => onOpenLog?.(entry)}
-              style={({ pressed }) => [styles.recentLogFlatRow, pressed ? styles.cardPressed : null]}
-            >
-              <View style={[styles.recentLogDot, { backgroundColor: dotColor }]} />
-              <Text style={[styles.recentLogFlatCondition, { color: roles.headingText, fontFamily: headingFont }]} numberOfLines={1}>
-                {assessment.label}
-              </Text>
-              <Text style={[styles.recentLogFlatDate, { color: roles.metaText, fontFamily: bodyFont }]}>
-                {formatDayLabel(entry.screening.created_at)}
-              </Text>
-            </Pressable>
-          </React.Fragment>
-        );
-      })}
-      {totalCount > 3 ? (
-        <>
-          <View style={[styles.recentLogDivider, { backgroundColor: roles.defaultCardBorder }]} />
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`View ${totalCount - 3} more hair checks`}
-            onPress={onOpenHistory}
-            style={({ pressed }) => [styles.recentLogFlatMore, pressed ? styles.cardPressed : null]}
-          >
-            <Text style={[styles.recentLogFlatMoreText, { color: roles.metaText, fontFamily: bodyFont }]}>
-              +{totalCount - 3} more — view in Hair Checks
-            </Text>
-          </Pressable>
-        </>
-      ) : null}
-    </View>
-  );
-}
-
+// eslint-disable-next-line no-unused-vars
 function DonationRequirementsOverview({ requirement }) {
   const { resolvedTheme } = useAuth();
   const roles = resolveThemeRoles(resolvedTheme);
@@ -764,7 +643,7 @@ function DonationRequirementsOverview({ requirement }) {
             Donation Requirements
           </Text>
           <Text style={[styles.donationRequirementsSubtitle, { color: roles.metaText, fontFamily: bodyFont }]} numberOfLines={2}>
-            Current eligibility rules
+            Eligibility rules
           </Text>
         </View>
         <MaterialCommunityIcons
@@ -839,7 +718,9 @@ function DonationRequirementsOverview({ requirement }) {
   );
 }
 
-function HairCalendarWidget({ hairSubmissions, registeredEventDrives = [], onOpenDate }) {
+// Retained for reference while the home dashboard uses the compact activity widget below.
+// eslint-disable-next-line no-unused-vars
+function LegacyHairCalendarWidget({ hairSubmissions, registeredEventDrives = [], onOpenDate }) {
   const { resolvedTheme } = useAuth();
   const roles = resolveThemeRoles(resolvedTheme);
   const [currentMonth, setCurrentMonth] = React.useState(() => {
@@ -1013,6 +894,153 @@ function HairCalendarWidget({ hairSubmissions, registeredEventDrives = [], onOpe
   );
 }
 
+function HairCalendarWidget({ registeredEventDrives = [], onOpenDate }) {
+  const { resolvedTheme } = useAuth();
+  const roles = resolveThemeRoles(resolvedTheme);
+  const bodyFont = resolvedTheme?.fontFamily || theme.typography.fontFamily;
+  const headingFont = resolvedTheme?.secondaryFontFamily || theme.typography.fontFamilyDisplay;
+  const today = React.useMemo(() => new Date(), []);
+  const todayKey = toLocalDateKey(today);
+  const eventsByDate = React.useMemo(() => buildRegisteredEventsByDate(registeredEventDrives), [registeredEventDrives]);
+  const activity = React.useMemo(() => {
+    const items = [];
+    eventsByDate.forEach((events, dateKey) => {
+      const latestEvent = events[0] || null;
+      items.push({
+        dateKey,
+        type: getRegisteredEventActivityType(latestEvent),
+        events,
+      });
+    });
+    const upcoming = items
+      .filter((item) => item.dateKey >= todayKey)
+      .sort((a, b) => a.dateKey.localeCompare(b.dateKey));
+    if (upcoming.length) return upcoming[0];
+
+    return items
+      .sort((a, b) => b.dateKey.localeCompare(a.dateKey))[0] || null;
+  }, [eventsByDate, todayKey]);
+  const drive = activity?.events?.[0] || null;
+  const imageUrl = drive?.event_image_url || drive?.organization_logo_url || '';
+  const [imageFailed, setImageFailed] = React.useState(false);
+  const eventTitle = drive?.event_title || 'Donation event';
+  const statusLabel = activity?.type ? activity.type.replace(/\s+event$/i, '') : '';
+  const eventDateLabel = drive ? formatDriveDate(drive?.start_date, drive?.end_date) : '';
+  const eventLocation = drive?.venue_name || drive?.location_label || '';
+
+  React.useEffect(() => {
+    setImageFailed(false);
+  }, [imageUrl]);
+
+  const handleActivityPress = () => {
+    if (!activity || !drive) return;
+    onOpenDate?.({ dateKey: activity.dateKey, entries: [], events: activity.events });
+  };
+
+  if (!drive) {
+    return (
+      <View
+        style={[
+          styles.compactCalendarCard,
+          {
+            backgroundColor: roles.defaultCardBackground,
+            borderColor: roles.defaultCardBorder,
+          },
+        ]}
+      >
+        <LinearGradient
+          colors={[roles.defaultCardBackground, roles.iconPrimarySurface]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.activityEmptyGradient}
+        >
+          <View style={[styles.activityEmptyIcon, { backgroundColor: withOpacity(roles.primaryActionBackground, 0.1) }]}>
+            <MaterialCommunityIcons name="calendar-heart" size={24} color={roles.primaryActionBackground} />
+          </View>
+          <View style={styles.activityEmptyCopy}>
+            <Text style={[styles.activityEventTitle, { color: roles.headingText, fontFamily: headingFont }]}>No events joined yet</Text>
+            <Text style={[styles.activityEmptyText, { color: roles.bodyText, fontFamily: bodyFont }]}>Events you join will appear here.</Text>
+          </View>
+        </LinearGradient>
+      </View>
+    );
+  }
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Open ${eventTitle} event details`}
+      onPress={handleActivityPress}
+      style={({ pressed }) => [
+        styles.compactCalendarCard,
+        {
+          backgroundColor: roles.defaultCardBackground,
+          borderColor: withOpacity(roles.primaryActionBackground, 0.18),
+        },
+        pressed && styles.cardPressed,
+      ]}
+    >
+      <LinearGradient
+        colors={[roles.defaultCardBackground, roles.iconPrimarySurface]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.compactCalendarGradient}
+      >
+        <View style={[styles.activityEventAccent, { backgroundColor: roles.primaryActionBackground }]} />
+        <View style={styles.activityEventCopy}>
+          <Text style={[styles.activityEventEyebrow, { color: roles.primaryActionBackground, fontFamily: bodyFont }]}>YOUR JOINED EVENT</Text>
+          <Text numberOfLines={2} style={[styles.activityEventTitle, { color: roles.headingText, fontFamily: headingFont }]}>
+            {eventTitle}
+          </Text>
+          <View style={[styles.activityStatusPill, { backgroundColor: withOpacity(roles.primaryActionBackground, 0.1) }]}>
+            <View style={[styles.activityStatusDot, { backgroundColor: roles.primaryActionBackground }]} />
+            <Text style={[styles.activityStatusText, { color: roles.primaryActionBackground, fontFamily: bodyFont }]}>{statusLabel}</Text>
+          </View>
+          <View style={styles.activityEventMetaGroup}>
+            <View style={styles.activityEventMetaRow}>
+              <MaterialCommunityIcons name="calendar-blank-outline" size={15} color={roles.primaryActionBackground} />
+              <Text numberOfLines={1} style={[styles.activityEventMetaText, { color: roles.bodyText, fontFamily: bodyFont }]}>{eventDateLabel}</Text>
+            </View>
+            {eventLocation ? (
+              <View style={styles.activityEventMetaRow}>
+                <MaterialCommunityIcons name="map-marker-outline" size={15} color={roles.primaryActionBackground} />
+                <Text numberOfLines={1} style={[styles.activityEventMetaText, { color: roles.bodyText, fontFamily: bodyFont }]}>{eventLocation}</Text>
+              </View>
+            ) : null}
+          </View>
+        </View>
+        <View style={[styles.activityEventVisual, { backgroundColor: roles.primaryActionBackground }]}>
+          {imageUrl && !imageFailed ? (
+            <Image
+              source={{ uri: imageUrl }}
+              style={styles.activityEventImage}
+              resizeMode="cover"
+              onError={() => setImageFailed(true)}
+            />
+          ) : (
+            <LinearGradient
+              colors={[theme.colors.dashboardDonorFrom, theme.colors.dashboardDonorTo]}
+              style={styles.activityEventImageFallback}
+            >
+              <MaterialCommunityIcons name="calendar-heart" size={36} color={roles.primaryActionText} />
+            </LinearGradient>
+          )}
+          <LinearGradient
+            pointerEvents="none"
+            colors={['transparent', 'rgba(43, 4, 12, 0.34)']}
+            style={styles.activityEventImageScrim}
+          />
+          <View style={styles.activityEventArrow}>
+            <MaterialCommunityIcons name="arrow-top-right" size={18} color={roles.primaryActionBackground} />
+          </View>
+        </View>
+      </LinearGradient>
+    </Pressable>
+  );
+}
+
+const getHairLogMood = getHairScreeningMood;
+
 function FinishSetupCard({ completionMeta, onManageProfile }) {
   const { resolvedTheme } = useAuth();
   const roles = resolveThemeRoles(resolvedTheme);
@@ -1154,50 +1182,114 @@ function UpcomingDriveHero({ drive, onPress }) {
   );
 }
 
-function ActiveDonationDriveCard({ drive, onOpenDetails, style }) {
+function ActiveDonationDriveCard({ drive, onOpenDetails, style, isActive = false }) {
   const { resolvedTheme } = useAuth();
   const roles = resolveThemeRoles(resolvedTheme);
   const [imageFailed, setImageFailed] = React.useState(false);
   const imageUrl = drive?.event_image_url || drive?.organization_logo_url || '';
   const scopeLabel = drive?.is_public ? 'PUBLIC' : 'PRIVATE';
   const driveDateLabel = formatDriveCardDate(drive?.start_date, drive?.end_date);
+  const cardScale = React.useRef(new Animated.Value(isActive ? 1 : 0.97)).current;
 
   React.useEffect(() => {
     setImageFailed(false);
   }, [imageUrl]);
+
+  React.useEffect(() => {
+    Animated.spring(cardScale, {
+      toValue: isActive ? 1 : 0.97,
+      damping: 18,
+      stiffness: 220,
+      mass: 0.8,
+      useNativeDriver: true,
+    }).start();
+  }, [cardScale, isActive]);
 
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={`Open event details for ${drive?.event_title || 'donation drive'}`}
       onPress={onOpenDetails}
-      style={({ pressed }) => [style, pressed ? styles.cardPressed : null]}
+      style={style}
     >
-      <View style={[styles.activeDriveCard, { backgroundColor: roles.pageBackground, borderColor: roles.defaultCardBorder }]}>
-        <View style={[styles.activeDriveCover, { backgroundColor: roles.iconPrimarySurface }]}>
-          {imageUrl && !imageFailed ? (
-            <Image source={{ uri: imageUrl }} style={styles.activeDriveImage} resizeMode="cover" onError={() => setImageFailed(true)} />
-          ) : (
-            <View style={styles.activeDriveFallback}>
-              <MaterialCommunityIcons name="calendar-heart" size={42} color={roles.primaryActionBackground} />
-            </View>
-          )}
+      <Animated.View style={[styles.activeDriveCard, { backgroundColor: roles.primaryActionBackground, borderColor: roles.defaultCardBorder }, { transform: [{ scale: cardScale }] }]}>
+        {imageUrl && !imageFailed ? (
+          <Image source={{ uri: imageUrl }} style={styles.activeDriveImage} resizeMode="cover" onError={() => setImageFailed(true)} />
+        ) : (
+          <View style={[styles.activeDriveFallback, { backgroundColor: roles.iconPrimarySurface }]}>
+            <MaterialCommunityIcons name="calendar-heart" size={42} color={roles.primaryActionBackground} />
+          </View>
+        )}
+        <LinearGradient
+          pointerEvents="none"
+          colors={['rgba(45, 5, 15, 0.05)', 'rgba(45, 5, 15, 0.9)']}
+          start={{ x: 0.5, y: 0.1 }}
+          end={{ x: 0.5, y: 1 }}
+          style={styles.activeDriveImageScrim}
+        />
+        <View style={styles.activeDriveImageAction}>
+          <MaterialCommunityIcons name="arrow-top-right" size={17} color="#FFFFFF" />
         </View>
         <View style={styles.activeDriveBody}>
-          <View style={[styles.activeDriveBadge, { backgroundColor: roles.supportCardBackground, borderColor: roles.defaultCardBorder }]}>
-            <Text style={[styles.activeDriveBadgeText, { color: roles.metaText }]}>{scopeLabel}</Text>
-          </View>
-          <Text numberOfLines={1} style={[styles.activeDriveTitle, { color: roles.headingText }]}>
+          <Badge
+            variant="outline"
+            className="self-start rounded-full border-white/30 bg-black/25 px-2.5 py-1"
+          >
+            <BadgeText className="text-[10px] font-bold text-white">{scopeLabel}</BadgeText>
+          </Badge>
+          <Text numberOfLines={2} style={styles.activeDriveTitle}>
             {drive?.event_title || 'Donation drive'}
           </Text>
           <View style={styles.activeDriveMetaRow}>
-            <MaterialCommunityIcons name="calendar-blank-outline" size={14} color={roles.metaText} />
-            <Text numberOfLines={1} style={[styles.activeDriveMetaText, { color: roles.bodyText }]}>
+            <MaterialCommunityIcons name="calendar-blank-outline" size={14} color="#F4D8DE" />
+            <Text numberOfLines={1} style={styles.activeDriveMetaText}>
               {driveDateLabel}
             </Text>
           </View>
+          {drive?.location_label ? (
+            <View style={styles.activeDriveMetaRow}>
+              <MaterialCommunityIcons name="map-marker-outline" size={14} color="#F4D8DE" />
+              <Text numberOfLines={1} style={styles.activeDriveMetaText}>
+                {drive.location_label}
+              </Text>
+            </View>
+          ) : null}
         </View>
-      </View>
+      </Animated.View>
+    </Pressable>
+  );
+}
+
+function PrivateEventAccessCard({ onPress, style }) {
+  const { resolvedTheme } = useAuth();
+  const roles = resolveThemeRoles(resolvedTheme);
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Enter a private event code"
+      onPress={onPress}
+      style={style}
+    >
+      <LinearGradient
+        colors={[roles.primaryActionBackground, roles.primaryActionBackground, '#4B0C18']}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.privateEventAccessCard}
+      >
+        <View style={styles.privateEventAccessGlow} />
+        <View style={styles.privateEventAccessIcon}>
+          <MaterialCommunityIcons name="lock-outline" size={25} color={roles.primaryActionBackground} />
+        </View>
+        <View style={styles.privateEventAccessCopy}>
+          <Text style={styles.privateEventAccessEyebrow}>PRIVATE EVENT</Text>
+          <Text style={styles.privateEventAccessTitle}>Have an event code?</Text>
+          <Text style={styles.privateEventAccessText}>Enter your code to view and join a private donation event.</Text>
+        </View>
+        <View style={styles.privateEventAccessArrow}>
+          <MaterialCommunityIcons name="arrow-top-right" size={18} color={roles.primaryActionBackground} />
+        </View>
+      </LinearGradient>
     </Pressable>
   );
 }
@@ -1371,20 +1463,7 @@ function HomeSectionHeader({ title, icon = 'file-document-outline', actionLabel,
   );
 }
 
-function DonationEventsGroupHeader({ title }) {
-  const { resolvedTheme } = useAuth();
-  const roles = resolveThemeRoles(resolvedTheme);
-
-  return (
-    <View style={styles.donationEventsGroupHeader}>
-      <Text style={[styles.donationEventsGroupTitle, { color: roles.headingText }]}>
-        {title}
-      </Text>
-      <View style={[styles.donationEventsGroupLine, { backgroundColor: roles.defaultCardBorder }]} />
-    </View>
-  );
-}
-
+// eslint-disable-next-line no-unused-vars
 function DonationEventsVisibilityDropdown({ value, onChange }) {
   const { resolvedTheme } = useAuth();
   const roles = resolveThemeRoles(resolvedTheme);
@@ -1488,6 +1567,7 @@ function DonationEventsVisibilityDropdown({ value, onChange }) {
   );
 }
 
+// eslint-disable-next-line no-unused-vars
 function DonationEventsSortDropdown({ value, onChange }) {
   const { resolvedTheme } = useAuth();
   const roles = resolveThemeRoles(resolvedTheme);
@@ -1591,22 +1671,45 @@ function DonationEventsSortDropdown({ value, onChange }) {
   );
 }
 
-function AiInsightCard({ message }) {
+function AiInsightCard({ overview, onOpenResult }) {
   const { resolvedTheme } = useAuth();
+  const roles = resolveThemeRoles(resolvedTheme);
   const bodyFont = resolvedTheme?.fontFamily || theme.typography.fontFamily;
+  const hasResult = Boolean(overview?.entry?.screening);
 
   return (
-    <LinearGradient
-      colors={['#2a060c', '#4e0c16', '#74152c']}
-      start={{ x: 0.1, y: 0 }}
-      end={{ x: 0.9, y: 1 }}
-      style={styles.aiInsightCard}
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={hasResult ? 'Open latest hair analysis result' : 'Start a hair analysis'}
+      onPress={onOpenResult}
+      style={styles.aiInsightPressable}
     >
-      <MaterialCommunityIcons name="lightbulb-on-outline" size={15} color="#f5dfa8" />
-      <Text style={[styles.aiInsightText, { fontFamily: bodyFont }]} numberOfLines={2}>
-        {message || 'Start your first hair check when you are ready.'}
-      </Text>
-    </LinearGradient>
+      <LinearGradient
+        colors={['rgba(42, 6, 12, 0.9)', 'rgba(78, 12, 22, 0.84)', 'rgba(116, 21, 44, 0.78)']}
+        start={{ x: 0.1, y: 0 }}
+        end={{ x: 0.9, y: 1 }}
+        style={styles.aiInsightCard}
+      >
+        <View style={styles.aiInsightMetaRow}>
+          <View style={styles.aiInsightConditionPill}>
+            <MaterialCommunityIcons name={overview?.mood?.icon || 'heart-outline'} size={15} color={overview?.mood?.color || '#F5DFA8'} />
+            <Text style={[styles.aiInsightConditionText, { fontFamily: bodyFont }]}>{overview?.conditionLabel || 'Ready when you are'}</Text>
+          </View>
+          {overview?.dateLabel ? <Text style={[styles.aiInsightDate, { fontFamily: bodyFont }]}>{overview.dateLabel}</Text> : null}
+        </View>
+        <Text style={[styles.aiInsightText, { fontFamily: bodyFont }]}>
+          {overview?.message || 'Start your first hair check to receive a personal hair care overview.'}
+        </Text>
+        <View style={styles.aiInsightActionRow}>
+          <Text style={[styles.aiInsightActionText, { color: roles.primaryActionText, fontFamily: bodyFont }]}>
+            {hasResult ? 'View your full result' : 'Start hair analysis'}
+          </Text>
+          <View style={styles.aiInsightArrow}>
+            <MaterialCommunityIcons name="arrow-right" size={16} color={roles.primaryActionText} />
+          </View>
+        </View>
+      </LinearGradient>
+    </Pressable>
   );
 }
 // eslint-disable-next-line no-unused-vars
@@ -1895,33 +1998,41 @@ const buildDailyReminder = (submissions = []) => {
   };
 };
 
-const WEEKLY_SCAN_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
-
-const buildHairReminderMessage = (submissions = []) => {
+const buildLatestHairOverview = (submissions = []) => {
   const entries = getScreeningEntries(submissions);
   if (!entries.length) {
-    return 'You have no hair log yet. Start CheckHair to track your progress.';
+    return {
+      entry: null,
+      conditionLabel: 'No check-in yet',
+      dateLabel: '',
+      mood: { icon: 'heart-outline', color: '#F5DFA8', label: 'Ready when you are' },
+      message: 'Start your first hair check to receive a personal overview and simple care tips.',
+    };
   }
 
-  const latest = entries[0]?.screening || null;
+  const entry = entries[0];
+  const latest = entry?.screening || null;
   const assessment = getCanonicalHairAssessment(latest);
-  const needsCare = assessment.needsCare;
-  const createdAt = latest?.created_at ? new Date(latest.created_at) : null;
-  const nextScanAt = createdAt ? new Date(createdAt.getTime() + WEEKLY_SCAN_INTERVAL_MS) : null;
-  const scanReady = !nextScanAt || Date.now() >= nextScanAt.getTime();
-  const nextScanLabel = nextScanAt
-    ? new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' }).format(nextScanAt)
-    : '';
+  const mood = getHairLogMood(latest);
+  const dateLabel = latest?.created_at ? formatDayLabel(latest.created_at) : '';
+  const conditionLabel = String(assessment.label || 'Hair check complete').trim();
+  const normalizedCondition = conditionLabel.replace(/\bhair\b/gi, '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const conditionPhrase = /damage/i.test(conditionLabel)
+    ? 'signs of damage'
+    : /needs care/i.test(conditionLabel)
+      ? 'areas that need extra care'
+      : `${normalizedCondition} hair`;
+  const message = assessment.needsCare
+    ? `Your ${dateLabel || 'most recent'} check noticed ${conditionPhrase}. Open the full result to review the care steps saved for you.`
+    : `Your ${dateLabel || 'most recent'} check shows ${conditionPhrase}. Keep following the routine that works for you.`;
 
-  if (scanReady) {
-    return needsCare
-      ? `Your weekly scan is ready. Last result: ${assessment.label}. Run a new check to see if your hair improved.`
-      : `Your weekly scan is ready. Last result: ${assessment.label}. Run a quick check to confirm it is maintained.`;
-  }
-
-  return needsCare
-    ? `Last result: ${assessment.label}. Continue gentle care this week. Next scan: ${nextScanLabel}.`
-    : `Great job. Last result: ${assessment.label}. Keep your routine. Next scan: ${nextScanLabel}.`;
+  return {
+    entry,
+    conditionLabel,
+    dateLabel,
+    mood,
+    message,
+  };
 };
 
 // eslint-disable-next-line no-unused-vars
@@ -1948,11 +2059,8 @@ const buildContextualGreeting = ({ hasHistory, latestCondition, checkedToday, da
 
 export default function DonorHomeScreen() {
   const router = useRouter();
-  const { width: viewportWidth, height: viewportHeight } = useWindowDimensions();
   const { user, profile, resolvedTheme } = useAuth();
   const roles = resolveThemeRoles(resolvedTheme);
-  const headerPrimaryColor = resolvedTheme?.primaryColor || roles.primaryActionBackground;
-  const { logout, isLoading: isLoggingOut } = useAuthActions();
   const {
     unreadCount,
   } = useNotifications({
@@ -1972,133 +2080,21 @@ export default function DonorHomeScreen() {
   const [donationDrives, setDonationDrives] = React.useState(cachedHome?.donationDrives || []);
   const [hairSubmissions, setHairSubmissions] = React.useState(cachedHome?.hairSubmissions || []);
   const [registeredEventDrives, setRegisteredEventDrives] = React.useState(cachedHome?.registeredEventDrives || []);
-  const [donationRequirement, setDonationRequirement] = React.useState(cachedHome?.donationRequirement || null);
-  const [latestRecommendation, setLatestRecommendation] = React.useState(cachedHome?.latestRecommendation || null);
+  const [, setDonationRequirement] = React.useState(cachedHome?.donationRequirement || null);
+  const [, setLatestRecommendation] = React.useState(cachedHome?.latestRecommendation || null);
   const [donationEventSearchQuery, setDonationEventSearchQuery] = React.useState('');
   const [donationEventSortOrder, setDonationEventSortOrder] = React.useState('nearest');
   const [donationEventVisibilityFilter, setDonationEventVisibilityFilter] = React.useState('all');
+  const [isDonationFiltersOpen, setIsDonationFiltersOpen] = React.useState(false);
+  const [activeDonationEventPage, setActiveDonationEventPage] = React.useState(0);
+  const [donationEventCarouselWidth, setDonationEventCarouselWidth] = React.useState(0);
+  const donationEventCarouselRef = React.useRef(null);
   const [privateEventCode, setPrivateEventCode] = React.useState('');
   const [isUnlockingPrivateEvent, setIsUnlockingPrivateEvent] = React.useState(false);
   const [isPrivateAccessModalVisible, setIsPrivateAccessModalVisible] = React.useState(false);
   const [privateUnlockMessage, setPrivateUnlockMessage] = React.useState('');
   const [privateUnlockVariant, setPrivateUnlockVariant] = React.useState('info');
-  const [activeHomeTab, setActiveHomeTab] = React.useState('overview');
   const [certificateToastMessage, setCertificateToastMessage] = React.useState('');
-  const [isTutorialOpen, setIsTutorialOpen] = React.useState(false);
-  const privateAccessFabPosition = React.useRef(new Animated.ValueXY({ x: 0, y: 0 })).current;
-  const privateAccessFabDragStart = React.useRef({ x: 0, y: 0 });
-  const hasInitializedFabPosition = React.useRef(false);
-  const privateAccessFabBounds = React.useMemo(() => {
-    const minX = PRIVATE_ACCESS_FAB_EDGE_PADDING;
-    const maxX = Math.max(
-      minX,
-      viewportWidth - PRIVATE_ACCESS_FAB_SIZE - PRIVATE_ACCESS_FAB_EDGE_PADDING
-    );
-    const minY = PRIVATE_ACCESS_FAB_TOP_PADDING;
-    const maxY = Math.max(
-      minY,
-      viewportHeight - PRIVATE_ACCESS_FAB_SIZE - PRIVATE_ACCESS_FAB_BOTTOM_PADDING
-    );
-    return { minX, maxX, minY, maxY };
-  }, [viewportHeight, viewportWidth]);
-
-  const clampPrivateAccessFab = React.useCallback((x, y) => {
-    const clampedX = Math.min(
-      privateAccessFabBounds.maxX,
-      Math.max(privateAccessFabBounds.minX, x)
-    );
-    const clampedY = Math.min(
-      privateAccessFabBounds.maxY,
-      Math.max(privateAccessFabBounds.minY, y)
-    );
-    return { x: clampedX, y: clampedY };
-  }, [
-    privateAccessFabBounds.maxX,
-    privateAccessFabBounds.maxY,
-    privateAccessFabBounds.minX,
-    privateAccessFabBounds.minY,
-  ]);
-
-  const snapPrivateAccessFabToEdge = React.useCallback((x, y, animate = true) => {
-    const clamped = clampPrivateAccessFab(x, y);
-    const snapToLeft = (clamped.x - privateAccessFabBounds.minX) <= (privateAccessFabBounds.maxX - clamped.x);
-    const snapX = snapToLeft ? privateAccessFabBounds.minX : privateAccessFabBounds.maxX;
-    const toValue = { x: snapX, y: clamped.y };
-
-    if (!animate) {
-      privateAccessFabPosition.setValue(toValue);
-      return;
-    }
-
-    Animated.spring(privateAccessFabPosition, {
-      toValue,
-      damping: 20,
-      stiffness: 240,
-      mass: 0.9,
-      useNativeDriver: false,
-    }).start();
-  }, [
-    clampPrivateAccessFab,
-    privateAccessFabBounds.maxX,
-    privateAccessFabBounds.minX,
-    privateAccessFabPosition,
-  ]);
-
-  React.useEffect(() => {
-    privateAccessFabPosition.stopAnimation((current = { x: privateAccessFabBounds.maxX, y: privateAccessFabBounds.maxY }) => {
-      if (!hasInitializedFabPosition.current) {
-        privateAccessFabPosition.setValue({
-          x: privateAccessFabBounds.maxX,
-          y: privateAccessFabBounds.maxY,
-        });
-        hasInitializedFabPosition.current = true;
-        return;
-      }
-      snapPrivateAccessFabToEdge(current.x, current.y, false);
-    });
-  }, [
-    privateAccessFabBounds.maxX,
-    privateAccessFabBounds.maxY,
-    privateAccessFabPosition,
-    snapPrivateAccessFabToEdge,
-  ]);
-
-  const privateAccessFabPanResponder = React.useMemo(() => PanResponder.create({
-    onMoveShouldSetPanResponder: (_event, gestureState) => (
-      Math.abs(gestureState.dx) > 3 || Math.abs(gestureState.dy) > 3
-    ),
-    onPanResponderGrant: () => {
-      privateAccessFabPosition.stopAnimation((current = { x: privateAccessFabBounds.maxX, y: privateAccessFabBounds.maxY }) => {
-        privateAccessFabDragStart.current = clampPrivateAccessFab(current.x, current.y);
-      });
-    },
-    onPanResponderMove: (_event, gestureState) => {
-      const nextX = privateAccessFabDragStart.current.x + gestureState.dx;
-      const nextY = privateAccessFabDragStart.current.y + gestureState.dy;
-      privateAccessFabPosition.setValue(clampPrivateAccessFab(nextX, nextY));
-    },
-    onPanResponderRelease: (_event, gestureState) => {
-      const releaseX = privateAccessFabDragStart.current.x + gestureState.dx;
-      const releaseY = privateAccessFabDragStart.current.y + gestureState.dy;
-      snapPrivateAccessFabToEdge(releaseX, releaseY, true);
-    },
-    onPanResponderTerminate: (_event, gestureState) => {
-      const releaseX = privateAccessFabDragStart.current.x + gestureState.dx;
-      const releaseY = privateAccessFabDragStart.current.y + gestureState.dy;
-      snapPrivateAccessFabToEdge(releaseX, releaseY, true);
-    },
-  }), [
-    clampPrivateAccessFab,
-    privateAccessFabBounds.maxX,
-    privateAccessFabBounds.maxY,
-    privateAccessFabPosition,
-    snapPrivateAccessFabToEdge,
-  ]);
-
-  const firstName = String(profile?.first_name || '').trim();
-  const lastName = String(profile?.last_name || '').trim();
-  const avatarInitials = [firstName?.[0], lastName?.[0]].filter(Boolean).join('').toUpperCase();
-  const avatarUri = profile?.avatar_url || profile?.photo_path || '';
 
   const profileCompletionMeta = React.useMemo(() => buildProfileCompletionMeta({
     photo_path: profile?.photo_path || profile?.avatar_url || '',
@@ -2151,15 +2147,26 @@ export default function DonorHomeScreen() {
     donationEventVisibilityFilter,
     normalizedDonationEventSearchQuery,
   ]);
-  const publicDonationDrives = React.useMemo(() => (
-    filteredDonationDrives.filter((drive) => drive?.is_public || drive?.visibility_scope === 'public')
-  ), [filteredDonationDrives]);
-  const privateDonationDrives = React.useMemo(() => (
-    filteredDonationDrives.filter((drive) => !(drive?.is_public || drive?.visibility_scope === 'public'))
-  ), [filteredDonationDrives]);
+  const visibleDonationDrives = React.useMemo(() => {
+    const seen = new Set();
+    return filteredDonationDrives.filter((drive, index) => {
+      const key = drive?.donation_drive_id || drive?.id || `row-${index}`;
+      const normalizedKey = String(key);
+      if (seen.has(normalizedKey)) return false;
+      seen.add(normalizedKey);
+      return true;
+    });
+  }, [filteredDonationDrives]);
+  const donationEventPageCount = visibleDonationDrives.length + 1;
+  const donationEventDotCount = Math.min(donationEventPageCount, 5);
+  React.useEffect(() => {
+    setActiveDonationEventPage(0);
+    const frame = requestAnimationFrame(() => {
+      donationEventCarouselRef.current?.scrollTo({ x: 0, animated: false });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [donationEventSearchQuery, donationEventSortOrder, donationEventVisibilityFilter, visibleDonationDrives.length]);
   const donationEventsVisibilityLabel = getDonationEventVisibilityOption(donationEventVisibilityFilter).label;
-  const showPublicDonationSection = donationEventVisibilityFilter !== 'private';
-  const showPrivateDonationSection = donationEventVisibilityFilter !== 'public';
   const donationEventsEmptyTitle = normalizedDonationEventSearchQuery
     ? 'No matching events found'
     : donationEventVisibilityFilter === 'public'
@@ -2173,11 +2180,11 @@ export default function DonorHomeScreen() {
       ? 'Public and private events will appear here when available.'
       : `Only ${donationEventsVisibilityLabel.toLowerCase()} events will appear here.`;
 
-  const loadHome = React.useCallback(async ({ silent = false } = {}) => {
+  const loadHome = React.useCallback(async ({ silent = false, force = false } = {}) => {
     if (!user?.id) return;
     const cachedAt = Number(homeCacheRef.current?.cachedAt || 0);
     const cacheIsFresh = cachedAt && (Date.now() - cachedAt) < HOME_CACHE_FRESH_MS;
-    if (silent && cacheIsFresh) return;
+    if (silent && cacheIsFresh && !force) return;
 
     if (!silent && !homeCacheRef.current) {
       setIsLoadingHome(true);
@@ -2226,6 +2233,10 @@ export default function DonorHomeScreen() {
     cachedDonorHomeData = nextHomeData;
     cachedDonorHomeUserId = user.id;
     homeCacheRef.current = nextHomeData;
+    setCachedHairAnalysisHomeData(user.id, {
+      submissions: nextHairSubmissions,
+      donationRequirement: nextDonationRequirement,
+    });
     setDonationDrives(nextDonationDrives);
     setHairSubmissions(nextHairSubmissions);
     setRegisteredEventDrives(nextRegisteredEventDrives);
@@ -2255,7 +2266,7 @@ export default function DonorHomeScreen() {
     }
 
     homeRealtimeRefreshRef.current = setTimeout(() => {
-      void loadHome({ silent: true });
+      void loadHome({ silent: true, force: true });
     }, HOME_REALTIME_DEBOUNCE_MS);
   }, [loadHome]);
 
@@ -2266,7 +2277,7 @@ export default function DonorHomeScreen() {
 
   useFocusEffect(
     React.useCallback(() => {
-      void loadHome({ silent: true });
+      void loadHome({ silent: true, force: true });
       return undefined;
     }, [loadHome])
   );
@@ -2330,17 +2341,8 @@ export default function DonorHomeScreen() {
 
   // Compute daily reminder and analytics data
   const analyticsData = React.useMemo(() => buildAnalyticsData(hairSubmissions), [hairSubmissions]);
-  const homeReminderMessage = React.useMemo(() => buildHairReminderMessage(hairSubmissions), [hairSubmissions]);
+  const latestHairOverview = React.useMemo(() => buildLatestHairOverview(hairSubmissions), [hairSubmissions]);
   const showHairActivityCalendar = analyticsData.hasHistory || registeredEventDrives.length > 0;
-  const handleOpenHairLogEntry = React.useCallback((entry) => {
-    const screeningId = entry?.screening?.ai_screening_id || entry?.screening?.id;
-    if (!screeningId) return;
-    router.push({
-      pathname: '/donor/hair-check-details',
-      params: { screeningId: String(screeningId) },
-    });
-  }, [router]);
-
   const handleOpenHairActivityDate = React.useCallback(({ dateKey, entries = [], events = [] }) => {
     const screening = entries[0]?.screening;
     const screeningId = screening?.ai_screening_id || screening?.id;
@@ -2355,9 +2357,13 @@ export default function DonorHomeScreen() {
     const driveId = events[0]?.donation_drive_id || events[0]?.id;
     if (driveId) router.navigate(`/donor/drives/${driveId}`);
   }, [router]);
-
-  const handleOpenHairLogHistory = React.useCallback(() => {
-    router.navigate('/donor/donations?tab=history');
+  const handleOpenHairLog = React.useCallback((entry) => {
+    const screeningId = entry?.screening?.ai_screening_id || entry?.screening?.id;
+    if (!screeningId) return;
+    router.push({
+      pathname: '/donor/hair-check-details',
+      params: { screeningId: String(screeningId) },
+    });
   }, [router]);
 
   const handleUnlockPrivateEvent = React.useCallback(async () => {
@@ -2383,7 +2389,6 @@ export default function DonorHomeScreen() {
     setPrivateUnlockVariant('success');
     setPrivateEventCode('');
     setIsPrivateAccessModalVisible(false);
-    setActiveHomeTab('events');
     let unlockedDriveId = extractDriveIdFromUnlockResult(result.data);
     await loadHome({ silent: false });
     if (!unlockedDriveId) {
@@ -2410,35 +2415,6 @@ export default function DonorHomeScreen() {
     router.navigate(item.route);
   };
 
-  const floatingPrivateAccessButton = (
-    <Animated.View
-      style={[
-        styles.privateAccessFabFloatWrap,
-        { left: privateAccessFabPosition.x, top: privateAccessFabPosition.y },
-      ]}
-      {...privateAccessFabPanResponder.panHandlers}
-    >
-      <Pressable
-        onPress={() => setIsPrivateAccessModalVisible(true)}
-        style={[
-          styles.privateAccessFab,
-          {
-            backgroundColor: roles.primaryActionBackground,
-            borderColor: roles.primaryActionBorder || roles.primaryActionBackground,
-          },
-        ]}
-        accessibilityRole="button"
-        accessibilityLabel="Open private event access"
-      >
-        <MaterialCommunityIcons
-          name="lock"
-          size={20}
-          color={roles.pageBackground || roles.defaultCardBackground || '#FFFFFF'}
-        />
-      </Pressable>
-    </Animated.View>
-  );
-
   return (
     <DashboardLayout
       navItems={donorDashboardNavItems}
@@ -2449,33 +2425,11 @@ export default function DonorHomeScreen() {
       showSupportChat={false}
       chatModalPresentation="centered"
       draggableChat={true}
-      floatingOverlay={floatingPrivateAccessButton}
       loadingOverlay={isLoadingHome ? (
         <DonivraLoadingOverlay visible label="Loading dashboard..." />
       ) : null}
-      header={(
-        <View style={[styles.dashboardHeaderSurface, { backgroundColor: headerPrimaryColor }]}>
-          <DonorTopBar
-            title={firstName || 'Donor'}
-            subtitle="Hair Donor"
-            avatarInitials={avatarInitials}
-            avatarUri={avatarUri}
-            unreadCount={unreadCount}
-            showTutorialAction
-            onTutorialPress={() => setIsTutorialOpen(true)}
-            onNotificationsPress={() => router.navigate('/donor/notifications')}
-            onProfilePress={() => router.navigate('/profile')}
-            onLogoutPress={logout}
-            isLoggingOut={isLoggingOut}
-          />
-        </View>
-      )}
+      header={<DonorTabHeader unreadCount={unreadCount} />}
     >
-      <DonorTutorialModal
-        visible={isTutorialOpen}
-        tabKey={activeHomeTab === 'events' ? 'homeEvents' : 'homeOverview'}
-        onClose={() => setIsTutorialOpen(false)}
-      />
       {homeError ? (
         <StatusBanner
           variant="info"
@@ -2510,51 +2464,248 @@ export default function DonorHomeScreen() {
       ) : null}
 
       <View style={styles.homeFeed}>
-        <View style={[styles.homeModeTabs, { borderBottomColor: roles.defaultCardBorder }]}>
-          <Pressable
-            onPress={() => setActiveHomeTab('overview')}
-            style={[
-              styles.homeModeTab,
-              activeHomeTab === 'overview' ? [styles.homeModeTabActive, { borderBottomColor: headerPrimaryColor }] : null,
-            ]}
-          >
-            <Text
-              style={[
-                styles.homeModeTabText,
-                { color: activeHomeTab === 'overview' ? headerPrimaryColor : roles.metaText },
-              ]}
-            >
-              Overview
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={() => setActiveHomeTab('events')}
-            style={[
-              styles.homeModeTab,
-              activeHomeTab === 'events' ? [styles.homeModeTabActive, { borderBottomColor: headerPrimaryColor }] : null,
-            ]}
-          >
-            <Text
-              style={[
-                styles.homeModeTabText,
-                { color: activeHomeTab === 'events' ? headerPrimaryColor : roles.metaText },
-              ]}
-            >
-              Donation Events
-            </Text>
-          </Pressable>
-        </View>
-
-        {activeHomeTab === 'overview' ? (
-          <>
-            <AnimatedHomeSection delay={20} animate={shouldAnimateHomeSections}>
-              <AiInsightCard
-                message={homeReminderMessage}
-              />
+        <>
+            <AnimatedHomeSection delay={20} style={styles.forYouSection} animate={shouldAnimateHomeSections}>
+              <View style={styles.forYouGluestackCard}>
+                <LinearGradient
+                  colors={[roles.primaryActionBackground || '#4b1020', '#7f2039']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={[styles.forYouCard, { borderColor: withOpacity(roles.primaryActionText, 0.34) }]}
+                >
+                  <View style={styles.forYouHeader}>
+                    <View style={styles.forYouHeaderCopy}>
+                      <Text style={[styles.forYouEyebrow, { color: '#f4d8de' }]}>HAIR CARE OVERVIEW</Text>
+                      <Text style={[styles.forYouTitle, { color: roles.primaryActionText }]}>Your latest hair update</Text>
+                    </View>
+                    <View style={styles.forYouSparkle}>
+                      <LottieView
+                        source={require('../../src/assets/animations/hair-care-sparkle.json')}
+                        autoPlay={shouldAnimateHomeSections}
+                        loop={shouldAnimateHomeSections}
+                        style={styles.forYouLottie}
+                      />
+                    </View>
+                  </View>
+                  <AiInsightCard
+                    overview={latestHairOverview}
+                    onOpenResult={() => {
+                      if (latestHairOverview.entry) {
+                        handleOpenHairLog(latestHairOverview.entry);
+                        return;
+                      }
+                      router.navigate('/donor/donations');
+                    }}
+                  />
+                </LinearGradient>
+              </View>
             </AnimatedHomeSection>
 
+            <Modal
+              transparent
+              visible={isDonationFiltersOpen}
+              animationType="slide"
+              onRequestClose={() => setIsDonationFiltersOpen(false)}
+            >
+              <View style={styles.donationFilterOverlay}>
+                <Pressable style={styles.donationFilterBackdrop} onPress={() => setIsDonationFiltersOpen(false)} />
+                <AppCard
+                  variant="elevated"
+                  radius="xl"
+                  padding="lg"
+                  style={[styles.donationFilterSheet, { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder }]}
+                >
+                  <View style={styles.donationFilterHeader}>
+                    <View>
+                      <Text style={[styles.donationFilterTitle, { color: roles.headingText }]}>Filter events</Text>
+                      <Text style={[styles.donationFilterSubtitle, { color: roles.metaText }]}>Choose how you want to browse</Text>
+                    </View>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Close event filters"
+                      hitSlop={8}
+                      onPress={() => setIsDonationFiltersOpen(false)}
+                      style={[styles.donationFilterClose, { backgroundColor: roles.iconPrimarySurface }]}
+                    >
+                      <MaterialCommunityIcons name="close" size={18} color={roles.primaryActionBackground} />
+                    </Pressable>
+                  </View>
+                  <Text style={[styles.donationFilterLabel, { color: roles.metaText }]}>SORT BY</Text>
+                  <View style={styles.donationFilterOptions}>
+                    {DONATION_EVENT_SORT_OPTIONS.map((option) => {
+                      const selected = option.key === donationEventSortOrder;
+                      return (
+                        <Pressable
+                          key={`sort-${option.key}`}
+                          onPress={() => setDonationEventSortOrder(option.key)}
+                          style={[styles.donationFilterOption, { backgroundColor: selected ? roles.iconPrimarySurface : roles.pageBackground, borderColor: selected ? roles.primaryActionBackground : roles.defaultCardBorder }]}
+                        >
+                          <Text style={[styles.donationFilterOptionText, { color: selected ? roles.primaryActionBackground : roles.bodyText }]}>{option.label}</Text>
+                          {selected ? <MaterialCommunityIcons name="check" size={17} color={roles.primaryActionBackground} /> : null}
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                  <Text style={[styles.donationFilterLabel, { color: roles.metaText }]}>EVENT TYPE</Text>
+                  <View style={styles.donationFilterOptions}>
+                    {DONATION_EVENT_VISIBILITY_OPTIONS.map((option) => {
+                      const selected = option.key === donationEventVisibilityFilter;
+                      return (
+                        <Pressable
+                          key={`visibility-${option.key}`}
+                          onPress={() => setDonationEventVisibilityFilter(option.key)}
+                          style={[styles.donationFilterOption, { backgroundColor: selected ? roles.iconPrimarySurface : roles.pageBackground, borderColor: selected ? roles.primaryActionBackground : roles.defaultCardBorder }]}
+                        >
+                          <Text style={[styles.donationFilterOptionText, { color: selected ? roles.primaryActionBackground : roles.bodyText }]}>{option.label}</Text>
+                          {selected ? <MaterialCommunityIcons name="check" size={17} color={roles.primaryActionBackground} /> : null}
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Apply event filters"
+                    onPress={() => setIsDonationFiltersOpen(false)}
+                    style={[styles.donationFilterDone, { backgroundColor: roles.primaryActionBackground }]}
+                  >
+                    <Text style={[styles.donationFilterDoneText, { color: roles.primaryActionText }]}>Done</Text>
+                  </Pressable>
+                </AppCard>
+              </View>
+            </Modal>
+
             <AnimatedHomeSection delay={45} style={styles.section} animate={shouldAnimateHomeSections}>
-              <DonationRequirementsOverview requirement={donationRequirement} />
+              {donationDrives.length ? (
+                <View style={styles.donationEventsControls}>
+                  <View style={styles.donationEventsSearchRow}>
+                    <View style={[styles.donationEventsSearchShell, { backgroundColor: roles.defaultCardBackground, borderColor: withOpacity(roles.primaryActionBackground, 0.16) }]}>
+                      <MaterialCommunityIcons name="magnify" size={20} color={roles.primaryActionBackground} />
+                      <TextInput
+                        value={donationEventSearchQuery}
+                        onChangeText={setDonationEventSearchQuery}
+                        placeholder="Find an event..."
+                        placeholderTextColor={roles.metaText}
+                        style={[styles.donationEventsSearchInput, { color: roles.headingText }]}
+                        returnKeyType="search"
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                      />
+                    </View>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-12 w-12 rounded-2xl border-0 bg-transparent p-0"
+                      accessibilityRole="button"
+                      accessibilityLabel="Open event filters"
+                      onPress={() => setIsDonationFiltersOpen(true)}
+                      style={[
+                        styles.donationFilterButton,
+                        { backgroundColor: roles.iconPrimarySurface, borderColor: withOpacity(roles.primaryActionBackground, 0.2) },
+                      ]}
+                    >
+                      <MaterialCommunityIcons name="tune-variant" size={20} color={roles.primaryActionBackground} />
+                    </Button>
+                  </View>
+                </View>
+              ) : null}
+              <View style={styles.feedSectionHeadingRow}>
+                <HomeSectionHeader title="Upcoming donation events" icon="calendar-heart" />
+                {donationEventPageCount > 1 ? (
+                  <View style={[styles.eventSwipeHint, { backgroundColor: roles.iconPrimarySurface }]}>
+                    <MaterialCommunityIcons name="swap-horizontal" size={15} color={roles.primaryActionBackground} />
+                    <Text style={[styles.eventSwipeHintText, { color: roles.primaryActionBackground }]}>Swipe</Text>
+                  </View>
+                ) : null}
+              </View>
+              {donationDrives.length ? (
+                <>
+                  {visibleDonationDrives.length ? (
+                    <>
+                      <View
+                        style={styles.activeDriveCarouselViewport}
+                        onLayout={(event) => {
+                          const nextWidth = Math.floor(event.nativeEvent.layout.width);
+                          if (nextWidth > 0 && nextWidth !== donationEventCarouselWidth) {
+                            setDonationEventCarouselWidth(nextWidth);
+                          }
+                        }}
+                      >
+                        <ScrollView
+                          ref={donationEventCarouselRef}
+                          horizontal
+                          showsHorizontalScrollIndicator={false}
+                          nestedScrollEnabled
+                          decelerationRate="fast"
+                          snapToInterval={donationEventCarouselWidth || 1}
+                          snapToAlignment="start"
+                          disableIntervalMomentum
+                          onMomentumScrollEnd={(event) => {
+                            const pageWidth = donationEventCarouselWidth || 1;
+                            const nextPage = Math.round(event.nativeEvent.contentOffset.x / pageWidth);
+                            setActiveDonationEventPage(Math.min(Math.max(nextPage, 0), donationEventPageCount - 1));
+                          }}
+                          contentContainerStyle={styles.activeDriveCarouselContent}
+                          style={styles.activeDriveCarousel}
+                        >
+                          {visibleDonationDrives.map((drive, index) => (
+                            <ActiveDonationDriveCard
+                              key={`donation-drive-${drive?.donation_drive_id || drive?.id || index}`}
+                              drive={drive}
+                              style={[
+                                styles.activeDriveCarouselCard,
+                                donationEventCarouselWidth ? { width: donationEventCarouselWidth } : null,
+                              ]}
+                              isActive={index === Math.min(activeDonationEventPage, visibleDonationDrives.length - 1)}
+                              onOpenDetails={() => router.navigate(`/donor/drives/${drive.donation_drive_id}`)}
+                            />
+                          ))}
+                          <PrivateEventAccessCard
+                            style={[
+                              styles.activeDriveCarouselCard,
+                              donationEventCarouselWidth ? { width: donationEventCarouselWidth } : null,
+                            ]}
+                            onPress={() => setIsPrivateAccessModalVisible(true)}
+                          />
+                        </ScrollView>
+                      </View>
+                      {donationEventDotCount > 1 ? (
+                        <View style={styles.donationEventPager} accessibilityLabel={`${Math.min(activeDonationEventPage, donationEventDotCount - 1) + 1} of ${donationEventDotCount} event pages`}>
+                          {Array.from({ length: donationEventDotCount }, (_, index) => (
+                            <View
+                              key={`event-page-dot-${index}`}
+                              style={[
+                                styles.donationEventPagerDot,
+                                {
+                                  backgroundColor: index === Math.min(activeDonationEventPage, donationEventDotCount - 1)
+                                    ? roles.primaryActionBackground
+                                    : withOpacity(roles.primaryActionBackground, 0.22),
+                                  width: index === Math.min(activeDonationEventPage, donationEventDotCount - 1) ? 20 : 7,
+                                },
+                              ]}
+                            />
+                          ))}
+                        </View>
+                      ) : null}
+                    </>
+                  ) : (
+                    <>
+                      <DonationEventsEmptyState title={donationEventsEmptyTitle} message={donationEventsEmptyMessage} style={styles.donationEventsEmptyState} />
+                      <PrivateEventAccessCard
+                        style={styles.privateEventAccessCardCompact}
+                        onPress={() => setIsPrivateAccessModalVisible(true)}
+                      />
+                    </>
+                  )}
+                </>
+              ) : (
+                <View style={styles.donationEventsEmptyWrapper}>
+                  <DonationEventsEmptyState />
+                  <PrivateEventAccessCard
+                    style={styles.privateEventAccessCardCompact}
+                    onPress={() => setIsPrivateAccessModalVisible(true)}
+                  />
+                </View>
+              )}
             </AnimatedHomeSection>
 
             {!areCredentialsCompleted ? (
@@ -2568,123 +2719,25 @@ export default function DonorHomeScreen() {
 
             <AnimatedHomeSection
               delay={90}
-              style={[styles.section, !areCredentialsCompleted ? styles.hairLogSectionAfterSetup : null]}
+              style={styles.section}
               animate={shouldAnimateHomeSections}
             >
-              <HomeSectionHeader title="Hair Screening Log" />
-              <RecentHairLogWidget
-                hairSubmissions={hairSubmissions}
-                latestRecommendation={latestRecommendation}
-                onOpenLog={handleOpenHairLogEntry}
-                onOpenHistory={handleOpenHairLogHistory}
-              />
               {showHairActivityCalendar ? (
                 <>
                   <HomeSectionHeader
-                    title="Calendar"
-                    icon="calendar-month-outline"
+                    title="Your activity"
+                    icon="calendar-check-outline"
                     style={styles.calendarSectionHeader}
                   />
                   <HairCalendarWidget
-                    hairSubmissions={hairSubmissions}
                     registeredEventDrives={registeredEventDrives}
                     onOpenDate={handleOpenHairActivityDate}
                   />
                 </>
               ) : null}
             </AnimatedHomeSection>
-          </>
-        ) : null}
 
-        {activeHomeTab === 'events' ? (
-          <>
-            <AnimatedHomeSection delay={140} style={styles.section} animate={shouldAnimateHomeSections}>
-              {donationDrives.length ? (
-                <View style={styles.donationEventsControls}>
-                  <View style={[styles.donationEventsSearchShell, { backgroundColor: roles.pageBackground, borderColor: roles.defaultCardBorder }]}>
-                    <MaterialCommunityIcons name="magnify" size={20} color={roles.primaryActionBackground} />
-                    <TextInput
-                      value={donationEventSearchQuery}
-                      onChangeText={setDonationEventSearchQuery}
-                      placeholder="Search donation events..."
-                      placeholderTextColor={roles.metaText}
-                      style={[styles.donationEventsSearchInput, { color: roles.headingText }]}
-                      returnKeyType="search"
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                    />
-                  </View>
-
-                  <View style={styles.donationEventsFiltersRow}>
-                    <View style={styles.donationEventsFilterCell}>
-                      <DonationEventsSortDropdown
-                        value={donationEventSortOrder}
-                        onChange={setDonationEventSortOrder}
-                      />
-                    </View>
-                    <View style={styles.donationEventsFilterCell}>
-                      <DonationEventsVisibilityDropdown
-                        value={donationEventVisibilityFilter}
-                        onChange={setDonationEventVisibilityFilter}
-                      />
-                    </View>
-                  </View>
-                </View>
-              ) : null}
-
-              <HomeSectionHeader title="Donation Events" />
-              {donationDrives.length ? (
-                <View style={styles.donationEventsPanel}>
-                  {showPublicDonationSection && publicDonationDrives.length ? (
-                    <View style={styles.donationEventsSection}>
-                      <DonationEventsGroupHeader title="Public Events" />
-                      <View style={styles.donationEventsCardList}>
-                        {publicDonationDrives.map((drive) => (
-                          <ActiveDonationDriveCard
-                            key={`public-drive-${drive.donation_drive_id}`}
-                            drive={drive}
-                            onOpenDetails={() => {
-                              router.navigate(`/donor/drives/${drive.donation_drive_id}`);
-                            }}
-                          />
-                        ))}
-                      </View>
-                    </View>
-                  ) : null}
-
-                  {showPrivateDonationSection && privateDonationDrives.length ? (
-                    <View style={styles.donationEventsSection}>
-                      <DonationEventsGroupHeader title="Private Events" />
-                      <View style={styles.donationEventsCardList}>
-                        {privateDonationDrives.map((drive) => (
-                          <ActiveDonationDriveCard
-                            key={`private-drive-${drive.donation_drive_id}`}
-                            drive={drive}
-                            onOpenDetails={() => {
-                              router.navigate(`/donor/drives/${drive.donation_drive_id}`);
-                            }}
-                          />
-                        ))}
-                      </View>
-                    </View>
-                  ) : null}
-
-                  {!publicDonationDrives.length && !privateDonationDrives.length ? (
-                    <DonationEventsEmptyState
-                      title={donationEventsEmptyTitle}
-                      message={donationEventsEmptyMessage}
-                      style={styles.donationEventsEmptyState}
-                    />
-                  ) : null}
-                </View>
-              ) : (
-                <View style={styles.donationEventsEmptyWrapper}>
-                  <DonationEventsEmptyState />
-                </View>
-              )}
-            </AnimatedHomeSection>
-          </>
-        ) : null}
+        </>
       </View>
 
       <Modal
@@ -2773,59 +2826,60 @@ const styles = StyleSheet.create({
   statusBanner: {
     marginTop: 0,
   },
-  dashboardHeaderSurface: {
-    marginHorizontal: -theme.layout.screenPaddingX,
-    paddingHorizontal: 0,
-    paddingVertical: theme.spacing.xs,
-  },
   homeFeed: {
     gap: theme.spacing.lg,
   },
-  homeModeTabs: {
-    minHeight: 44,
-    marginHorizontal: -theme.spacing.md,
-    marginTop: -theme.spacing.sm,
-    paddingHorizontal: theme.spacing.lg,
-    borderBottomWidth: 1,
+  forYouSection: {
+    marginTop: theme.spacing.xs,
+  },
+  forYouGluestackCard: {
+    width: '100%',
+    borderRadius: 22,
+    overflow: 'hidden',
+  },
+  forYouCard: {
+    borderWidth: 1,
+    borderRadius: 22,
+    padding: theme.spacing.md,
+    gap: theme.spacing.md,
+    overflow: 'hidden',
+    ...theme.shadows.md,
+  },
+  forYouHeader: {
     flexDirection: 'row',
-    alignItems: 'flex-end',
-    justifyContent: 'space-around',
-  },
-  homeModeTab: {
-    flex: 1,
-    minHeight: 40,
     alignItems: 'center',
-    justifyContent: 'center',
-    borderBottomWidth: 2,
-    borderBottomColor: 'transparent',
-    paddingTop: 4,
-    paddingBottom: 8,
+    justifyContent: 'space-between',
+    gap: theme.spacing.sm,
   },
-  homeModeTabActive: {
-    borderBottomWidth: 2,
+  forYouHeaderCopy: {
+    flex: 1,
+    gap: 2,
   },
-  homeModeTabText: {
+  forYouEyebrow: {
     fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.caption,
+    fontSize: 10,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 1.1,
+  },
+  forYouTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.bodyLg,
     fontWeight: theme.typography.weights.bold,
   },
-  privateAccessFabFloatWrap: {
-    position: 'absolute',
-    zIndex: 28,
-    pointerEvents: 'box-none',
-  },
-  privateAccessFab: {
-    width: PRIVATE_ACCESS_FAB_SIZE,
-    height: PRIVATE_ACCESS_FAB_SIZE,
-    borderRadius: PRIVATE_ACCESS_FAB_SIZE / 2,
-    borderWidth: 1,
+  forYouSparkle: {
+    width: 36,
+    height: 36,
+    borderRadius: theme.radius.full,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.16,
-    shadowRadius: 14,
-    elevation: 9,
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.26)',
+    overflow: 'hidden',
+  },
+  forYouLottie: {
+    width: 48,
+    height: 48,
   },
   privateAccessModalOverlay: {
     flex: 1,
@@ -2908,13 +2962,121 @@ const styles = StyleSheet.create({
   activeDriveList: {
     gap: theme.spacing.md,
   },
-  donationEventsPanel: {
-    gap: theme.spacing.xl,
+  feedSectionHeadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: theme.spacing.sm,
+  },
+  eventSwipeHint: {
+    minHeight: 28,
+    borderRadius: theme.radius.full,
+    paddingHorizontal: theme.spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 3,
+  },
+  eventSwipeHintText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    fontWeight: theme.typography.weights.semibold,
   },
   donationEventsControls: {
     gap: theme.spacing.md,
   },
+  donationEventsSearchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  donationFilterButton: {
+    width: 48,
+    height: 48,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...theme.shadows.soft,
+  },
+  donationFilterOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(45, 5, 15, 0.42)',
+  },
+  donationFilterBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  donationFilterSheet: {
+    width: '100%',
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
+    borderWidth: 1,
+    gap: theme.spacing.sm,
+    ...theme.shadows.lg,
+  },
+  donationFilterHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: theme.spacing.md,
+    marginBottom: theme.spacing.sm,
+  },
+  donationFilterTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.titleSm,
+    fontWeight: theme.typography.weights.bold,
+  },
+  donationFilterSubtitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    marginTop: 2,
+  },
+  donationFilterClose: {
+    width: 34,
+    height: 34,
+    borderRadius: theme.radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  donationFilterLabel: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 10,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 1,
+    marginTop: theme.spacing.xs,
+  },
+  donationFilterOptions: {
+    gap: theme.spacing.xs,
+  },
+  donationFilterOption: {
+    minHeight: 42,
+    borderWidth: 1,
+    borderRadius: theme.radius.sm,
+    paddingHorizontal: theme.spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  donationFilterOptionText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+    fontWeight: theme.typography.weights.semibold,
+  },
+  donationFilterDone: {
+    minHeight: 48,
+    borderRadius: theme.radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: theme.spacing.sm,
+  },
+  donationFilterDoneText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.body,
+    fontWeight: theme.typography.weights.bold,
+  },
   donationEventsSearchShell: {
+    flex: 1,
     minHeight: 48,
     borderRadius: theme.radius.md,
     borderWidth: 1,
@@ -3003,28 +3165,6 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.compact.bodySm,
     fontWeight: theme.typography.weights.semibold,
   },
-  donationEventsSection: {
-    gap: theme.spacing.md,
-  },
-  donationEventsGroupHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    paddingTop: theme.spacing.md,
-  },
-  donationEventsGroupTitle: {
-    fontFamily: theme.typography.fontFamilyDisplay,
-    fontSize: theme.typography.compact.body,
-    fontWeight: theme.typography.weights.semibold,
-    letterSpacing: 0.2,
-    flexShrink: 0,
-  },
-  donationEventsGroupLine: {
-    flex: 1,
-    height: 1,
-    borderRadius: theme.radius.full,
-    opacity: 0.9,
-  },
   donationEventsCardList: {
     gap: theme.spacing.md,
   },
@@ -3078,37 +3218,73 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   activeDriveCarousel: {
-    marginHorizontal: -theme.spacing.md,
+    marginHorizontal: 0,
+    width: '100%',
+    overflow: 'visible',
+  },
+  activeDriveCarouselViewport: {
+    width: '100%',
+    overflow: 'hidden',
+    borderRadius: 20,
   },
   activeDriveCarouselContent: {
-    gap: theme.spacing.md,
-    paddingHorizontal: theme.spacing.md,
     paddingBottom: theme.spacing.xs,
+  },
+  activeDriveCarouselCard: {
+    width: '100%',
+    paddingHorizontal: 2,
+  },
+  donationEventPager: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingTop: theme.spacing.sm,
+  },
+  donationEventPagerDot: {
+    height: 7,
+    borderRadius: theme.radius.full,
   },
   activeDriveCard: {
     width: '100%',
-    borderRadius: 8,
+    height: 224,
+    minHeight: 224,
+    borderRadius: 20,
     borderWidth: 1,
     overflow: 'hidden',
-    ...theme.shadows.soft,
+    ...theme.shadows.md,
   },
-  activeDriveCover: {
-    width: '100%',
-    height: 96,
-    overflow: 'hidden',
+  activeDriveImageScrim: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  activeDriveImageAction: {
+    position: 'absolute',
+    top: theme.spacing.sm,
+    right: theme.spacing.sm,
+    width: 30,
+    height: 30,
+    borderRadius: theme.radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(45, 5, 15, 0.56)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.55)',
   },
   activeDriveImage: {
-    width: '100%',
-    height: '100%',
+    ...StyleSheet.absoluteFillObject,
   },
   activeDriveFallback: {
-    flex: 1,
+    ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
     justifyContent: 'center',
   },
   activeDriveBody: {
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.md,
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.lg,
     gap: theme.spacing.xs,
   },
   activeDriveTitle: {
@@ -3116,10 +3292,13 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.semantic.bodyMd,
     fontWeight: theme.typography.weights.bold,
     lineHeight: theme.typography.semantic.bodyMd * theme.typography.lineHeights.snug,
+    color: '#FFFFFF',
   },
   activeDriveBadge: {
     borderRadius: theme.radius.pill,
     borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.58)',
+    backgroundColor: 'rgba(255,255,255,0.18)',
     paddingHorizontal: theme.spacing.sm,
     paddingVertical: 3,
     alignSelf: 'flex-start',
@@ -3129,6 +3308,7 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.compact.caption,
     fontWeight: theme.typography.weights.bold,
     letterSpacing: 0.5,
+    color: '#FFFFFF',
   },
   activeDriveMetaRow: {
     flexDirection: 'row',
@@ -3136,21 +3316,79 @@ const styles = StyleSheet.create({
     gap: 6,
     paddingTop: 2,
   },
-  activeDriveMetaItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    maxWidth: '47%',
-  },
   activeDriveMetaText: {
     flexShrink: 1,
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.bodySm,
     lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.snug,
+    color: '#F4D8DE',
   },
-  activeDriveMetaDot: {
+  privateEventAccessCard: {
+    width: '100%',
+    height: 224,
+    minHeight: 224,
+    borderRadius: 20,
+    overflow: 'hidden',
+    padding: theme.spacing.lg,
+    justifyContent: 'flex-end',
+    ...theme.shadows.md,
+  },
+  privateEventAccessCardCompact: {
+    marginTop: theme.spacing.md,
+  },
+  privateEventAccessGlow: {
+    position: 'absolute',
+    width: 150,
+    height: 150,
+    borderRadius: theme.radius.full,
+    top: -42,
+    right: -30,
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+  },
+  privateEventAccessIcon: {
+    position: 'absolute',
+    top: theme.spacing.lg,
+    left: theme.spacing.lg,
+    width: 48,
+    height: 48,
+    borderRadius: theme.radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F4F1F1',
+  },
+  privateEventAccessCopy: {
+    gap: theme.spacing.xs,
+  },
+  privateEventAccessEyebrow: {
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.caption,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 1,
+    color: '#F4D8DE',
+  },
+  privateEventAccessTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.bodyMd,
+    fontWeight: theme.typography.weights.bold,
+    color: '#FFFFFF',
+  },
+  privateEventAccessText: {
+    maxWidth: 220,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+    lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.relaxed,
+    color: '#F8EDEF',
+  },
+  privateEventAccessArrow: {
+    position: 'absolute',
+    right: theme.spacing.lg,
+    bottom: theme.spacing.lg,
+    width: 36,
+    height: 36,
+    borderRadius: theme.radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F4F1F1',
   },
   activeDriveLink: {
     marginTop: theme.spacing.sm,
@@ -3395,9 +3633,6 @@ const styles = StyleSheet.create({
   section: {
     gap: theme.spacing.sm,
   },
-  hairLogSectionAfterSetup: {
-    marginTop: theme.spacing.md,
-  },
   homeSectionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -3611,119 +3846,6 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.compact.caption,
     marginTop: theme.spacing.xs,
     lineHeight: theme.typography.compact.caption * 1.4,
-  },
-  recentLogCard: {
-    gap: theme.spacing.md,
-  },
-  recentLogHeader: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: theme.spacing.md,
-  },
-  recentLogHeaderCopy: {
-    flex: 1,
-    minWidth: 0,
-    gap: 3,
-  },
-  recentLogTitle: {
-    fontFamily: theme.typography.fontFamilyDisplay,
-    fontSize: theme.typography.semantic.bodyLg,
-    fontWeight: theme.typography.weights.semibold,
-  },
-  recentLogSubtitle: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.bodySm,
-  },
-  recentLogCountPill: {
-    borderRadius: theme.radius.pill,
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: 5,
-  },
-  recentLogCountText: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.caption,
-    fontWeight: theme.typography.weights.bold,
-  },
-  homeRecommendationPanel: {
-    borderWidth: 1,
-    borderRadius: 14,
-    padding: theme.spacing.md,
-    flexDirection: 'row',
-    gap: theme.spacing.sm,
-  },
-  homeRecommendationIcon: {
-    width: 36,
-    height: 36,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-  },
-  homeRecommendationCopy: {
-    flex: 1,
-    minWidth: 0,
-    gap: 3,
-  },
-  homeRecommendationTitle: {
-    fontFamily: theme.typography.fontFamilyDisplay,
-    fontSize: theme.typography.compact.bodyMd,
-    fontWeight: theme.typography.weights.semibold,
-  },
-  homeRecommendationText: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.bodySm,
-    lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.relaxed,
-  },
-  recentLogList: {
-    gap: theme.spacing.sm,
-  },
-  recentLogItem: {
-    borderWidth: 1,
-    borderRadius: 14,
-    padding: theme.spacing.md,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-  },
-  recentLogIcon: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-  },
-  recentLogCopy: {
-    flex: 1,
-    minWidth: 0,
-    gap: 3,
-  },
-  recentLogTopRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-  },
-  recentLogCondition: {
-    flex: 1,
-    minWidth: 0,
-    fontFamily: theme.typography.fontFamilyDisplay,
-    fontSize: theme.typography.compact.bodyMd,
-    fontWeight: theme.typography.weights.semibold,
-  },
-  recentLogDate: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.caption,
-    flexShrink: 0,
-  },
-  recentLogMeta: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.caption,
-  },
-  recentLogRecommendation: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.bodySm,
-    lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.relaxed,
   },
   // Week strip calendar
   calWeekStrip: {
@@ -4221,6 +4343,163 @@ const styles = StyleSheet.create({
     lineHeight: theme.typography.compact.caption * theme.typography.lineHeights.relaxed,
     marginBottom: theme.spacing.sm,
   },
+  compactCalendarCard: {
+    borderWidth: 1,
+    borderRadius: 22,
+    overflow: 'hidden',
+    ...theme.shadows.md,
+  },
+  compactCalendarGradient: {
+    minHeight: 164,
+    flexDirection: 'row',
+    padding: 0,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.16)',
+    overflow: 'hidden',
+  },
+  activityEventAccent: {
+    position: 'absolute',
+    left: 0,
+    top: 18,
+    bottom: 18,
+    width: 4,
+    borderTopRightRadius: theme.radius.full,
+    borderBottomRightRadius: theme.radius.full,
+  },
+  activityEventCopy: {
+    flex: 1,
+    minWidth: 0,
+    paddingLeft: theme.spacing.lg,
+    paddingRight: theme.spacing.sm,
+    paddingVertical: theme.spacing.md,
+    justifyContent: 'center',
+    alignItems: 'flex-start',
+    gap: 7,
+  },
+  activityEventEyebrow: {
+    fontSize: 9,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 1,
+  },
+  activityEventTitle: {
+    fontSize: theme.typography.semantic.bodyMd,
+    fontWeight: theme.typography.weights.bold,
+    lineHeight: theme.typography.semantic.bodyMd * theme.typography.lineHeights.snug,
+  },
+  activityStatusPill: {
+    minHeight: 25,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: 4,
+    borderRadius: theme.radius.full,
+  },
+  activityStatusDot: {
+    width: 7,
+    height: 7,
+    borderRadius: theme.radius.full,
+  },
+  activityStatusText: {
+    fontSize: theme.typography.compact.caption,
+    fontWeight: theme.typography.weights.bold,
+  },
+  activityEventMetaGroup: {
+    width: '100%',
+    gap: 4,
+    paddingTop: 2,
+  },
+  activityEventMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  activityEventMetaText: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: theme.typography.compact.caption,
+  },
+  activityEventVisual: {
+    width: 112,
+    margin: 8,
+    borderRadius: 18,
+    overflow: 'hidden',
+    shadowColor: theme.colors.shadow,
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
+    elevation: 5,
+  },
+  activityEventImage: {
+    ...StyleSheet.absoluteFillObject,
+    width: '100%',
+    height: '100%',
+  },
+  activityEventImageFallback: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  activityEventImageScrim: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  activityEventArrow: {
+    position: 'absolute',
+    top: 9,
+    right: 9,
+    width: 30,
+    height: 30,
+    borderRadius: theme.radius.full,
+    backgroundColor: 'rgba(255, 255, 255, 0.94)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...theme.shadows.soft,
+  },
+  activityEmptyGradient: {
+    minHeight: 104,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.md,
+    gap: theme.spacing.md,
+  },
+  activityEmptyIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  activityEmptyCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 4,
+  },
+  activityEmptyText: {
+    fontSize: theme.typography.compact.bodySm,
+    lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.relaxed,
+  },
+  compactCalendarStats: {
+    width: '100%',
+    flexDirection: 'row',
+    gap: theme.spacing.sm,
+  },
+  compactCalendarStatBlock: {
+    flex: 1,
+    gap: 1,
+  },
+  compactCalendarStatDivider: {
+    width: 1,
+    marginVertical: 2,
+  },
+  compactCalendarStatNumber: {
+    fontSize: theme.typography.semantic.bodyLg,
+    fontWeight: theme.typography.weights.bold,
+  },
+  compactCalendarStatLabel: {
+    fontSize: theme.typography.compact.caption,
+  },
   homeCalendarCard: {
     gap: theme.spacing.xs,
     paddingVertical: theme.spacing.sm,
@@ -4359,20 +4638,70 @@ const styles = StyleSheet.create({
   },
   // ─── AI Insight Card ───────────────────────────────────────────────────────
   aiInsightCard: {
-    borderRadius: 10,
+    borderRadius: 14,
     overflow: 'hidden',
     paddingHorizontal: theme.spacing.md,
-    paddingVertical: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
+    paddingVertical: theme.spacing.md,
     gap: theme.spacing.sm,
   },
+  aiInsightPressable: {
+    width: '100%',
+    borderRadius: 14,
+    overflow: 'hidden',
+  },
+  aiInsightMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: theme.spacing.sm,
+  },
+  aiInsightConditionPill: {
+    minHeight: 28,
+    maxWidth: '72%',
+    borderRadius: theme.radius.full,
+    paddingHorizontal: theme.spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+  },
+  aiInsightConditionText: {
+    flexShrink: 1,
+    fontSize: theme.typography.compact.caption,
+    fontWeight: theme.typography.weights.bold,
+    color: '#FFFFFF',
+  },
+  aiInsightDate: {
+    fontSize: theme.typography.compact.caption,
+    fontWeight: theme.typography.weights.semibold,
+    color: '#F4D8DE',
+  },
   aiInsightText: {
-    flex: 1,
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.bodySm,
-    lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.relaxed,
-    color: 'rgba(255,245,235,0.90)',
+    lineHeight: 20,
+    color: 'rgba(255,245,235,0.94)',
+  },
+  aiInsightActionRow: {
+    minHeight: 30,
+    paddingTop: theme.spacing.xs,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(255, 255, 255, 0.18)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  aiInsightActionText: {
+    fontSize: theme.typography.compact.caption,
+    fontWeight: theme.typography.weights.bold,
+  },
+  aiInsightArrow: {
+    width: 28,
+    height: 28,
+    borderRadius: theme.radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
   },
   // ─── Setup Inline Bar ──────────────────────────────────────────────────────
   setupInlineBar: {
@@ -4386,59 +4715,6 @@ const styles = StyleSheet.create({
   },
   setupInlineText: {
     flex: 1,
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.bodySm,
-  },
-  // ─── Flat Log List ─────────────────────────────────────────────────────────
-  recentLogFlatCard: {
-    borderRadius: 18,
-    borderWidth: 1,
-    overflow: 'hidden',
-  },
-  recentLogFlatRow: {
-    minHeight: 48,
-    paddingHorizontal: theme.spacing.md,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-  },
-  recentLogDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    flexShrink: 0,
-  },
-  recentLogFlatCondition: {
-    flex: 1,
-    fontFamily: theme.typography.fontFamilyDisplay,
-    fontSize: theme.typography.compact.body,
-    fontWeight: theme.typography.weights.semibold,
-  },
-  recentLogFlatDate: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.caption,
-    flexShrink: 0,
-  },
-  recentLogDivider: {
-    height: 1,
-    marginHorizontal: theme.spacing.md,
-  },
-  recentLogFlatMore: {
-    minHeight: 40,
-    paddingHorizontal: theme.spacing.md,
-    justifyContent: 'center',
-  },
-  recentLogFlatMoreText: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.caption,
-  },
-  recentLogEmpty: {
-    minHeight: 286,
-    borderRadius: theme.radius.xxl,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  recentLogEmptyText: {
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.bodySm,
   },

@@ -1,20 +1,21 @@
 import React from 'react';
-import { Image, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Image, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { AppIcon } from '../ui/AppIcon';
 import { AppCard } from '../ui/AppCard';
 import { AppButton } from '../ui/AppButton';
-import { resolveBrandLogoSource, resolveThemeRoles, theme } from '../../design-system/theme';
+import { resolveThemeRoles, theme } from '../../design-system/theme';
 import { useAuth } from '../../providers/AuthProvider';
 import { useAuthActions } from '../../features/auth/hooks/useAuthActions';
 
 export function DonorTopBar({
   title,
   subtitle = '',
+  avatarUri = '',
+  avatarInitials = '',
   unreadCount = 0,
   showBack = false,
   showFeedbackAction,
-  showProfileAction = true,
   showNotificationsAction = true,
   showRefreshAction = false,
   showTutorialAction = false,
@@ -30,20 +31,27 @@ export function DonorTopBar({
   isRefreshing = false,
   style,
 }) {
-  const { resolvedTheme } = useAuth();
+  const { resolvedTheme, profile } = useAuth();
   const router = useRouter();
   const { logout: fallbackLogout, isLoading: isFallbackLoggingOut } = useAuthActions();
   const roles = resolveThemeRoles(resolvedTheme);
-  const [logoFailed, setLogoFailed] = React.useState(false);
+  const [avatarFailed, setAvatarFailed] = React.useState(false);
   const [isLogoutModalOpen, setIsLogoutModalOpen] = React.useState(false);
   const effectiveIsLoggingOut = Boolean(isLoggingOut || (!onLogoutPress && isFallbackLoggingOut));
-  const appLogoSource = resolveBrandLogoSource(resolvedTheme, logoFailed);
   const headerIconColor = roles.primaryActionText || '#ffffff';
   const shouldShowFeedbackAction = showFeedbackAction ?? false;
+  const headerTitle = title || resolvedTheme?.brandName || 'Donivra';
+  const headerSubtitle = subtitle || (!title ? resolvedTheme?.brandTagline || 'Where hair becomes hope' : '');
+
+  const profileImageUri = avatarUri || profile?.avatar_url || profile?.photo_path || '';
+  const profileInitials = avatarInitials || [profile?.first_name, profile?.last_name]
+    .filter(Boolean)
+    .map((value) => String(value).trim().charAt(0).toUpperCase())
+    .join('') || headerTitle.trim().charAt(0).toUpperCase() || 'D';
 
   React.useEffect(() => {
-    setLogoFailed(false);
-  }, [resolvedTheme?.logoIcon]);
+    setAvatarFailed(false);
+  }, [profileImageUri]);
 
   const openLogoutModal = React.useCallback(() => {
     if (effectiveIsLoggingOut) return;
@@ -86,42 +94,66 @@ export function DonorTopBar({
           <Pressable
             onPress={onBackPress}
             disabled={!onBackPress}
-            style={styles.headerIdentity}
+            style={styles.headerIdentityPressable}
           >
-            <View style={styles.headerBackButton}>
-              <AppIcon name="arrowLeft" size="md" state="default" color={roles.headingText} />
-            </View>
-            <View style={styles.headerCopy}>
-              <Text numberOfLines={1} style={[styles.headerTitle, { color: roles.headingText }]}>
-                {title}
-              </Text>
-              {subtitle ? (
-                <Text numberOfLines={1} style={[styles.headerSubtitle, { color: roles.metaText }]}>
-                  {subtitle}
+            <View style={styles.headerIdentityContent}>
+              <View style={styles.headerBackButton}>
+                <AppIcon name="arrowLeft" size="md" state="default" color={headerIconColor} />
+              </View>
+              <View style={styles.headerCopy}>
+                <Text numberOfLines={1} style={[styles.headerTitle, { color: headerIconColor }]}>
+                  {headerTitle}
                 </Text>
-              ) : null}
+                {subtitle ? (
+                  <Text numberOfLines={1} style={[styles.headerSubtitle, { color: headerIconColor }]}>
+                    {headerSubtitle}
+                  </Text>
+                ) : null}
+              </View>
             </View>
           </Pressable>
         ) : (
-          <View style={styles.headerIdentity}>
-            <View
-              style={[
-                styles.brandLogoWrap,
-                { backgroundColor: resolvedTheme?.backgroundColor || roles.pageBackground },
-              ]}
-            >
-              {appLogoSource && !logoFailed ? (
-                <Image
-                  source={appLogoSource}
-                  style={styles.brandLogoImage}
-                  resizeMode="contain"
-                  onError={() => setLogoFailed(true)}
-                />
-              ) : (
-                <AppIcon name="profile" size="md" state="default" color={headerIconColor} />
-              )}
+          <Pressable
+            onPress={onProfilePress}
+            disabled={!onProfilePress}
+            accessibilityRole="button"
+            accessibilityLabel="Open profile"
+            hitSlop={6}
+            style={styles.headerIdentityPressable}
+          >
+            <View style={styles.headerIdentityContent}>
+              <View
+                style={[
+                  styles.brandLogoWrap,
+                  {
+                    backgroundColor: resolvedTheme?.backgroundColor || roles.pageBackground,
+                    borderColor: 'rgba(255, 255, 255, 0.56)',
+                  },
+                ]}
+              >
+                {profileImageUri && !avatarFailed ? (
+                  <Image
+                    source={{ uri: profileImageUri }}
+                    style={styles.brandLogoImage}
+                    resizeMode="cover"
+                    onError={() => setAvatarFailed(true)}
+                  />
+                ) : (
+                  <Text style={[styles.avatarInitials, { color: headerIconColor }]}>{profileInitials}</Text>
+                )}
+              </View>
+              <View style={styles.headerCopy}>
+                <Text numberOfLines={1} style={[styles.headerTitle, { color: headerIconColor }]}>
+                  {headerTitle}
+                </Text>
+                {headerSubtitle ? (
+                  <Text numberOfLines={1} style={[styles.headerSubtitle, { color: headerIconColor }]}>
+                    {headerSubtitle}
+                  </Text>
+                ) : null}
+              </View>
             </View>
-          </View>
+          </Pressable>
         )}
 
         <View style={styles.headerActions}>
@@ -130,7 +162,8 @@ export function DonorTopBar({
               accessibilityRole="button"
               accessibilityLabel="Open feedback"
               onPress={handleFeedbackPress}
-              style={styles.headerIconButton}
+              hitSlop={6}
+              style={({ pressed }) => [styles.headerIconButton, pressed && styles.headerIconButtonPressed]}
             >
               <AppIcon name="feedback" size="md" state="default" color={headerIconColor} />
             </Pressable>
@@ -142,9 +175,18 @@ export function DonorTopBar({
               accessibilityLabel="Refresh screen"
               onPress={onRefreshPress}
               disabled={!onRefreshPress || isRefreshing}
-              style={styles.headerIconButton}
+              hitSlop={6}
+              style={({ pressed }) => [
+                styles.headerIconButton,
+                pressed && styles.headerIconButtonPressed,
+                (!onRefreshPress || isRefreshing) && styles.headerIconButtonDisabled,
+              ]}
             >
-              <AppIcon name="refresh" size="md" state="default" color={headerIconColor} />
+              {isRefreshing ? (
+                <ActivityIndicator size="small" color={headerIconColor} />
+              ) : (
+                <AppIcon name="refresh" size="md" state="default" color={headerIconColor} />
+              )}
             </Pressable>
           ) : null}
 
@@ -154,7 +196,12 @@ export function DonorTopBar({
               accessibilityLabel="Open tutorial guide"
               onPress={onTutorialPress}
               disabled={!onTutorialPress}
-              style={styles.headerIconButton}
+              hitSlop={6}
+              style={({ pressed }) => [
+                styles.headerIconButton,
+                pressed && styles.headerIconButtonPressed,
+                !onTutorialPress && styles.headerIconButtonDisabled,
+              ]}
             >
               <AppIcon name="tutorial" size="md" state="default" color={headerIconColor} />
             </Pressable>
@@ -165,28 +212,22 @@ export function DonorTopBar({
               accessibilityRole="button"
               accessibilityLabel="Open notifications"
               onPress={onNotificationsPress}
-              style={styles.headerIconButton}
+              hitSlop={6}
+              style={({ pressed }) => [
+                styles.headerIconButton,
+                pressed && styles.headerIconButtonPressed,
+                !onNotificationsPress && styles.headerIconButtonDisabled,
+              ]}
+              disabled={!onNotificationsPress}
             >
               <AppIcon name="notifications" size="md" state="default" color={headerIconColor} />
               {unreadCount ? (
-                <View style={[styles.headerBadge, { backgroundColor: roles.primaryActionBackground }]}>
-                  <Text style={[styles.headerBadgeText, { color: roles.primaryActionText }]}>
+                <View style={styles.headerBadge}>
+                  <Text style={styles.headerBadgeText}>
                     {Math.min(unreadCount, 99)}
                   </Text>
                 </View>
               ) : null}
-            </Pressable>
-          ) : null}
-
-          {showProfileAction ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Open profile"
-              onPress={onProfilePress}
-              disabled={!onProfilePress}
-              style={styles.headerIconButton}
-            >
-              <AppIcon name="profile" size="md" state="default" color={headerIconColor} />
             </Pressable>
           ) : null}
 
@@ -196,7 +237,14 @@ export function DonorTopBar({
               accessibilityLabel="Log out"
               onPress={openLogoutModal}
               disabled={effectiveIsLoggingOut}
-              style={[styles.headerIconButton, { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder }]}
+              hitSlop={6}
+              style={({ pressed }) => [
+                styles.headerIconButton,
+                styles.headerIconButtonLight,
+                { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder },
+                pressed && styles.headerIconButtonPressed,
+                effectiveIsLoggingOut && styles.headerIconButtonDisabled,
+              ]}
             >
               <AppIcon name="signOut" size="md" state="default" color={roles.headingText} />
             </Pressable>
@@ -225,77 +273,117 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: theme.spacing.md,
-    paddingHorizontal: theme.spacing.md,
-    paddingTop: theme.spacing.xs,
-    paddingBottom: theme.spacing.xs,
+    minHeight: 64,
+    gap: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.sm,
   },
-  headerIdentity: {
+  headerIdentityPressable: {
+    flex: 1,
+    minWidth: 0,
+  },
+  headerIdentityContent: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    flex: 1,
+    minWidth: 0,
+    gap: theme.spacing.sm,
+    width: '100%',
+  },
+  identityPressed: {
+    opacity: 0.78,
+    transform: [{ scale: 0.98 }],
   },
   headerBackButton: {
-    width: 28,
-    height: 28,
+    width: 40,
+    height: 40,
+    borderRadius: theme.radius.full,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'transparent',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.16)',
   },
   brandLogoWrap: {
-    width: 34,
-    height: 34,
-    borderRadius: 0,
+    width: 44,
+    height: 44,
+    borderRadius: theme.radius.lg,
     alignItems: 'center',
     justifyContent: 'center',
     overflow: 'hidden',
+    borderWidth: 1,
+    ...theme.shadows.sm,
   },
   brandLogoImage: {
-    width: 24,
-    height: 24,
+    width: '100%',
+    height: '100%',
+  },
+  avatarInitials: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: 16,
+    fontWeight: theme.typography.weights.bold,
   },
   headerCopy: {
     flex: 1,
+    minWidth: 0,
     gap: 1,
   },
   headerTitle: {
     fontFamily: theme.typography.fontFamilyDisplay,
-    fontSize: theme.typography.semantic.bodyLg,
+    fontSize: theme.typography.semantic.bodyMd,
+    fontWeight: theme.typography.weights.bold,
+    lineHeight: 20,
   },
   headerSubtitle: {
     fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.caption,
+    fontSize: 10,
+    opacity: 0.76,
+    lineHeight: 14,
   },
   headerActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: theme.spacing.md,
+    gap: theme.spacing.xs,
+    flexShrink: 0,
   },
   headerIconButton: {
-    width: 24,
-    height: 24,
-    borderRadius: 0,
+    width: 38,
+    height: 38,
+    borderRadius: theme.radius.full,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 0,
-    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.16)',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  headerIconButtonLight: {
+    borderWidth: 1,
+  },
+  headerIconButtonPressed: {
+    opacity: 0.68,
+    transform: [{ scale: 0.94 }],
+  },
+  headerIconButtonDisabled: {
+    opacity: 0.46,
   },
   headerBadge: {
     position: 'absolute',
-    top: -2,
-    right: -1,
-    minWidth: 16,
-    height: 16,
+    top: -5,
+    right: -4,
+    minWidth: 18,
+    height: 18,
     borderRadius: theme.radius.full,
-    paddingHorizontal: 3,
+    paddingHorizontal: 4,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: '#F6E2C8',
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
   },
   headerBadgeText: {
     fontFamily: theme.typography.fontFamily,
     fontSize: 9,
     fontWeight: theme.typography.weights.bold,
+    color: '#5B0B12',
   },
   logoutModalOverlay: {
     flex: 1,

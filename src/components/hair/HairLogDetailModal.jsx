@@ -1,15 +1,18 @@
 import React from 'react';
 import {
   ActivityIndicator,
+  Animated,
   Image,
   Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { AppCard } from '../ui/AppCard';
 import { AppIcon } from '../ui/AppIcon';
 import { SectionTitleRow } from '../ui/SectionTitleRow';
@@ -20,6 +23,11 @@ import {
 import { resolveThemeRoles, theme } from '../../design-system/theme';
 import { useAuth } from '../../providers/AuthProvider';
 import { alignScreeningWithMinimumLength, formatEstimatedLengthInches } from '../../utils/hairLength';
+import {
+  getCanonicalHairAssessment,
+  getHairScreeningMood,
+} from '../../features/hairScreeningPresentation';
+import hairAnalysisAiIcon from '../../assets/images/hair-analysis-ai-icon.png';
 
 const CAPTURE_NOISE_PATTERNS = [
   'retake', 'lighting', 'image quality', 'photo quality', 'clearer photo',
@@ -67,73 +75,19 @@ const cleanRecommendationText = (value = '') => {
   return text;
 };
 
-const hasNegatedCareConcern = (text = '') => (
-  /\b(no|not|without)\s+(?:visible\s+|significant\s+|major\s+)?(?:damage|dryness|frizz|breakage|split\s+ends?|issues?)\b/i.test(text)
-  || /\bno\s+significant\s+damage\s+or\s+issues\b/i.test(text)
-  || /\bsealed\s+ends?\b/i.test(text)
-);
-
-const hasExplicitCareConcern = (text = '') => {
-  const normalized = String(text || '').toLowerCase();
-  const negated = hasNegatedCareConcern(normalized);
-  if (/(split\s+ends?|split\s+tips?|breakage|brittle|fray(?:ed|ing)|frizz|flyaways|oily|greasy|stressed\s+ends)/i.test(normalized)) {
-    return true;
-  }
-  if (/(dry|dull|damage|damaged|needs care|not eligible|improve)/i.test(normalized) && !negated) {
-    return true;
-  }
-  return false;
-};
-
-const getCanonicalHairAssessment = (screening = null) => {
-  if (!screening) return { label: 'No result', needsCare: false };
-  const combined = [
-    screening.detected_condition,
-    screening.visible_damage_notes,
-    screening.summary,
-    screening.decision,
-  ].filter(Boolean).join(' ');
-  const condition = String(screening.detected_condition || '').trim();
-  const needsCare = hasExplicitCareConcern(combined);
-  const label = needsCare && /healthy/i.test(condition)
-    ? 'Needs care'
-    : condition || (needsCare ? 'Needs care' : 'Healthy');
-
-  return {
-    label,
-    needsCare,
-  };
-};
-
-const normalizeConditionTone = (condition = '') => {
-  const normalized = String(condition || '').trim().toLowerCase();
-
-  if (normalized.includes('healthy') || normalized.includes('good')) {
-    return {
-      dotColor: '#65b96f',
-      label: 'Healthy',
-    };
-  }
-
-  if (normalized.includes('dry') || normalized.includes('damage') || normalized.includes('frizz')) {
-    return {
-      dotColor: '#d89258',
-      label: 'Needs care',
-    };
-  }
-
-  return {
-    dotColor: theme.colors.brandPrimary,
-    label: condition || 'Hair check',
-  };
-};
-
 const formatModalDateLabel = (value) => (
   new Intl.DateTimeFormat('en-US', {
     timeZone: 'Asia/Manila',
     month: 'long',
     day: 'numeric',
     year: 'numeric',
+  }).format(new Date(`${value}T12:00:00`))
+);
+
+const formatModalWeekdayLabel = (value) => (
+  new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Manila',
+    weekday: 'long',
   }).format(new Date(`${value}T12:00:00`))
 );
 
@@ -251,25 +205,115 @@ const getEventLocationLabel = (event = null) => (
   || 'Location to be announced'
 );
 
+const getInsightIcon = (value = '') => {
+  const normalized = String(value || '').toLowerCase();
+  if (/length|inch|trim|ends?/.test(normalized)) return 'ruler';
+  if (/dandruff|flake/.test(normalized)) return 'head-snowflake-outline';
+  if (/lice|nit|bug/.test(normalized)) return 'shield-bug-outline';
+  if (/scalp|coverage|visible/.test(normalized)) return 'head-outline';
+  if (/dry|moisture|condition/.test(normalized)) return 'water-outline';
+  return 'head-check-outline';
+};
+
+const getStoredHairImagePath = (image = null) => String(
+  image?.file_path
+  || image?.File_Path
+  || image?.signed_url
+  || image?.public_url
+  || image?.image_url
+  || image?.uri
+  || ''
+).trim();
+
+const getStoredHairImageId = (image = null) => (
+  image?.image_id || image?.Image_ID || image?.id || getStoredHairImagePath(image)
+);
+
+const ASSESSMENT_WIDGET_TONES = [
+  { surface: '#FFF4F6', border: '#F0D4DA', iconSurface: '#F6DDE3' },
+  { surface: '#F8EEF1', border: '#E7CCD3', iconSurface: '#EED8DE' },
+  { surface: '#FFF8F5', border: '#EEDBD2', iconSurface: '#F5E1D8' },
+  { surface: '#F7F2F5', border: '#E3D4DB', iconSurface: '#EADDE3' },
+];
+
+function AssessmentMetricWidget({ metric, index, animationKey, textColor, metaColor, iconColor }) {
+  const entrance = React.useRef(new Animated.Value(0)).current;
+  const tone = ASSESSMENT_WIDGET_TONES[index % ASSESSMENT_WIDGET_TONES.length];
+
+  React.useEffect(() => {
+    entrance.setValue(0);
+    Animated.spring(entrance, {
+      toValue: 1,
+      delay: Math.min(index * 45, 540),
+      damping: 16,
+      stiffness: 170,
+      mass: 0.72,
+      useNativeDriver: true,
+    }).start();
+  }, [animationKey, entrance, index]);
+
+  return (
+    <Animated.View
+      accessibilityLabel={`${metric.label}: ${metric.value}`}
+      style={[
+        styles.metricItem,
+        metric.wide && styles.metricItemFull,
+        { backgroundColor: tone.surface, borderColor: tone.border },
+        {
+          opacity: entrance,
+          transform: [
+            { translateY: entrance.interpolate({ inputRange: [0, 1], outputRange: [18, 0] }) },
+            { scale: entrance.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] }) },
+          ],
+        },
+      ]}
+    >
+      <View style={[styles.metricIconWrap, { backgroundColor: tone.iconSurface }]}>
+        <MaterialCommunityIcons name={metric.icon} size={17} color={iconColor} />
+      </View>
+      <View style={styles.metricCopy}>
+        <Text style={[styles.metaKey, { color: metaColor }]}>{metric.label}</Text>
+        <Text
+          style={[
+            styles.metaValue,
+            { color: textColor },
+            metric.label === 'Length' && metric.value === 'Not detected' ? styles.metricValueMuted : null,
+            metric.label === 'Density score' ? styles.metricValueLarge : null,
+          ]}
+        >
+          {metric.value}
+        </Text>
+      </View>
+    </Animated.View>
+  );
+}
+
 export function HairLogDetailModal({
   visible,
   dateKey = '',
   entries = [],
   events = [],
   onClose,
+  onStartAnalysis,
   pageMode = false,
   donationRequirement = null,
 }) {
   const { resolvedTheme } = useAuth();
+  const { width: windowWidth } = useWindowDimensions();
   const roles = resolveThemeRoles(resolvedTheme);
   const primaryTextColor = resolvedTheme?.primaryTextColor || roles.headingText;
   const pageColor = (fallback) => (pageMode ? primaryTextColor : fallback);
   const [activeEntryKey, setActiveEntryKey] = React.useState('');
   const [signedUrls, setSignedUrls] = React.useState({});
   const [isLoadingUrls, setIsLoadingUrls] = React.useState(false);
+  const [imageUrlError, setImageUrlError] = React.useState('');
+  const [imageUrlLoadNonce, setImageUrlLoadNonce] = React.useState(0);
   const [recommendations, setRecommendations] = React.useState([]);
   const [isLoadingRecommendations, setIsLoadingRecommendations] = React.useState(false);
   const [nowMs, setNowMs] = React.useState(() => Date.now());
+  const [activePhotoIndex, setActivePhotoIndex] = React.useState(0);
+  const photoScrollX = React.useRef(new Animated.Value(0)).current;
+  const photoCarouselRef = React.useRef(null);
 
   React.useEffect(() => {
     if (!visible || !entries.length) {
@@ -297,10 +341,18 @@ export function HairLogDetailModal({
   }, [activeEntry]);
 
   React.useEffect(() => {
+    setActivePhotoIndex(0);
+    setImageUrlError('');
+    photoScrollX.setValue(0);
+    photoCarouselRef.current?.scrollTo?.({ x: 0, animated: false });
+  }, [activeEntryKey, photoScrollX]);
+
+  React.useEffect(() => {
     let isCancelled = false;
 
     if (!visible || !activeEntry) {
       setSignedUrls({});
+      setImageUrlError('');
       setRecommendations([]);
       setIsLoadingUrls(false);
       setIsLoadingRecommendations(false);
@@ -309,19 +361,23 @@ export function HairLogDetailModal({
       };
     }
 
-    const imageRows = allImages.filter((image) => image?.file_path);
+    const imageRows = allImages.filter((image) => getStoredHairImagePath(image));
     if (!imageRows.length) {
       setSignedUrls({});
+      setImageUrlError('');
       setIsLoadingUrls(false);
     } else {
       setIsLoadingUrls(true);
+      setImageUrlError('');
       Promise.all(
-        imageRows.map((image) => (
-          getHairSubmissionImageSignedUrl(image.file_path).then((result) => ({
-            id: image.image_id || image.file_path,
+        imageRows.map((image) => {
+          const imagePath = getStoredHairImagePath(image);
+          return getHairSubmissionImageSignedUrl(imagePath).then((result) => ({
+            id: getStoredHairImageId(image),
             url: result.data || '',
-          }))
-        ))
+            error: result.error || null,
+          }));
+        })
       ).then((results) => {
         if (isCancelled) return;
         const nextUrls = {};
@@ -329,6 +385,14 @@ export function HairLogDetailModal({
           if (url) nextUrls[id] = url;
         });
         setSignedUrls(nextUrls);
+        setImageUrlError(results.some(({ url }) => !url)
+          ? 'Some saved photos could not be opened. Please try again.'
+          : '');
+        setIsLoadingUrls(false);
+      }).catch(() => {
+        if (isCancelled) return;
+        setSignedUrls({});
+        setImageUrlError('Saved photos could not be opened. Please try again.');
         setIsLoadingUrls(false);
       });
     }
@@ -355,7 +419,7 @@ export function HairLogDetailModal({
     return () => {
       isCancelled = true;
     };
-  }, [activeEntry, allImages, visible]);
+  }, [activeEntry, allImages, imageUrlLoadNonce, visible]);
 
   React.useEffect(() => {
     if (!visible) return undefined;
@@ -370,12 +434,12 @@ export function HairLogDetailModal({
   const assessment = hasScreening
     ? getCanonicalHairAssessment(screening)
     : { label: 'Registered event', needsCare: false };
-  const tone = hasScreening
-    ? (assessment.needsCare
-      ? { dotColor: '#d89258', label: 'Needs care' }
-      : normalizeConditionTone(assessment.label))
+  const mood = hasScreening
+    ? getHairScreeningMood(screening)
     : {
-      dotColor: roles.primaryActionBackground,
+      icon: 'calendar-check-outline',
+      color: roles.primaryActionBackground,
+      surface: roles.iconPrimarySurface,
       label: 'Registered event',
     };
   const hasAssessmentDetails = Boolean(
@@ -393,9 +457,17 @@ export function HairLogDetailModal({
     || screening?.summary
     || screening?.visible_damage_notes
   );
-  const photoUris = allImages
-    .map((image) => signedUrls[image.image_id || image.file_path])
-    .filter(Boolean);
+  const savedPhotoRows = allImages.filter((image) => getStoredHairImagePath(image));
+  const photoItems = savedPhotoRows
+    .map((image, index) => ({
+      id: `${String(getStoredHairImageId(image) || 'photo')}-${index}`,
+      uri: signedUrls[getStoredHairImageId(image)] || '',
+      label: String(image.image_type || image.Image_Type || `Photo ${index + 1}`).replace(/[_-]+/g, ' '),
+    }))
+    .filter((item) => item.uri);
+  const photoCardWidth = Math.min(Math.max(windowWidth - (pageMode ? 112 : 150), 220), 304);
+  const photoCardGap = theme.spacing.md;
+  const photoSnapInterval = photoCardWidth + photoCardGap;
   const compactSummary = pageMode
     ? String(screening?.summary || '').replace(/\s+/g, ' ').trim()
     : toCompactSummary(screening?.summary);
@@ -406,26 +478,27 @@ export function HairLogDetailModal({
       ? 'Analysis continued with user-approved photos after validation warning. The result is low-confidence and should not be used for donation approval.'
       : 'Use this scan as a baseline and compare the next check for changes.');
   const assessmentMetrics = [
-    { label: 'Condition', value: screening?.detected_condition || 'Not detected' },
-    { label: 'Donation decision', value: screening?.decision || 'Not detected' },
-    { label: 'Length', value: formatEstimatedLengthInches(screening) },
-    { label: 'Color', value: screening?.detected_color || 'Not detected' },
-    { label: 'Texture', value: screening?.detected_texture || 'Not detected' },
-    { label: 'Density', value: screening?.detected_density || 'Not detected' },
-    { label: 'Density score', value: formatDensityScore(screening?.hair_density_score) },
-    { label: 'Visible scalp', value: screening?.visible_scalp_area || 'Not detected' },
+    { label: 'Condition', value: screening?.detected_condition || 'Not detected', icon: 'head-heart-outline', wide: true },
+    { label: 'Donation decision', value: screening?.decision || 'Not detected', icon: 'content-cut', wide: true },
+    { label: 'Length', value: formatEstimatedLengthInches(screening), icon: 'ruler' },
+    { label: 'Color', value: screening?.detected_color || 'Not detected', icon: 'palette' },
+    { label: 'Texture', value: screening?.detected_texture || 'Not detected', icon: 'waves' },
+    { label: 'Density', value: screening?.detected_density || 'Not detected', icon: 'head-dots-horizontal-outline' },
+    { label: 'Density score', value: formatDensityScore(screening?.hair_density_score), icon: 'head-check-outline' },
+    { label: 'Visible scalp', value: screening?.visible_scalp_area || 'Not detected', icon: 'head-outline' },
     {
       label: 'Affected areas',
       value: Array.isArray(screening?.affected_regions) && screening.affected_regions.length
         ? screening.affected_regions.join(', ')
         : 'None detected',
+      icon: 'head-alert-outline',
     },
-    { label: 'Shedding', value: screening?.shedding_level || 'Not detected' },
-    { label: 'Dandruff', value: formatDetectedLabel(screening?.dandruff_detected) },
-    { label: 'Dandruff severity', value: screening?.dandruff_severity || 'None' },
-    { label: 'Lice / nits', value: formatDetectedLabel(screening?.lice_detected) },
-    { label: 'Lice confidence', value: screening?.lice_confidence || 'None' },
-    { label: 'Tracking status', value: screening?.improvement_tracking_status || 'Not detected' },
+    { label: 'Shedding', value: screening?.shedding_level || 'Not detected', icon: 'head-minus-outline' },
+    { label: 'Dandruff', value: formatDetectedLabel(screening?.dandruff_detected), icon: 'head-snowflake-outline' },
+    { label: 'Dandruff severity', value: screening?.dandruff_severity || 'None', icon: 'snowflake-alert' },
+    { label: 'Lice / nits', value: formatDetectedLabel(screening?.lice_detected), icon: 'shield-bug-outline' },
+    { label: 'Lice confidence', value: screening?.lice_confidence || 'None', icon: 'shield-check-outline' },
+    { label: 'Tracking status', value: screening?.improvement_tracking_status || 'Not detected', icon: 'head-sync-outline', wide: true },
   ];
   const nextAnalysisAtMs = screening?.created_at
     ? new Date(screening.created_at).getTime() + HAIR_ANALYSIS_COOLDOWN_MS
@@ -458,6 +531,7 @@ export function HairLogDetailModal({
   const modalTitle = dateKey
     ? formatModalDateLabel(dateKey)
     : formatSavedDateTime(screening?.created_at || getEventActivityDate(events[0]) || new Date().toISOString());
+  const modalWeekday = dateKey ? formatModalWeekdayLabel(dateKey) : '';
 
   const content = (
       <View style={[
@@ -482,18 +556,44 @@ export function HairLogDetailModal({
           contentStyle={styles.cardContent}
         >
           <View style={[styles.header, pageMode && styles.pageHeader]}>
-            <View style={styles.headerCopy}>
-              <Text style={[styles.eyebrow, { color: pageColor(roles.metaText) }]}>{modalEyebrow}</Text>
-              <Text style={[styles.title, { color: pageColor(roles.headingText) }]}>{modalTitle}</Text>
-            </View>
-            <Pressable onPress={onClose} style={styles.closeButton} hitSlop={12}>
-              <AppIcon
-                name={pageMode ? 'arrowLeft' : 'close'}
-                size="sm"
-                state="muted"
-                color={pageColor(roles.metaText)}
-              />
-            </Pressable>
+            {pageMode ? (
+              <View style={styles.pageDateBlock}>
+                <View style={styles.pageDateRow}>
+                  <LinearGradient
+                    colors={[theme.colors.dashboardDonorFrom, theme.colors.dashboardDonorTo]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.pageDateIcon}
+                  >
+                    <MaterialCommunityIcons name="calendar-check-outline" size={22} color="#FFFFFF" />
+                  </LinearGradient>
+                  <View style={styles.pageDateCopy}>
+                    {modalWeekday ? (
+                      <Text style={[styles.pageDateWeekday, { color: pageColor(roles.metaText) }]}>{modalWeekday}</Text>
+                    ) : null}
+                    <Text style={[styles.pageDateTitle, { color: pageColor(roles.headingText) }]}>{modalTitle}</Text>
+                  </View>
+                </View>
+                <View style={[styles.pageDateTrack, { backgroundColor: roles.defaultCardBorder }]}>
+                  <LinearGradient
+                    colors={[theme.colors.dashboardDonorFrom, theme.colors.dashboardDonorTo, 'transparent']}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 0 }}
+                    style={styles.pageDateAccent}
+                  />
+                </View>
+              </View>
+            ) : (
+              <View style={styles.headerCopy}>
+                <Text style={[styles.eyebrow, { color: pageColor(roles.metaText) }]}>{modalEyebrow}</Text>
+                <Text style={[styles.title, { color: pageColor(roles.headingText) }]}>{modalTitle}</Text>
+              </View>
+            )}
+            {!pageMode ? (
+              <Pressable onPress={onClose} style={styles.closeButton} hitSlop={12}>
+                <AppIcon name="close" size="sm" state="muted" color={pageColor(roles.metaText)} />
+              </Pressable>
+            ) : null}
           </View>
 
           <ScrollView
@@ -503,38 +603,27 @@ export function HairLogDetailModal({
             nestedScrollEnabled
           >
             {hasScreening ? (
-              <View style={[styles.statusCard, pageMode && styles.pageInnerCard, { backgroundColor: pageMode ? roles.pageBackground : roles.defaultCardBackground, borderColor: roles.defaultCardBorder }]}>
-                <View style={styles.statusRow}>
-                  <View style={[styles.statusDot, { backgroundColor: pageColor(tone.dotColor) }]} />
-                  <Text style={[styles.statusLabel, { color: pageColor(tone.dotColor) }]}>{assessment.label}</Text>
+              <LinearGradient
+                colors={[theme.colors.dashboardDonorFrom, theme.colors.dashboardDonorTo]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={[styles.statusCard, pageMode && styles.pageStatusCard]}
+              >
+                <View pointerEvents="none" style={styles.statusCardGlow} />
+                <View style={styles.statusMainRow}>
+                  <View style={styles.statusMoodIcon}>
+                    <MaterialCommunityIcons name={mood.icon} size={26} color="#FFFFFF" />
+                  </View>
+                  <View style={styles.statusCopy}>
+                    <Text style={styles.statusEyebrow}>LATEST RESULT</Text>
+                    <Text style={styles.statusLabel}>{assessment.label}</Text>
+                    <Text style={styles.statusMoodLabel}>{mood.label}</Text>
+                  </View>
                 </View>
-                <Text style={[styles.statusSubtext, { color: pageColor(roles.bodyText) }]}>
+                <Text style={styles.statusSubtext}>
                   Saved {formatSavedDateTime(screening.created_at)}
                 </Text>
-              </View>
-            ) : null}
-
-            {hasScreening ? (
-              <View style={[styles.nextAnalysisCard, pageMode && styles.pageInnerCard, { backgroundColor: roles.supportCardBackground, borderColor: roles.defaultCardBorder }]}>
-                <View style={[styles.nextAnalysisIcon, { backgroundColor: roles.iconPrimarySurface }]}>
-                  <MaterialCommunityIcons name="timer-sand" size={18} color={roles.iconPrimaryColor} />
-                </View>
-                <View style={styles.nextAnalysisCopy}>
-                  <Text style={[styles.nextAnalysisTitle, { color: pageColor(roles.headingText) }]}>
-                    Next Hair Analysis
-                  </Text>
-                  <Text style={[styles.nextAnalysisBody, { color: pageColor(roles.bodyText) }]}>
-                    {canAnalyzeAgain
-                      ? 'You can use Hair Analysis again now.'
-                      : `Available on ${nextAnalysisLabel}`}
-                  </Text>
-                </View>
-                <View style={[styles.nextAnalysisCountdown, { borderColor: roles.defaultCardBorder }]}>
-                  <Text style={[styles.nextAnalysisCountdownText, { color: pageColor(roles.primaryActionBackground) }]}>
-                    {canAnalyzeAgain ? 'Ready' : formatCountdown(nextAnalysisRemainingMs)}
-                  </Text>
-                </View>
-              </View>
+              </LinearGradient>
             ) : null}
 
             {hasScreening && entries.length > 1 ? (
@@ -658,61 +747,180 @@ export function HairLogDetailModal({
               </>
             ) : null}
 
-            {hasScreening && (isLoadingUrls || photoUris.length) ? (
-              <>
-                <SectionTitleRow
-                  title="Photos"
-                  icon="file-document-outline"
-                  color={pageColor(roles.headingText)}
-                  iconColor={pageColor(roles.metaText)}
-                  accentColor={pageColor(roles.primaryActionBackground)}
-                  titleStyle={styles.sectionTitle}
-                />
+            {hasScreening ? (
+              <View style={styles.photoSection}>
+                <View style={styles.photoSectionHeader}>
+                  <View style={[styles.photoSectionIcon, { backgroundColor: roles.iconPrimarySurface }]}>
+                    <MaterialCommunityIcons name="image-multiple-outline" size={20} color={roles.iconPrimaryColor} />
+                  </View>
+                  <View style={styles.photoSectionCopy}>
+                    <Text style={[styles.photoSectionTitle, { color: pageColor(roles.headingText) }]}>Hair photos</Text>
+                    <Text style={[styles.photoSectionHint, { color: pageColor(roles.metaText) }]}>Swipe to see every captured view.</Text>
+                  </View>
+                  {savedPhotoRows.length ? (
+                    <View style={[styles.photoTotalBadge, { backgroundColor: roles.iconPrimarySurface }]}>
+                      <Text style={[styles.photoTotalText, { color: roles.iconPrimaryColor }]}>{savedPhotoRows.length} views</Text>
+                    </View>
+                  ) : null}
+                </View>
                 {isLoadingUrls ? (
                   <View style={styles.photoLoading}>
                     <ActivityIndicator color={resolvedTheme?.primaryColor || theme.colors.brandPrimary} />
                   </View>
-                ) : photoUris.length ? (
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photoRow}>
-                    {photoUris.map((uri) => (
-                      <Image key={uri} source={{ uri }} style={styles.photo} resizeMode="cover" />
-                    ))}
-                  </ScrollView>
-                ) : null}
-              </>
+                ) : photoItems.length ? (
+                  <>
+                    <Animated.ScrollView
+                      ref={photoCarouselRef}
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      decelerationRate="fast"
+                      snapToInterval={photoSnapInterval}
+                      snapToAlignment="start"
+                      disableIntervalMomentum
+                      contentContainerStyle={styles.photoRow}
+                      onScroll={Animated.event(
+                        [{ nativeEvent: { contentOffset: { x: photoScrollX } } }],
+                        { useNativeDriver: true }
+                      )}
+                      onMomentumScrollEnd={(event) => {
+                        const nextIndex = Math.round(event.nativeEvent.contentOffset.x / photoSnapInterval);
+                        setActivePhotoIndex(Math.max(0, Math.min(nextIndex, photoItems.length - 1)));
+                      }}
+                      scrollEventThrottle={16}
+                    >
+                      {photoItems.map((item, index) => {
+                        const inputRange = [
+                          (index - 1) * photoSnapInterval,
+                          index * photoSnapInterval,
+                          (index + 1) * photoSnapInterval,
+                        ];
+                        const scale = photoScrollX.interpolate({
+                          inputRange,
+                          outputRange: [0.88, 1, 0.88],
+                          extrapolate: 'clamp',
+                        });
+                        const translateY = photoScrollX.interpolate({
+                          inputRange,
+                          outputRange: [7, 0, 7],
+                          extrapolate: 'clamp',
+                        });
+                        const opacity = photoScrollX.interpolate({
+                          inputRange,
+                          outputRange: [0.4, 1, 0.4],
+                          extrapolate: 'clamp',
+                        });
+
+                        return (
+                          <Animated.View
+                            key={item.id}
+                            style={[
+                              styles.photoCard,
+                              { width: photoCardWidth, opacity, transform: [{ scale }, { translateY }] },
+                            ]}
+                          >
+                            <Image source={{ uri: item.uri }} style={styles.photo} resizeMode="cover" />
+                            <LinearGradient
+                              pointerEvents="none"
+                              colors={['transparent', 'rgba(40, 4, 12, 0.72)']}
+                              style={styles.photoScrim}
+                            />
+                            <View style={styles.photoCountBadge}>
+                              <Text style={styles.photoCountText}>{index + 1} / {photoItems.length}</Text>
+                            </View>
+                            <View style={styles.photoCaptionRow}>
+                              <MaterialCommunityIcons name="image-outline" size={15} color="#FFFFFF" />
+                              <Text numberOfLines={1} style={styles.photoCaption}>{item.label}</Text>
+                            </View>
+                          </Animated.View>
+                        );
+                      })}
+                    </Animated.ScrollView>
+                    {photoItems.length > 1 ? (
+                      <View style={styles.photoPager}>
+                        {photoItems.map((item, index) => (
+                          <View
+                            key={`photo-dot-${item.id}`}
+                            style={[
+                              styles.photoPagerDot,
+                              index === activePhotoIndex
+                                ? [styles.photoPagerDotActive, { backgroundColor: roles.primaryActionBackground }]
+                                : { backgroundColor: roles.defaultCardBorder },
+                            ]}
+                          />
+                        ))}
+                      </View>
+                    ) : null}
+                    {imageUrlError ? (
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="Reload saved hair photos"
+                        onPress={() => setImageUrlLoadNonce((current) => current + 1)}
+                        style={[styles.photoRetryButton, { backgroundColor: roles.iconPrimarySurface }]}
+                      >
+                        <MaterialCommunityIcons name="refresh" size={16} color={roles.iconPrimaryColor} />
+                        <Text style={[styles.photoRetryText, { color: roles.iconPrimaryColor }]}>Reload missing photos</Text>
+                      </Pressable>
+                    ) : null}
+                  </>
+                ) : (
+                  <View style={[styles.photoUnavailableCard, { backgroundColor: roles.supportCardBackground, borderColor: roles.defaultCardBorder }]}>
+                    <View style={[styles.photoUnavailableIcon, { backgroundColor: roles.iconPrimarySurface }]}>
+                      <MaterialCommunityIcons name="image-off-outline" size={21} color={roles.iconPrimaryColor} />
+                    </View>
+                    <View style={styles.photoUnavailableCopy}>
+                      <Text style={[styles.photoUnavailableTitle, { color: pageColor(roles.headingText) }]}>Photos are not visible yet</Text>
+                      <Text style={[styles.photoUnavailableBody, { color: pageColor(roles.bodyText) }]}>
+                        {savedPhotoRows.length ? imageUrlError : 'No saved photo records were returned for this result.'}
+                      </Text>
+                    </View>
+                    {savedPhotoRows.length ? (
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="Reload saved hair photos"
+                        onPress={() => setImageUrlLoadNonce((current) => current + 1)}
+                        style={[styles.photoUnavailableRetry, { backgroundColor: roles.primaryActionBackground }]}
+                      >
+                        <MaterialCommunityIcons name="refresh" size={17} color={roles.primaryActionText} />
+                      </Pressable>
+                    ) : null}
+                  </View>
+                )}
+              </View>
             ) : null}
 
             {hasScreening && hasAssessmentDetails ? (
               <>
                 <SectionTitleRow
-                  title="Hair Assessment"
-                  icon="file-document-outline"
+                  title="Hair assessment"
+                  icon="clipboard-pulse-outline"
                   color={pageColor(roles.headingText)}
                   iconColor={pageColor(roles.metaText)}
                   accentColor={pageColor(roles.primaryActionBackground)}
                   titleStyle={styles.sectionTitle}
                 />
-                <View style={[styles.assessmentCard, pageMode && styles.pageInnerCard, { backgroundColor: pageMode ? roles.pageBackground : roles.defaultCardBackground, borderColor: roles.defaultCardBorder }]}>
-                  <Text style={[styles.assessmentSummary, { color: pageColor(roles.bodyText) }]} numberOfLines={pageMode ? undefined : 2}>
-                    {assessmentSummary}
-                  </Text>
+                <View style={styles.assessmentContent}>
+                  <View style={[styles.assessmentSummaryCard, { backgroundColor: roles.iconPrimarySurface }]}>
+                    <View style={[styles.assessmentSummaryIcon, { backgroundColor: roles.primaryActionBackground }]}>
+                      <MaterialCommunityIcons name="clipboard-text-outline" size={20} color={roles.primaryActionText} />
+                    </View>
+                    <View style={styles.assessmentSummaryCopy}>
+                      <Text style={[styles.assessmentSummaryLabel, { color: roles.iconPrimaryColor }]}>AI overview</Text>
+                      <Text style={[styles.assessmentSummary, { color: pageColor(roles.bodyText) }]} numberOfLines={pageMode ? undefined : 2}>
+                        {assessmentSummary}
+                      </Text>
+                    </View>
+                  </View>
                   <View style={styles.metricGrid}>
-                    {assessmentMetrics.map((metric) => (
-                      <View key={metric.label} style={[styles.metricItem, pageMode && metric.label === 'Condition' && styles.metricItemFull]}>
-                        <Text style={[styles.metaKey, { color: pageColor(roles.metaText) }]}>
-                          {metric.label}
-                        </Text>
-                        <Text
-                          style={[
-                            styles.metaValue,
-                            { color: pageColor(roles.headingText) },
-                            metric.label === 'Length' && metric.value === 'Not detected' ? styles.metricValueMuted : null,
-                            metric.label === 'Density score' ? styles.metricValueLarge : null,
-                          ]}
-                        >
-                          {metric.value}
-                        </Text>
-                      </View>
+                    {assessmentMetrics.map((metric, index) => (
+                      <AssessmentMetricWidget
+                        key={metric.label}
+                        metric={metric}
+                        index={index}
+                        animationKey={activeEntryKey}
+                        textColor={pageColor(roles.headingText)}
+                        metaColor={pageColor(roles.metaText)}
+                        iconColor={roles.iconPrimaryColor}
+                      />
                     ))}
                   </View>
                 </View>
@@ -721,20 +929,26 @@ export function HairLogDetailModal({
 
             {hasScreening ? (
               <View style={[styles.insightsCard, pageMode && styles.pageInnerCard, {
-                backgroundColor: pageMode ? roles.pageBackground : roles.defaultCardBackground,
+                backgroundColor: roles.supportCardBackground,
                 borderColor: roles.defaultCardBorder,
               }]}>
                 <View style={styles.insightsHeader}>
-                  <View style={[styles.insightsIconWrap, { backgroundColor: pageMode ? 'transparent' : roles.iconPrimarySurface }]}>
+                  <View style={[styles.insightsIconWrap, { backgroundColor: roles.iconPrimarySurface }]}>
                     <MaterialCommunityIcons
                       name="lightbulb-on-outline"
-                      size={16}
-                      color={pageColor(roles.primaryActionBackground)}
+                      size={19}
+                      color={roles.iconPrimaryColor}
                     />
                   </View>
-                  <Text style={[styles.insightsTitle, { color: pageColor(roles.primaryActionBackground) }]}>
-                    Saved analysis notes
-                  </Text>
+                  <View style={styles.insightsHeaderCopy}>
+                    <Text style={[styles.insightsTitle, { color: pageColor(roles.headingText) }]}>Saved care notes</Text>
+                    <Text style={[styles.insightsSubtitle, { color: pageColor(roles.metaText) }]}>Important details from this check</Text>
+                  </View>
+                  {insightBullets.length ? (
+                    <View style={[styles.insightsCount, { backgroundColor: roles.primaryActionBackground }]}>
+                      <Text style={[styles.insightsCountText, { color: roles.primaryActionText }]}>{insightBullets.length}</Text>
+                    </View>
+                  ) : null}
                 </View>
 
                 {isLoadingRecommendations ? (
@@ -748,7 +962,9 @@ export function HairLogDetailModal({
                       <View style={styles.bulletList}>
                         {insightBullets.map((bullet, index) => (
                           <View key={`${index}-${bullet.slice(0, 24)}`} style={styles.bulletRow}>
-                            <View style={[styles.bulletDot, { backgroundColor: pageColor(roles.primaryActionBackground) }]} />
+                            <View style={[styles.bulletIcon, { backgroundColor: roles.iconPrimarySurface }]}>
+                              <MaterialCommunityIcons name={getInsightIcon(bullet)} size={17} color={roles.iconPrimaryColor} />
+                            </View>
                             <Text style={[styles.bulletText, { color: pageColor(roles.bodyText) }]} numberOfLines={pageMode ? undefined : 2}>
                               {bullet}
                             </Text>
@@ -815,6 +1031,70 @@ export function HairLogDetailModal({
                 )}
               </>
             ) : null}
+
+            {hasScreening ? (
+              <View style={[styles.nextAnalysisCard, pageMode && styles.pageInnerCard, { backgroundColor: roles.supportCardBackground, borderColor: roles.defaultCardBorder }]}>
+                <View pointerEvents="none" style={styles.nextAnalysisGlow} />
+                <View style={styles.nextAnalysisInfoRow}>
+                  <LinearGradient
+                    colors={['#FFF9FA', '#F2DCE2']}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.nextAnalysisIcon}
+                  >
+                    <Image source={hairAnalysisAiIcon} style={styles.nextAnalysisIconImage} resizeMode="contain" />
+                  </LinearGradient>
+                  <View style={styles.nextAnalysisCopy}>
+                    <Text style={[styles.nextAnalysisTitle, { color: pageColor(roles.headingText) }]}>Next Hair Analysis</Text>
+                    <Text style={[styles.nextAnalysisBody, { color: pageColor(roles.bodyText) }]}>
+                      {canAnalyzeAgain ? 'Your next hair check is ready.' : `Available on ${nextAnalysisLabel}.`}
+                    </Text>
+                  </View>
+                  {canAnalyzeAgain ? (
+                    <View style={[styles.nextAnalysisReadyBadge, { backgroundColor: roles.iconPrimarySurface }]}>
+                      <MaterialCommunityIcons name="check-circle-outline" size={14} color={roles.iconPrimaryColor} />
+                      <Text style={[styles.nextAnalysisReadyText, { color: roles.iconPrimaryColor }]}>Ready</Text>
+                    </View>
+                  ) : null}
+                </View>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={canAnalyzeAgain ? 'Start Hair Analysis' : 'Hair Analysis is not ready yet'}
+                  disabled={!canAnalyzeAgain || !onStartAnalysis}
+                  onPress={onStartAnalysis}
+                  style={({ pressed }) => [
+                    styles.nextAnalysisCountdown,
+                    !canAnalyzeAgain && {
+                      backgroundColor: roles.pageBackground,
+                      borderColor: roles.defaultCardBorder,
+                      borderWidth: 1,
+                    },
+                    pressed && styles.nextAnalysisCountdownPressed,
+                  ]}
+                >
+                  {canAnalyzeAgain ? (
+                    <LinearGradient
+                      colors={[theme.colors.dashboardDonorFrom, theme.colors.dashboardDonorTo]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 0 }}
+                      style={styles.nextAnalysisActionGradient}
+                    >
+                      <Text style={styles.nextAnalysisActionText}>Start Hair Analysis</Text>
+                      <View style={styles.nextAnalysisActionArrow}>
+                        <MaterialCommunityIcons name="arrow-right" size={17} color="#FFFFFF" />
+                      </View>
+                    </LinearGradient>
+                  ) : (
+                    <View style={styles.nextAnalysisWaitingRow}>
+                      <MaterialCommunityIcons name="clock-outline" size={16} color={pageColor(roles.primaryActionBackground)} />
+                      <Text style={[styles.nextAnalysisCountdownText, { color: pageColor(roles.primaryActionBackground) }]}>
+                        Available in {formatCountdown(nextAnalysisRemainingMs)}
+                      </Text>
+                    </View>
+                  )}
+                </Pressable>
+              </View>
+            ) : null}
           </ScrollView>
         </AppCard>
       </View>
@@ -865,11 +1145,63 @@ const styles = StyleSheet.create({
     elevation: 0,
   },
   pageHeader: {
-    flexDirection: 'row-reverse',
+    paddingTop: theme.spacing.xs,
     paddingBottom: theme.spacing.sm,
   },
+  pageDateBlock: {
+    width: '100%',
+    gap: theme.spacing.md,
+  },
+  pageDateRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+  },
+  pageDateIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    shadowColor: '#3B0711',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 7,
+    elevation: 5,
+  },
+  pageDateCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  pageDateWeekday: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 10,
+    fontWeight: theme.typography.weights.bold,
+    textTransform: 'uppercase',
+    letterSpacing: 1.1,
+  },
+  pageDateTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.titleSm,
+    lineHeight: theme.typography.semantic.titleSm * theme.typography.lineHeights.snug,
+    fontWeight: theme.typography.weights.bold,
+  },
+  pageDateTrack: {
+    width: '100%',
+    height: 3,
+    borderRadius: theme.radius.full,
+    overflow: 'hidden',
+    opacity: 0.82,
+  },
+  pageDateAccent: {
+    width: '72%',
+    height: '100%',
+    borderRadius: theme.radius.full,
+  },
   pageInnerCard: {
-    borderRadius: 6,
+    borderRadius: 18,
   },
   cardContent: {
     flexShrink: 1,
@@ -909,52 +1241,121 @@ const styles = StyleSheet.create({
     minHeight: 0,
   },
   scrollContent: {
-    gap: theme.spacing.md,
+    gap: theme.spacing.lg,
     paddingBottom: theme.spacing.xxxl,
   },
   statusCard: {
-    borderRadius: 6,
-    borderWidth: 1,
-    padding: theme.spacing.md,
-    gap: theme.spacing.xs,
+    position: 'relative',
+    minHeight: 132,
+    borderRadius: 22,
+    padding: theme.spacing.lg,
+    justifyContent: 'space-between',
+    overflow: 'hidden',
+    ...theme.shadows.md,
   },
-  statusRow: {
+  pageStatusCard: {
+    borderRadius: 22,
+  },
+  statusCardGlow: {
+    position: 'absolute',
+    width: 150,
+    height: 150,
+    borderRadius: theme.radius.full,
+    top: -84,
+    right: -42,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+  },
+  statusMainRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: theme.spacing.xs,
+    gap: theme.spacing.md,
   },
-  statusDot: {
-    width: 8,
-    height: 8,
+  statusMoodIcon: {
+    width: 56,
+    height: 56,
     borderRadius: theme.radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.24)',
+  },
+  statusCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  statusEyebrow: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 1.2,
+    color: 'rgba(255, 255, 255, 0.72)',
   },
   statusLabel: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.titleSm,
+    fontWeight: theme.typography.weights.bold,
+    color: '#FFFFFF',
+  },
+  statusMoodLabel: {
     fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.semantic.bodySm,
-    fontWeight: theme.typography.weights.semibold,
+    fontSize: theme.typography.compact.bodySm,
+    color: 'rgba(255, 255, 255, 0.84)',
   },
   statusSubtext: {
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.bodySm,
+    color: 'rgba(255, 255, 255, 0.74)',
   },
   nextAnalysisCard: {
+    position: 'relative',
+    alignItems: 'stretch',
+    gap: theme.spacing.md,
+    borderRadius: 18,
+    borderWidth: 1,
+    minHeight: 138,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.md,
+    overflow: 'hidden',
+    ...theme.shadows.soft,
+  },
+  nextAnalysisGlow: {
+    position: 'absolute',
+    width: 110,
+    height: 110,
+    borderRadius: theme.radius.full,
+    top: -68,
+    right: -42,
+    backgroundColor: 'rgba(146, 32, 57, 0.09)',
+  },
+  nextAnalysisInfoRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: theme.spacing.sm,
-    borderRadius: 6,
-    borderWidth: 1,
-    padding: theme.spacing.md,
   },
   nextAnalysisIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: theme.radius.full,
+    width: 44,
+    height: 44,
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: 'rgba(110, 13, 34, 0.14)',
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
+    shadowColor: '#3B0711',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.18,
+    shadowRadius: 5,
+    elevation: 4,
+  },
+  nextAnalysisIconImage: {
+    width: 34,
+    height: 34,
   },
   nextAnalysisCopy: {
     flex: 1,
+    minWidth: 0,
     gap: 2,
   },
   nextAnalysisTitle: {
@@ -967,15 +1368,63 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.compact.bodySm,
     lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.relaxed,
   },
-  nextAnalysisCountdown: {
-    minWidth: 72,
-    minHeight: 34,
-    borderWidth: 1,
+  nextAnalysisReadyBadge: {
+    minHeight: 29,
     borderRadius: theme.radius.pill,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: theme.spacing.sm,
+    gap: 4,
+    paddingHorizontal: 9,
     flexShrink: 0,
+  },
+  nextAnalysisReadyText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 10,
+    fontWeight: theme.typography.weights.bold,
+  },
+  nextAnalysisCountdown: {
+    alignSelf: 'stretch',
+    height: 46,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  nextAnalysisCountdownPressed: {
+    opacity: 0.84,
+    transform: [{ scale: 0.96 }],
+  },
+  nextAnalysisActionGradient: {
+    flex: 1,
+    alignSelf: 'stretch',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingLeft: theme.spacing.lg,
+    paddingRight: 9,
+  },
+  nextAnalysisActionText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 13,
+    fontWeight: theme.typography.weights.bold,
+    color: '#FFFFFF',
+  },
+  nextAnalysisActionArrow: {
+    width: 30,
+    height: 30,
+    borderRadius: theme.radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.16)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.24)',
+  },
+  nextAnalysisWaitingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
   },
   nextAnalysisCountdownText: {
     fontFamily: theme.typography.fontFamily,
@@ -1073,29 +1522,218 @@ const styles = StyleSheet.create({
     lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.relaxed,
   },
   photoLoading: {
-    height: 84,
+    height: 190,
     alignItems: 'center',
     justifyContent: 'center',
   },
+  photoSection: {
+    gap: theme.spacing.sm,
+  },
+  photoSectionHeader: {
+    minHeight: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  photoSectionIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  photoSectionCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  photoSectionTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.bodyMd,
+    fontWeight: theme.typography.weights.bold,
+  },
+  photoSectionHint: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+  },
+  photoTotalBadge: {
+    minHeight: 28,
+    borderRadius: theme.radius.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.sm,
+    flexShrink: 0,
+  },
+  photoTotalText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 10,
+    fontWeight: theme.typography.weights.bold,
+  },
   photoRow: {
     gap: theme.spacing.md,
-    paddingBottom: 4,
+    paddingHorizontal: theme.spacing.xs,
+    paddingVertical: theme.spacing.sm,
+    paddingRight: theme.spacing.xxxl,
+  },
+  photoCard: {
+    height: 216,
+    borderRadius: 22,
+    overflow: 'hidden',
+    backgroundColor: theme.colors.surfaceMuted,
+    shadowColor: '#3B0711',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.22,
+    shadowRadius: 13,
+    elevation: 8,
   },
   photo: {
-    width: 84,
-    height: 84,
-    borderRadius: 12,
+    width: '100%',
+    height: '100%',
     backgroundColor: theme.colors.surfaceMuted,
+  },
+  photoScrim: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  photoCountBadge: {
+    position: 'absolute',
+    top: theme.spacing.sm,
+    right: theme.spacing.sm,
+    minHeight: 27,
+    borderRadius: theme.radius.pill,
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.sm,
+    backgroundColor: 'rgba(44, 4, 13, 0.62)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.42)',
+  },
+  photoCountText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 10,
+    fontWeight: theme.typography.weights.bold,
+    color: '#FFFFFF',
+  },
+  photoCaptionRow: {
+    position: 'absolute',
+    left: theme.spacing.md,
+    right: theme.spacing.md,
+    bottom: theme.spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+  },
+  photoCaption: {
+    flex: 1,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 12,
+    fontWeight: theme.typography.weights.semibold,
+    color: '#FFFFFF',
+    textTransform: 'capitalize',
+  },
+  photoPager: {
+    minHeight: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  photoPagerDot: {
+    width: 7,
+    height: 7,
+    borderRadius: theme.radius.full,
+  },
+  photoPagerDotActive: {
+    width: 22,
+  },
+  photoRetryButton: {
+    alignSelf: 'center',
+    minHeight: 34,
+    borderRadius: theme.radius.pill,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: 7,
+  },
+  photoRetryText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 11,
+    fontWeight: theme.typography.weights.bold,
+  },
+  photoUnavailableCard: {
+    minHeight: 82,
+    borderWidth: 1,
+    borderRadius: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    padding: theme.spacing.md,
+  },
+  photoUnavailableIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  photoUnavailableCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
+  },
+  photoUnavailableTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.compact.bodySm,
+    fontWeight: theme.typography.weights.bold,
+  },
+  photoUnavailableBody: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: theme.typography.compact.caption * theme.typography.lineHeights.relaxed,
+  },
+  photoUnavailableRetry: {
+    width: 36,
+    height: 36,
+    borderRadius: theme.radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
   },
   emptyText: {
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.bodySm,
   },
-  assessmentCard: {
-    borderRadius: 6,
-    borderWidth: 1,
+  assessmentContent: {
+    gap: theme.spacing.md,
+  },
+  assessmentSummaryCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: theme.spacing.sm,
+    borderRadius: 16,
     padding: theme.spacing.md,
-    gap: theme.spacing.lg,
+  },
+  assessmentSummaryIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  assessmentSummaryCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
+  },
+  assessmentSummaryLabel: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 10,
+    fontWeight: theme.typography.weights.bold,
+    textTransform: 'uppercase',
+    letterSpacing: 0.7,
   },
   assessmentSummary: {
     fontFamily: theme.typography.fontFamily,
@@ -1112,10 +1750,29 @@ const styles = StyleSheet.create({
   metricItem: {
     width: '48%',
     minWidth: 0,
-    gap: 2,
+    minHeight: 78,
+    borderWidth: 1,
+    borderRadius: 15,
+    padding: theme.spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: theme.spacing.sm,
   },
   metricItemFull: {
     width: '100%',
+  },
+  metricIconWrap: {
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  metricCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
   },
   metricValueMuted: {
     fontStyle: 'italic',
@@ -1126,27 +1783,50 @@ const styles = StyleSheet.create({
   },
   insightsCard: {
     borderWidth: 1,
-    borderRadius: 6,
+    borderRadius: 18,
     padding: theme.spacing.md,
     gap: theme.spacing.md,
+    ...theme.shadows.soft,
   },
   insightsHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: theme.spacing.xs,
+    gap: theme.spacing.sm,
   },
   insightsIconWrap: {
-    width: 28,
-    height: 28,
-    borderRadius: theme.radius.full,
+    width: 42,
+    height: 42,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
   },
+  insightsHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
   insightsTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.bodyMd,
+    fontWeight: theme.typography.weights.bold,
+  },
+  insightsSubtitle: {
     fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.bodySm,
-    fontWeight: theme.typography.weights.semibold,
+    fontSize: theme.typography.compact.caption,
+  },
+  insightsCount: {
+    minWidth: 30,
+    height: 30,
+    borderRadius: theme.radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+  },
+  insightsCountText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 11,
+    fontWeight: theme.typography.weights.bold,
   },
   insightsBody: {
     gap: theme.spacing.sm,
@@ -1157,18 +1837,23 @@ const styles = StyleSheet.create({
     lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.relaxed,
   },
   bulletList: {
-    gap: theme.spacing.sm,
+    gap: 0,
   },
   bulletRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: theme.spacing.sm,
+    paddingVertical: theme.spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(110, 13, 34, 0.14)',
   },
-  bulletDot: {
-    width: 8,
-    height: 8,
-    borderRadius: theme.radius.full,
-    marginTop: 7,
+  bulletIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
   },
   bulletText: {
     flex: 1,
@@ -1212,7 +1897,7 @@ const styles = StyleSheet.create({
   },
   recommendationCard: {
     borderWidth: 1,
-    borderRadius: 12,
+    borderRadius: 16,
     padding: theme.spacing.md,
     gap: theme.spacing.xs,
   },

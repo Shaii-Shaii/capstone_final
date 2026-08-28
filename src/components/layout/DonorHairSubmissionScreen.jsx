@@ -12,8 +12,7 @@ import { AppButton } from '../ui/AppButton';
 import { AppIcon } from '../ui/AppIcon';
 import { AppInput } from '../ui/AppInput';
 import { StatusBanner } from '../ui/StatusBanner';
-import { DonorTopBar } from '../donor/DonorTopBar';
-import { DonorTutorialModal } from '../donor/DonorTutorialModal';
+import { DonorTabHeader } from '../donor/DonorTabHeader';
 import { SectionTitleRow } from '../ui/SectionTitleRow';
 import { HairLogDetailModal } from '../hair/HairLogDetailModal';
 import { EmptyDataState } from '../ui/EmptyDataState';
@@ -22,7 +21,6 @@ import { donorDashboardNavItems } from '../../constants/dashboard';
 import { useAuth } from '../../providers/AuthProvider';
 import { useNotifications } from '../../hooks/useNotifications';
 import { useDonorHairSubmission } from '../../hooks/useDonorHairSubmission';
-import { useAuthActions } from '../../features/auth/hooks/useAuthActions';
 import { fetchRegisteredDonationDrivesByUserId } from '../../features/donorHome.api';
 import {
   fetchHairSubmissionsByUserId,
@@ -2648,7 +2646,6 @@ export function DonorHairSubmissionScreen() {
   const [, setResultConfirmationMode] = useState('pending');
   const [retryCountdownSeconds, setRetryCountdownSeconds] = useState(0);
   const [transientErrorNotice, setTransientErrorNotice] = useState(null);
-  const [isTutorialOpen, setIsTutorialOpen] = useState(false);
   const [photoPreflightState, setPhotoPreflightState] = useState(null);
   const [isPhotoPreflightRunning, setIsPhotoPreflightRunning] = useState(false);
   const [isAnalysisLaunching, setIsAnalysisLaunching] = useState(false);
@@ -2657,7 +2654,6 @@ export function DonorHairSubmissionScreen() {
   const { user, profile, resolvedTheme } = useAuth();
   const { width: viewportWidth } = useWindowDimensions();
   const roles = resolveThemeRoles(resolvedTheme);
-  const { logout, isLoading: isLoggingOut } = useAuthActions();
   const {
     unreadCount,
   } = useNotifications({
@@ -2689,7 +2685,6 @@ export function DonorHairSubmissionScreen() {
     clearAnalysisError,
   } = useDonorHairSubmission({ userId: user?.id, databaseUserId: profile?.user_id });
 
-  const avatarInitials = `${profile?.first_name?.[0] || ''}${profile?.last_name?.[0] || ''}`.trim();
   const questionForm = useForm({
     resolver: zodResolver(hairAnalyzerQuestionSchema),
     mode: 'onChange',
@@ -4714,26 +4709,8 @@ export function DonorHairSubmissionScreen() {
         if (!item.route || item.route === '/donor/donations') return;
         router.navigate(item.route);
       }}
-      header={(
-        <DonorTopBar
-          title="CheckHair"
-          avatarInitials={avatarInitials}
-          avatarUri={profile?.avatar_url || profile?.photo_path || ''}
-          unreadCount={unreadCount}
-          showTutorialAction
-          onTutorialPress={() => setIsTutorialOpen(true)}
-          onNotificationsPress={() => router.navigate('/donor/notifications')}
-          onProfilePress={() => router.navigate('/profile')}
-          onLogoutPress={logout}
-          isLoggingOut={isLoggingOut}
-        />
-      )}
+      header={<DonorTabHeader unreadCount={unreadCount} />}
     >
-      <DonorTutorialModal
-        visible={isTutorialOpen}
-        tabKey="analysisCheckHair"
-        onClose={() => setIsTutorialOpen(false)}
-      />
       {transientErrorNotice && !isAnalyzerActive ? (
         <StatusBanner
           title={transientErrorNotice.title}
@@ -4847,6 +4824,12 @@ export function DonorHairSubmissionScreen() {
         entries={selectedHistoryEntries}
         events={selectedHistoryEvents}
         donationRequirement={donationRequirement}
+        onStartAnalysis={() => {
+          setSelectedHistoryDate('');
+          setSelectedHistoryEntries([]);
+          setSelectedHistoryEvents([]);
+          setIsAnalyzerActive(true);
+        }}
         onClose={() => {
           setSelectedHistoryDate('');
           setSelectedHistoryEntries([]);

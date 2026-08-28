@@ -4,11 +4,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import Animated, {
   interpolate,
-  interpolateColor,
   useAnimatedProps,
   useAnimatedStyle,
   useSharedValue,
+  withSequence,
   withSpring,
+  withTiming,
 } from 'react-native-reanimated';
 import Svg, { Path } from 'react-native-svg';
 import { AppIcon } from './AppIcon';
@@ -16,16 +17,17 @@ import { theme, resolveThemeRoles } from '../../design-system/theme';
 import { useAuth } from '../../providers/AuthProvider';
 import { donorDashboardNavItems } from '../../constants/dashboard';
 
-export const DASHBOARD_TAB_BAR_HEIGHT = 64;
+export const DASHBOARD_TAB_BAR_HEIGHT = 72;
 
-const BUBBLE_SIZE = 48;
-const NOTCH_RADIUS = 34;
-const PILL_RADIUS = 0;
-const PILL_MARGIN = 0;
-const ACTIVE_CENTER_Y = 4;
-const INACTIVE_CENTER_Y = DASHBOARD_TAB_BAR_HEIGHT / 2;
-const LIFT = -(INACTIVE_CENTER_Y - ACTIVE_CENTER_Y);
-const ICON_WRAP_TOP = INACTIVE_CENTER_Y - BUBBLE_SIZE / 2;
+const BUBBLE_SIZE = 54;
+const BUBBLE_CORE_SIZE = 46;
+const INACTIVE_ICON_WRAP_SIZE = 32;
+const BAR_TOP = 17;
+const NOTCH_RADIUS = 32;
+const NOTCH_DEPTH = 29;
+const PILL_RADIUS = 24;
+const PILL_MARGIN = 12;
+const ICON_WRAP_TOP = BAR_TOP + 1;
 const CURVE_KAPPA = 0.5522847498;
 
 const SPRING_BUBBLE = { damping: 14, stiffness: 210, mass: 0.75 };
@@ -35,44 +37,41 @@ const SPRING_PRESS = { damping: 18, stiffness: 300 };
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 const AnimatedPath = Animated.createAnimatedComponent(Path);
 
-function buildNotchedPillPath(width, height, notchCenterX = null) {
+function buildLiquidPillPath(width, height, notchCenterX = null) {
   'worklet';
   const safeWidth = Math.max(width, height);
-  const cornerRadius = Math.min(PILL_RADIUS, height / 2, safeWidth / 2);
+  const bottomRadius = Math.min(PILL_RADIUS, (height - BAR_TOP) / 2);
   const hasNotch = Number.isFinite(notchCenterX) && notchCenterX >= 0;
-  const notchRadius = Math.min(NOTCH_RADIUS, Math.max(0, safeWidth / 2 - 4));
-  const minCenterX = notchRadius + 4;
-  const maxCenterX = safeWidth - notchRadius - 4;
+  const notchRadius = Math.min(NOTCH_RADIUS, Math.max(0, safeWidth / 2 - 6));
+  const minCenterX = notchRadius + bottomRadius;
+  const maxCenterX = safeWidth - notchRadius - bottomRadius;
   const centerX = hasNotch
     ? Math.min(Math.max(notchCenterX, minCenterX), maxCenterX)
     : null;
   const notchStartX = hasNotch ? centerX - notchRadius : null;
   const notchEndX = hasNotch ? centerX + notchRadius : null;
   const notchControl = notchRadius * CURVE_KAPPA;
-
-  const path = [
-    `M ${cornerRadius} 0`,
-  ];
+  const path = [`M ${bottomRadius} ${BAR_TOP}`];
 
   if (hasNotch) {
-    path.push(`L ${notchStartX} 0`);
+    path.push(`L ${notchStartX} ${BAR_TOP}`);
     path.push(
-      `C ${notchStartX} ${notchControl} ${centerX - notchControl} ${notchRadius} ${centerX} ${notchRadius}`
+      `C ${notchStartX + notchControl * 0.18} ${BAR_TOP} ${centerX - notchControl} ${BAR_TOP + NOTCH_DEPTH} ${centerX} ${BAR_TOP + NOTCH_DEPTH}`
     );
     path.push(
-      `C ${centerX + notchControl} ${notchRadius} ${notchEndX} ${notchControl} ${notchEndX} 0`
+      `C ${centerX + notchControl} ${BAR_TOP + NOTCH_DEPTH} ${notchEndX - notchControl * 0.18} ${BAR_TOP} ${notchEndX} ${BAR_TOP}`
     );
   }
 
   path.push(
-    `L ${safeWidth - cornerRadius} 0`,
-    `Q ${safeWidth} 0 ${safeWidth} ${cornerRadius}`,
-    `L ${safeWidth} ${height - cornerRadius}`,
-    `Q ${safeWidth} ${height} ${safeWidth - cornerRadius} ${height}`,
-    `L ${cornerRadius} ${height}`,
-    `Q 0 ${height} 0 ${height - cornerRadius}`,
-    `L 0 ${cornerRadius}`,
-    `Q 0 0 ${cornerRadius} 0`,
+    `L ${safeWidth - bottomRadius} ${BAR_TOP}`,
+    `Q ${safeWidth} ${BAR_TOP} ${safeWidth} ${BAR_TOP + bottomRadius}`,
+    `L ${safeWidth} ${height - bottomRadius}`,
+    `Q ${safeWidth} ${height} ${safeWidth - bottomRadius} ${height}`,
+    `L ${bottomRadius} ${height}`,
+    `Q 0 ${height} 0 ${height - bottomRadius}`,
+    `L 0 ${BAR_TOP + bottomRadius}`,
+    `Q 0 ${BAR_TOP} ${bottomRadius} ${BAR_TOP}`,
     'Z'
   );
 
@@ -98,13 +97,11 @@ function DashboardTabItem({ item, isActive, onPress }) {
   }));
 
   const labelStyle = useAnimatedStyle(() => ({
-    color: interpolateColor(
-      progress.value,
-      [0, 1],
-      [roles.metaText, roles.navActiveBackground]
-    ),
-    fontWeight: isActive ? '700' : '500',
-    opacity: interpolate(progress.value, [0, 1], [0.55, 1]),
+    color: roles.primaryActionText,
+    opacity: interpolate(progress.value, [0, 1], [0.82, 1]),
+    transform: [
+      { translateY: interpolate(progress.value, [0, 1], [0, -1]) },
+    ],
   }));
 
   const handlePress = async () => {
@@ -131,7 +128,7 @@ function DashboardTabItem({ item, isActive, onPress }) {
         <AppIcon
           name={item.icon}
           state="default"
-          color={roles.metaText}
+          color={roles.primaryActionText}
           size="md"
         />
         {item.badge ? (
@@ -139,19 +136,22 @@ function DashboardTabItem({ item, isActive, onPress }) {
             style={[
               styles.badge,
               {
-                backgroundColor: roles.primaryActionBackground,
-                borderColor: roles.pageBackground,
+                backgroundColor: roles.primaryActionText,
+                borderColor: roles.primaryActionBackground,
               },
             ]}
           >
-            <Text style={[styles.badgeText, { color: roles.primaryActionText }]}>
+            <Text style={[styles.badgeText, { color: roles.primaryActionBackground }]}>
               {item.badge}
             </Text>
           </View>
         ) : null}
       </Animated.View>
 
-      <Animated.Text numberOfLines={1} style={[styles.label, labelStyle]}>
+      <Animated.Text
+        numberOfLines={1}
+        style={[styles.label, isActive && styles.activeLabel, labelStyle]}
+      >
         {item.label}
       </Animated.Text>
     </AnimatedPressable>
@@ -161,37 +161,65 @@ function DashboardTabItem({ item, isActive, onPress }) {
 function FloatingActiveBubble({ item, activeCenterX }) {
   const { resolvedTheme } = useAuth();
   const roles = resolveThemeRoles(resolvedTheme);
+  const liquidPulse = useSharedValue(1);
+
+  React.useEffect(() => {
+    liquidPulse.value = withSequence(
+      withTiming(0.9, { duration: 90 }),
+      withSpring(1.08, { damping: 10, stiffness: 240 }),
+      withSpring(1, SPRING_BUBBLE)
+    );
+  }, [item?.key, liquidPulse]);
 
   const bubbleStyle = useAnimatedStyle(() => ({
     opacity: activeCenterX.value >= 0 ? 1 : 0,
     transform: [
       { translateX: activeCenterX.value - BUBBLE_SIZE / 2 },
-      { translateY: LIFT },
+      { translateY: interpolate(liquidPulse.value, [0.9, 1.08], [3, -2]) },
+      { scale: liquidPulse.value },
     ],
   }));
 
   if (!item) return null;
 
   return (
-    <Animated.View pointerEvents="none" style={[styles.floatingBubble, bubbleStyle]}>
-      <View style={styles.bubbleBg} />
-      <AppIcon
-        name={item.activeIcon || item.icon}
-        state="default"
-        color={roles.navActiveBackground}
-        size="md"
+    <Animated.View
+      pointerEvents="none"
+      style={[styles.floatingBubble, bubbleStyle]}
+    >
+      <View
+        style={[
+          styles.bubbleBg,
+          {
+            backgroundColor: roles.pageBackground,
+            borderColor: roles.pageBackground,
+          },
+        ]}
       />
+      <View
+        style={[
+          styles.activeIconSlot,
+          { backgroundColor: roles.primaryActionBackground },
+        ]}
+      >
+        <AppIcon
+          name={item.activeIcon || item.icon}
+          state="default"
+          color={roles.primaryActionText}
+          size="md"
+        />
+      </View>
       {item.badge ? (
         <View
           style={[
             styles.badge,
             {
-              backgroundColor: roles.primaryActionBackground,
-              borderColor: roles.pageBackground,
+              backgroundColor: roles.primaryActionText,
+              borderColor: roles.primaryActionBackground,
             },
           ]}
         >
-          <Text style={[styles.badgeText, { color: roles.primaryActionText }]}>
+          <Text style={[styles.badgeText, { color: roles.primaryActionBackground }]}>
             {item.badge}
           </Text>
         </View>
@@ -206,6 +234,7 @@ function DashboardTabBarComponent({ items, activeKey, onPress, variant = 'donor'
   const insets = useSafeAreaInsets();
   const { width: screenWidth } = useWindowDimensions();
   const pressLockRef = React.useRef(false);
+  const [measuredWidth, setMeasuredWidth] = React.useState(0);
 
   const displayItems = React.useMemo(() => {
     if (variant !== 'donor') return items;
@@ -216,7 +245,7 @@ function DashboardTabBarComponent({ items, activeKey, onPress, variant = 'donor'
   }, [items, variant]);
 
   const numTabs = displayItems.length;
-  const pillWidth = Math.max(0, screenWidth - PILL_MARGIN * 2);
+  const pillWidth = measuredWidth || Math.max(0, screenWidth - PILL_MARGIN * 2);
   const tabWidth = numTabs > 0 ? pillWidth / numTabs : 0;
   const activeIndex = displayItems.findIndex((item) => item.key === activeKey);
   const activeCenterX = activeIndex >= 0
@@ -225,11 +254,11 @@ function DashboardTabBarComponent({ items, activeKey, onPress, variant = 'donor'
   const activeItem = activeIndex >= 0 ? displayItems[activeIndex] : null;
   const activeCenterXProgress = useSharedValue(activeCenterX ?? -1);
   const pillPathProps = useAnimatedProps(() => ({
-    d: buildNotchedPillPath(pillWidth, DASHBOARD_TAB_BAR_HEIGHT, activeCenterXProgress.value),
+    d: buildLiquidPillPath(pillWidth, DASHBOARD_TAB_BAR_HEIGHT, activeCenterXProgress.value),
   }), [pillWidth]);
   const safeBottom = Math.max(insets.bottom, 0);
   const isPatientNav = variant === 'patient';
-  const bottomOffset = isPatientNav ? -safeBottom : safeBottom;
+  const bottomOffset = isPatientNav ? -safeBottom + theme.spacing.xs : safeBottom + theme.spacing.sm;
 
   React.useEffect(() => {
     activeCenterXProgress.value = withSpring(activeCenterX ?? -1, SPRING_SLIDE);
@@ -239,29 +268,34 @@ function DashboardTabBarComponent({ items, activeKey, onPress, variant = 'donor'
 
   return (
     <View
+      onLayout={(event) => {
+        const nextWidth = event.nativeEvent.layout.width;
+        if (nextWidth > 0 && Math.abs(nextWidth - measuredWidth) > 0.5) {
+          setMeasuredWidth(nextWidth);
+        }
+      }}
       style={[
         styles.wrapper,
         {
           bottom: bottomOffset,
           height: DASHBOARD_TAB_BAR_HEIGHT + (isPatientNav ? safeBottom : 0),
-          backgroundColor: isPatientNav ? theme.colors.backgroundPrimary : 'transparent',
+          backgroundColor: 'transparent',
         },
       ]}
       pointerEvents="box-none"
     >
-      <View style={styles.barShadow} pointerEvents="none" />
       <Svg
         width={pillWidth}
         height={DASHBOARD_TAB_BAR_HEIGHT}
-        style={styles.pillShape}
         pointerEvents="none"
+        style={styles.pillShape}
       >
         <AnimatedPath
           animatedProps={pillPathProps}
-          d={buildNotchedPillPath(pillWidth, DASHBOARD_TAB_BAR_HEIGHT, activeCenterX ?? -1)}
-          fill={theme.colors.backgroundPrimary}
-          stroke={roles.navBorder}
-          strokeWidth={1}
+          d={buildLiquidPillPath(pillWidth, DASHBOARD_TAB_BAR_HEIGHT, activeCenterX ?? -1)}
+          fill={roles.primaryActionBackground}
+          stroke={roles.primaryActionBackground}
+          strokeWidth={0.5}
         />
       </Svg>
 
@@ -298,19 +332,14 @@ const styles = StyleSheet.create({
     height: DASHBOARD_TAB_BAR_HEIGHT,
     overflow: 'visible',
   },
-  barShadow: {
-    ...StyleSheet.absoluteFillObject,
-    borderRadius: 0,
-    backgroundColor: 'transparent',
-    shadowColor: '#18000a',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.14,
-    shadowRadius: 18,
-    elevation: 14,
-  },
   pillShape: {
     ...StyleSheet.absoluteFillObject,
     overflow: 'visible',
+    shadowColor: '#18000a',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.16,
+    shadowRadius: 16,
+    elevation: 12,
   },
   pillOverlay: {
     flexDirection: 'row',
@@ -322,42 +351,52 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     height: DASHBOARD_TAB_BAR_HEIGHT,
     overflow: 'visible',
+    zIndex: 1,
   },
   iconWrap: {
     position: 'absolute',
-    width: BUBBLE_SIZE,
-    height: BUBBLE_SIZE,
+    width: INACTIVE_ICON_WRAP_SIZE,
+    height: INACTIVE_ICON_WRAP_SIZE,
     alignItems: 'center',
     justifyContent: 'center',
   },
   floatingBubble: {
     position: 'absolute',
-    top: ICON_WRAP_TOP,
+    top: BAR_TOP - BUBBLE_SIZE / 2,
     left: 0,
     width: BUBBLE_SIZE,
     height: BUBBLE_SIZE,
-    zIndex: 2,
+    zIndex: 3,
     alignItems: 'center',
     justifyContent: 'center',
   },
   bubbleBg: {
-    position: 'absolute',
-    width: BUBBLE_SIZE,
-    height: BUBBLE_SIZE,
+    ...StyleSheet.absoluteFillObject,
     borderRadius: BUBBLE_SIZE / 2,
-    backgroundColor: theme.colors.backgroundPrimary,
-    shadowColor: '#2a0508',
+    borderWidth: 3,
+    shadowColor: '#25040a',
     shadowOffset: { width: 0, height: 5 },
-    shadowOpacity: 0.18,
-    shadowRadius: 13,
-    elevation: 10,
+    shadowOpacity: 0.22,
+    shadowRadius: 10,
+    elevation: 9,
+  },
+  activeIconSlot: {
+    width: BUBBLE_CORE_SIZE,
+    height: BUBBLE_CORE_SIZE,
+    borderRadius: BUBBLE_CORE_SIZE / 2,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   label: {
     position: 'absolute',
-    bottom: 9,
+    bottom: 6,
     fontFamily: theme.typography.fontFamily,
-    fontSize: 10,
+    fontSize: 9,
+    fontWeight: theme.typography.weights.semibold,
     letterSpacing: 0,
+  },
+  activeLabel: {
+    fontWeight: theme.typography.weights.bold,
   },
   badge: {
     position: 'absolute',

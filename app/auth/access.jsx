@@ -101,10 +101,11 @@ function SocialLoginButton({ label, onPress, disabled, loading, roles }) {
         isInactive ? styles.disabledButton : null,
       ]}
     >
-      {loading ? (
-        <ActivityIndicator color={roles.headingText} />
-      ) : (
-        <>
+      <View style={styles.socialButtonContent}>
+        {loading ? (
+          <ActivityIndicator color={roles.headingText} />
+        ) : (
+          <>
           <View style={styles.googleLogoSlot}>
             <Image
               source={googleLogo}
@@ -115,8 +116,9 @@ function SocialLoginButton({ label, onPress, disabled, loading, roles }) {
           <Text style={[styles.socialButtonText, { color: roles.headingText }]}>
             {label}
           </Text>
-        </>
-      )}
+          </>
+        )}
+      </View>
     </Pressable>
   );
 }
@@ -263,7 +265,7 @@ export default function AccessScreen() {
           {/* Sign-up link */}
           <View style={styles.signupRow}>
             <Text style={[styles.signupText, { color: roles.headingText }]}>
-              {'No account? '}
+              No account?
             </Text>
             <Pressable
               onPress={() => router.replace('/auth/signup')}
@@ -487,13 +489,20 @@ const styles = StyleSheet.create({
 
   // Google button
   socialButton: {
+    width: '100%',
     minHeight: 50,
     borderWidth: 1,
     borderRadius: 14,
+    overflow: 'hidden',
+  },
+  socialButtonContent: {
+    width: '100%',
+    minHeight: 48,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.lg,
   },
   socialButtonText: {
     fontFamily: theme.typography.fontFamily,
@@ -514,18 +523,22 @@ const styles = StyleSheet.create({
   // Sign-up link row
   signupRow: {
     flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'center',
     marginTop: theme.spacing.xl,
-    flexWrap: 'wrap',
+    gap: 3,
+    minHeight: 24,
   },
   signupText: {
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.semantic.body,
+    lineHeight: 20,
   },
   signupLink: {
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.semantic.body,
     fontWeight: theme.typography.weights.bold,
+    lineHeight: 20,
   },
   signupLinkColor: {
     color: theme.colors.actionTextLink,

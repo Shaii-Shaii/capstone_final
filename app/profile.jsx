@@ -10,6 +10,7 @@ import { Controller, useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
 import { DashboardLayout } from '../src/components/layout/DashboardLayout';
+import { DashboardHeaderSurface } from '../src/components/layout/DashboardHeaderSurface';
 import { AppCard } from '../src/components/ui/AppCard';
 import { AppInput } from '../src/components/ui/AppInput';
 import { PasswordInput } from '../src/components/ui/PasswordInput';
@@ -22,8 +23,6 @@ import { SectionTitleRow } from '../src/components/ui/SectionTitleRow';
 import { DashboardSectionHeader } from '../src/components/ui/DashboardSectionHeader';
 import { AddressOptionSheet, AddressSelectField, SignupAddressSection } from '../src/components/auth/SignupAddressSection';
 import { DonorTopBar } from '../src/components/donor/DonorTopBar';
-import { DonorTutorialModal } from '../src/components/donor/DonorTutorialModal';
-import { PatientTutorialModal } from '../src/components/patient/PatientTutorialModal';
 import { useProfileActions } from '../src/hooks/useProfileActions';
 import { useNotifications } from '../src/hooks/useNotifications';
 import { useAuth } from '../src/providers/AuthProvider';
@@ -261,7 +260,7 @@ function ProfileGradientActionButton({
   );
 }
 
-function ProfileMenuRow({ icon, title, badge, danger = false, onPress, roles: rowRoles, textColor = null }) {
+function ProfileMenuRow({ icon, title, subtitle = '', badge, danger = false, isLast = false, onPress, roles: rowRoles, textColor = null }) {
   const scale = useSharedValue(1);
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [{ scale: scale.value }],
@@ -279,12 +278,13 @@ function ProfileMenuRow({ icon, title, badge, danger = false, onPress, roles: ro
       style={[
         styles.profileMenuRow,
         rowRoles ? { borderBottomColor: rowRoles.defaultCardBorder } : null,
+        isLast ? styles.profileRowLast : null,
         animatedStyle,
       ]}
     >
       <View style={[
         styles.profileMenuIconWrap,
-        danger ? styles.profileMenuIconDanger : (rowRoles ? { backgroundColor: rowRoles.pageBackground } : null),
+        danger ? styles.profileMenuIconDanger : (rowRoles ? { backgroundColor: rowRoles.iconPrimarySurface } : null),
       ]}>
         <AppIcon name={icon} size="md" color={danger ? theme.colors.textError : (rowRoles?.iconPrimaryColor || theme.colors.brandPrimary)} />
       </View>
@@ -294,8 +294,16 @@ function ProfileMenuRow({ icon, title, badge, danger = false, onPress, roles: ro
           danger ? styles.profileMenuTitleDanger : null,
           rowRoles && !danger ? { color: textColor || rowRoles.headingText } : null,
         ]}>{title}</Text>
+        {subtitle ? (
+          <Text
+            numberOfLines={1}
+            style={[styles.profileMenuSubtitle, rowRoles ? { color: rowRoles.metaText } : null]}
+          >
+            {subtitle}
+          </Text>
+        ) : null}
       </View>
-      {badge != null ? (
+      {badge != null && Number(badge) > 0 ? (
         <View style={[styles.profileMenuBadge, rowRoles ? { backgroundColor: rowRoles.primaryActionBackground } : null]}>
           <Text style={[styles.profileMenuBadgeText, rowRoles ? { color: rowRoles.primaryActionText } : null]}>{badge}</Text>
         </View>
@@ -305,26 +313,43 @@ function ProfileMenuRow({ icon, title, badge, danger = false, onPress, roles: ro
   );
 }
 
-function ProfileMoreRow({ icon, title, onPress, roles: rowRoles, textColor = null }) {
+function ProfileMoreRow({ icon, title, subtitle, badge = null, isLast = false, onPress, roles: rowRoles, textColor = null }) {
   return (
     <Pressable
       onPress={onPress}
       style={({ pressed }) => [
-        styles.profileMoreRow,
-        rowRoles ? { borderBottomColor: rowRoles.defaultCardBorder } : null,
+        styles.profileMorePressable,
         { opacity: pressed ? 0.72 : 1 },
       ]}
     >
       <View style={[
-        styles.profileMoreIconWrap,
-        rowRoles ? { backgroundColor: rowRoles.pageBackground } : null,
+        styles.profileMoreRow,
+        rowRoles ? { borderBottomColor: rowRoles.defaultCardBorder } : null,
+        isLast ? styles.profileRowLast : null,
       ]}>
-        <AppIcon name={icon} size="md" color={rowRoles?.iconPrimaryColor || theme.colors.brandPrimary} />
+        <View style={[
+          styles.profileMoreIconWrap,
+          rowRoles ? { backgroundColor: rowRoles.iconPrimarySurface } : null,
+        ]}>
+          <AppIcon name={icon} size="md" color={rowRoles?.iconPrimaryColor || theme.colors.brandPrimary} />
+        </View>
+        <View style={styles.profileMoreCopy}>
+          <Text style={[styles.profileMoreText, rowRoles ? { color: textColor || rowRoles.bodyText } : null]}>{title}</Text>
+          {subtitle ? (
+            <Text numberOfLines={1} style={[styles.profileMoreSubtitle, rowRoles ? { color: rowRoles.metaText } : null]}>
+              {subtitle}
+            </Text>
+          ) : null}
+        </View>
+        {badge != null && Number(badge) > 0 ? (
+          <View style={[styles.profileMenuBadge, rowRoles ? { backgroundColor: rowRoles.primaryActionBackground } : null]}>
+            <Text style={[styles.profileMenuBadgeText, rowRoles ? { color: rowRoles.primaryActionText } : null]}>{badge}</Text>
+          </View>
+        ) : null}
+        <View style={styles.profileMoreChevron}>
+          <AppIcon name="chevronRight" size="sm" state="muted" color={rowRoles?.metaText} />
+        </View>
       </View>
-      <View style={styles.profileMoreCopy}>
-        <Text style={[styles.profileMoreText, rowRoles ? { color: textColor || rowRoles.bodyText } : null]}>{title}</Text>
-      </View>
-      <AppIcon name="chevronRight" size="sm" state="muted" color={rowRoles?.metaText} />
     </Pressable>
   );
 }
@@ -410,12 +435,10 @@ export default function ProfileScreen() {
   const normalizedRole = String(profile?.role || '').trim().toLowerCase();
   const resolvedRole = normalizedRole === 'patient' ? 'patient' : 'donor';
   const { unreadCount } = useNotifications({ role: resolvedRole, userId: user?.id, databaseUserId: profile?.user_id });
-  const headerPrimaryColor = resolvedTheme?.primaryColor || roles.primaryActionBackground;
   const primaryTextColor = resolvedTheme?.primaryTextColor || theme.colors.textPrimary;
 
   const [mode, setMode] = useState('view');
   const [feedback, setFeedback] = useState(null);
-  const [isTutorialOpen, setIsTutorialOpen] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [passwordSuccess, setPasswordSuccess] = useState(false);
   const [activeProfilePicker, setActiveProfilePicker] = useState('');
@@ -784,15 +807,6 @@ export default function ProfileScreen() {
     router.replace(item.route);
   };
 
-  const handleMorePress = useCallback((label) => {
-    if (label === 'Help') {
-      setFloatingFeedback('info', 'Help', 'Help includes Terms and About.');
-      return;
-    }
-
-    setFloatingFeedback('info', label, `${label} settings will be available in the next update.`);
-  }, [setFloatingFeedback]);
-
   const handleOpenMedicalDocument = useCallback(async () => {
     if (!patientMedicalDocument) {
       setFloatingFeedback('info', 'No Document', 'No medical document is linked yet.');
@@ -986,6 +1000,7 @@ export default function ProfileScreen() {
             roles={roles}
             icon="editProfile"
             title="Edit Profile"
+            subtitle="Update your personal details"
             textColor={primaryTextColor}
             onPress={() => setMode('edit')}
           />
@@ -993,6 +1008,7 @@ export default function ProfileScreen() {
             roles={roles}
             icon="changePassword"
             title="Change Password"
+            subtitle="Keep your account secure"
             textColor={primaryTextColor}
             onPress={() => setMode('password')}
           />
@@ -1000,6 +1016,7 @@ export default function ProfileScreen() {
             roles={roles}
             icon="updates"
             title="History"
+            subtitle="Review your donation journey"
             badge={donorStats.donations}
             textColor={primaryTextColor}
             onPress={() => router.navigate('/donor/donation-history')}
@@ -1008,7 +1025,9 @@ export default function ProfileScreen() {
             roles={roles}
             icon="sparkle"
             title="Achievements"
+            subtitle="View certificates and milestones"
             badge={donorStats.achievements}
+            isLast
             textColor={primaryTextColor}
             onPress={() => router.navigate('/donor/achievements')}
           />
@@ -1017,7 +1036,7 @@ export default function ProfileScreen() {
 
       <View style={styles.profileSection}>
         <SectionTitleRow
-          title="More"
+          title="Preferences & support"
           icon="quickActions"
           color={primaryTextColor}
           iconColor={roles.primaryActionBackground}
@@ -1029,6 +1048,8 @@ export default function ProfileScreen() {
             roles={roles}
             icon="bell-outline"
             title="Notifications"
+            subtitle="View your latest updates"
+            badge={unreadCount}
             textColor={primaryTextColor}
             onPress={() => router.navigate('/donor/notifications')}
           />
@@ -1036,6 +1057,7 @@ export default function ProfileScreen() {
             roles={roles}
             icon="message-alert-outline"
             title="Feedback"
+            subtitle="Tell us about your experience"
             textColor={primaryTextColor}
             onPress={() => router.navigate('/donor/feedback')}
           />
@@ -1043,15 +1065,17 @@ export default function ProfileScreen() {
             roles={roles}
             icon="help-circle-outline"
             title="Help"
+            subtitle="Get help and app information"
+            isLast
             textColor={primaryTextColor}
-            onPress={() => handleMorePress('Help')}
+            onPress={() => router.navigate('/help')}
           />
         </View>
       </View>
 
       <View style={styles.profileLogoutSection}>
         <AppButton
-          title="Logout"
+          title="Log out"
           variant="outline"
           fullWidth
           onPress={handleLogoutPress}
@@ -1192,6 +1216,14 @@ export default function ProfileScreen() {
               roles={roles}
               textColor={primaryTextColor}
             />
+            <PatientProfileRow
+              icon="help-circle-outline"
+              title="Help & User Guide"
+              value="Learn how to use Donivra"
+              onPress={() => router.navigate('/help')}
+              roles={roles}
+              textColor={primaryTextColor}
+            />
           </View>
         </View>
       </View>
@@ -1221,33 +1253,19 @@ export default function ProfileScreen() {
         navVariant={role === 'donor' ? 'donor' : 'patient'}
         onNavPress={handleNavPress}
         header={(
-          <View style={[styles.profileHeaderSurface, { backgroundColor: headerPrimaryColor }]}>
+          <DashboardHeaderSurface>
             <DonorTopBar
-              title={resolvedTheme?.brandName || 'Donivra'}
+              title="My profile"
+              subtitle="Account and preferences"
+              showBack
               unreadCount={unreadCount}
-              showTutorialAction={role === 'donor' || role === 'patient'}
-              onTutorialPress={() => setIsTutorialOpen(true)}
-              showProfileAction={true}
               showLogoutAction={false}
+              onBackPress={() => router.replace(role === 'donor' ? '/donor/home' : '/patient/home')}
               onNotificationsPress={() => router.navigate(role === 'donor' ? '/donor/notifications' : '/patient/notifications')}
-              onProfilePress={() => router.navigate('/profile')}
             />
-          </View>
+          </DashboardHeaderSurface>
         )}
       >
-        {role === 'donor' ? (
-          <DonorTutorialModal
-            visible={isTutorialOpen}
-            tabKey="profile"
-            onClose={() => setIsTutorialOpen(false)}
-          />
-        ) : (
-          <PatientTutorialModal
-            visible={isTutorialOpen}
-            tabKey="profile"
-            onClose={() => setIsTutorialOpen(false)}
-          />
-        )}
         {role === 'donor' ? renderDonorProfileContent() : renderPatientProfileContent()}
 
         <Modal transparent visible={isPopupVisible} animationType="fade" onRequestClose={handleModalClose}>
@@ -1848,11 +1866,6 @@ const styles = StyleSheet.create({
     gap: theme.spacing.lg,
     paddingTop: theme.spacing.sm,
   },
-  profileHeaderSurface: {
-    marginHorizontal: -theme.layout.screenPaddingX,
-    paddingHorizontal: 0,
-    paddingVertical: theme.spacing.xs,
-  },
   profileTopAppBar: {
     minHeight: 56,
     borderRadius: theme.radius.full,
@@ -2007,15 +2020,16 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   profileSection: {
-    gap: theme.spacing.xs,
+    gap: theme.spacing.sm,
   },
   profileSectionHeader: {
     paddingHorizontal: theme.spacing.xs,
   },
   profileSectionShell: {
     overflow: 'hidden',
-    borderRadius: 14,
+    borderRadius: 20,
     borderWidth: 1,
+    ...theme.shadows.soft,
   },
   profileSectionEyebrow: {
     paddingHorizontal: theme.spacing.xs,
@@ -2028,7 +2042,7 @@ const styles = StyleSheet.create({
     color: theme.colors.textSecondary,
   },
   profileMenuRow: {
-    minHeight: 56,
+    minHeight: 64,
     flexDirection: 'row',
     alignItems: 'center',
     gap: theme.spacing.sm,
@@ -2039,8 +2053,8 @@ const styles = StyleSheet.create({
     borderBottomColor: theme.colors.borderSubtle,
   },
   profileMenuIconWrap: {
-    width: 34,
-    height: 34,
+    width: 38,
+    height: 38,
     borderRadius: theme.radius.full,
     alignItems: 'center',
     justifyContent: 'center',
@@ -2059,6 +2073,12 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.semantic.bodySm,
     fontWeight: theme.typography.weights.semibold,
     color: theme.colors.textPrimary,
+  },
+  profileMenuSubtitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 16,
+    color: theme.colors.textMuted,
   },
   profileMenuTitleDanger: {
     color: theme.colors.textError,
@@ -2087,11 +2107,15 @@ const styles = StyleSheet.create({
     borderColor: theme.colors.borderSubtle,
     ...theme.shadows.soft,
   },
+  profileMorePressable: {
+    width: '100%',
+  },
   profileMoreRow: {
-    minHeight: 56,
+    width: '100%',
+    minHeight: 64,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'flex-start',
+    justifyContent: 'space-between',
     gap: theme.spacing.sm,
     paddingHorizontal: theme.spacing.md,
     borderBottomWidth: StyleSheet.hairlineWidth,
@@ -2100,8 +2124,8 @@ const styles = StyleSheet.create({
     paddingVertical: theme.spacing.sm,
   },
   profileMoreIconWrap: {
-    width: 34,
-    height: 34,
+    width: 38,
+    height: 38,
     borderRadius: theme.radius.full,
     alignItems: 'center',
     justifyContent: 'center',
@@ -2118,15 +2142,33 @@ const styles = StyleSheet.create({
     fontWeight: theme.typography.weights.semibold,
     color: theme.colors.textSecondary,
   },
-  profileLogoutSection: {
+  profileMoreSubtitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 16,
+    color: theme.colors.textMuted,
+  },
+  profileMoreChevron: {
+    width: 24,
+    height: 24,
     alignItems: 'center',
+    justifyContent: 'center',
+  },
+  profileRowLast: {
+    borderBottomWidth: 0,
+  },
+  profileLogoutSection: {
+    width: '100%',
+    alignItems: 'stretch',
     gap: theme.spacing.sm,
     paddingTop: theme.spacing.xs,
     paddingBottom: theme.spacing.lg,
   },
   profileLogoutButton: {
+    width: '100%',
+    minHeight: 52,
     borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.surfaceCard,
+    backgroundColor: '#FFF8F9',
   },
   profileVersionText: {
     fontFamily: theme.typography.fontFamily,
