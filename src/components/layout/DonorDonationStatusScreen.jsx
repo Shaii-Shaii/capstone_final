@@ -1435,8 +1435,8 @@ function LogisticsDonationSection({
 }) {
   return (
     <View style={styles.logisticsHubSection}>
-      <View style={styles.sectionHeadingRow}>
-        <View>
+      <View style={[styles.sectionHeadingRow, styles.logisticsHubSectionHeading]}>
+        <View style={styles.logisticsHubSectionHeadingCopy}>
           <Text style={[styles.sectionEyebrow, { color: roles.primaryActionBackground }]}>SEND YOUR DONATION</Text>
           <Text style={[styles.sectionHeading, { color: roles.headingText }]}>Logistics donation</Text>
         </View>
@@ -1495,13 +1495,25 @@ function LogisticsDonationSection({
           onPress={onOpenLogistics}
           style={({ pressed }) => [styles.logisticsHubAction, pressed ? styles.eventFeedPressed : null]}
         >
-          <View style={styles.logisticsHubActionCopy}>
-            <Text style={styles.logisticsHubActionText}>Explore logistics donation</Text>
-            <Text style={styles.logisticsHubActionMeta}>Start a new donation or view its progress</Text>
-          </View>
-          <View style={styles.logisticsHubActionArrow}>
-            <MaterialCommunityIcons name="arrow-right" size={18} color="#FFFFFF" />
-          </View>
+          <LinearGradient
+            pointerEvents="none"
+            colors={['#FFFDFD', '#F8E9ED']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.logisticsHubActionSurface}
+          >
+            <View style={styles.logisticsHubActionCopy}>
+              <Text style={styles.logisticsHubActionText}>
+                {activeDonationCount > 0 ? 'View active donation' : 'Start logistics donation'}
+              </Text>
+              <Text style={styles.logisticsHubActionMeta}>
+                {activeDonationCount > 0 ? 'See your latest progress' : 'Add details and choose how to send it'}
+              </Text>
+            </View>
+            <View style={styles.logisticsHubActionArrow}>
+              <MaterialCommunityIcons name="arrow-right" size={18} color="#FFFFFF" />
+            </View>
+          </LinearGradient>
         </Pressable>
       </LinearGradient>
     </View>
@@ -3578,6 +3590,9 @@ function MyJoinedDonationsScreen({
   roles,
   logisticsSettings = null,
   donationItems = [],
+  hasActiveLogisticsDonation = false,
+  isLoadingDonations = false,
+  hasDonationLoadError = false,
   onViewDonation,
   onAddDonation,
   isPreparingDonation = false,
@@ -3596,6 +3611,10 @@ function MyJoinedDonationsScreen({
       && !isClosedDonationStatus(item?.submission?.status)
     ))
   ), [donationItems]);
+  const shouldShowEmptyLogisticsState = !isLoadingDonations
+    && !hasDonationLoadError
+    && !hasActiveLogisticsDonation
+    && independentDonationItems.length === 0;
   return (
     <View style={[styles.flowScreen, styles.logisticHistoryScreen]}>
       <View style={styles.logisticScreenHeader}>
@@ -3658,20 +3677,32 @@ function MyJoinedDonationsScreen({
             isPreparingDonation ? styles.logisticWelcomeActionDisabled : null,
           ]}
         >
-          <View style={styles.logisticWelcomeActionIcon}>
-            <MaterialCommunityIcons name={isPreparingDonation ? 'progress-clock' : 'plus'} size={19} color="#FFFFFF" />
-          </View>
-          <View style={styles.logisticWelcomeActionCopy}>
-            <Text style={styles.logisticWelcomeActionText}>
-              {isPreparingDonation ? 'Checking your latest result' : 'Start a logistics donation'}
-            </Text>
-            <Text style={styles.logisticWelcomeActionMeta}>
-              {isPreparingDonation ? 'Please wait a moment' : 'Add details and choose how to send it'}
-            </Text>
-          </View>
-          <View style={styles.logisticWelcomeActionArrow}>
-            <MaterialCommunityIcons name="arrow-right" size={19} color="#FFFFFF" />
-          </View>
+          <LinearGradient
+            pointerEvents="none"
+            colors={['#FFFDFD', '#F8E9ED']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.logisticWelcomeActionSurface}
+          >
+            <View style={styles.logisticWelcomeActionIcon}>
+              <MaterialCommunityIcons
+                name={isPreparingDonation ? 'progress-clock' : 'plus'}
+                size={19}
+                color={theme.colors.brandPrimary}
+              />
+            </View>
+            <View style={styles.logisticWelcomeActionCopy}>
+              <Text numberOfLines={1} style={styles.logisticWelcomeActionText}>
+                {isPreparingDonation ? 'Checking your latest result' : 'Start a logistics donation'}
+              </Text>
+              <Text numberOfLines={1} style={styles.logisticWelcomeActionMeta}>
+                {isPreparingDonation ? 'Please wait a moment' : 'Add details and choose how to send it'}
+              </Text>
+            </View>
+            <View style={styles.logisticWelcomeActionArrow}>
+              <MaterialCommunityIcons name="arrow-right" size={19} color="#FFFFFF" />
+            </View>
+          </LinearGradient>
         </Pressable>
       </LinearGradient>
 
@@ -3808,7 +3839,7 @@ function MyJoinedDonationsScreen({
           );
         })}
       </View>
-      ) : (
+      ) : shouldShowEmptyLogisticsState ? (
         <LinearGradient
           colors={[roles.iconPrimarySurface, roles.defaultCardBackground]}
           start={{ x: 0, y: 0 }}
@@ -3823,7 +3854,7 @@ function MyJoinedDonationsScreen({
             <Text style={[styles.logisticEmptyText, { color: roles.metaText }]}>When you start, your progress will appear here.</Text>
           </View>
         </LinearGradient>
-      )}
+      ) : null}
     </View>
   );
 /*
@@ -7046,6 +7077,11 @@ export function DonorDonationStatusScreen() {
           roles={roles}
           logisticsSettings={moduleData?.logisticsSettings || null}
           donationItems={myDonationItems}
+          hasActiveLogisticsDonation={Boolean(
+            hasOngoingDonation && moduleData?.activeFlowType === 'independent'
+          )}
+          isLoadingDonations={isLoading}
+          hasDonationLoadError={Boolean(screenError)}
           onViewDonation={handleOpenLogisticDonationDetails}
           onAddDonation={handleAddLogisticDonation}
           isPreparingDonation={isPreparingLogisticDonation}
@@ -7094,6 +7130,11 @@ export function DonorDonationStatusScreen() {
         roles={roles}
         logisticsSettings={moduleData?.logisticsSettings || null}
         donationItems={myDonationItems}
+        hasActiveLogisticsDonation={Boolean(
+          hasOngoingDonation && moduleData?.activeFlowType === 'independent'
+        )}
+        isLoadingDonations={isLoading}
+        hasDonationLoadError={Boolean(screenError)}
         onViewDonation={handleOpenLogisticDonationDetails}
         onAddDonation={handleAddLogisticDonation}
         isPreparingDonation={isPreparingLogisticDonation}
@@ -7126,12 +7167,14 @@ export function DonorDonationStatusScreen() {
     isAiEligible,
     isGeneratingEventRsvp,
     isGeneratingQr,
+    isLoading,
     isPreparingLogisticDonation,
     isLoadingWalkInAvailability,
     isSchedulingDropoff,
     isProfileComplete,
     latestScreening,
     moduleData?.latestSubmission,
+    moduleData?.activeFlowType,
     moduleData?.timelineEvents,
     moduleData?.timelineStages,
     moduleData?.parcelImages,
@@ -7149,6 +7192,7 @@ export function DonorDonationStatusScreen() {
     roles,
     router,
     savingQrKey,
+    screenError,
     selectedRecipient,
     selectedDonationTimelineItem,
     selectedWalkInAppointment,
@@ -8377,30 +8421,39 @@ const styles = StyleSheet.create({
   logisticWelcomeAction: {
     minHeight: 64,
     borderRadius: 19,
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    backgroundColor: 'rgba(255,255,255,0.14)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.3)',
+    overflow: 'hidden',
+    backgroundColor: '#FFFDFD',
     ...theme.shadows.soft,
   },
   logisticWelcomeActionDisabled: {
     opacity: 0.74,
   },
+  logisticWelcomeActionSurface: {
+    position: 'relative',
+    width: '100%',
+    minHeight: 64,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 58,
+    paddingVertical: 8,
+    borderRadius: 19,
+    borderWidth: 1,
+    borderColor: '#E8CFD6',
+  },
   logisticWelcomeActionIcon: {
     width: 40,
     height: 40,
     borderRadius: 20,
+    position: 'absolute',
+    left: 8,
+    top: 11,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.16)',
+    backgroundColor: '#F1DCE2',
   },
   logisticWelcomeActionCopy: {
-    flex: 1,
-    minWidth: 0,
+    width: '100%',
+    alignItems: 'center',
     justifyContent: 'center',
     gap: 2,
   },
@@ -8409,22 +8462,26 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.semantic.bodySm,
     fontWeight: theme.typography.weights.bold,
     lineHeight: 18,
-    color: '#FFFFFF',
+    color: theme.colors.brandPrimary,
+    textAlign: 'center',
   },
   logisticWelcomeActionMeta: {
     fontFamily: theme.typography.fontFamily,
     fontSize: 10,
     lineHeight: 14,
-    color: '#F7E6EB',
+    color: '#765962',
+    textAlign: 'center',
   },
   logisticWelcomeActionArrow: {
     width: 34,
     height: 34,
     borderRadius: 17,
+    position: 'absolute',
+    right: 8,
+    top: 14,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.16)',
-    flexShrink: 0,
+    backgroundColor: theme.colors.brandPrimary,
   },
   logisticPrepGrid: {
     flexDirection: 'row',
@@ -10641,6 +10698,16 @@ const styles = StyleSheet.create({
     gap: theme.spacing.md,
     marginTop: theme.spacing.sm,
   },
+  logisticsHubSectionHeading: {
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+  },
+  logisticsHubSectionHeadingCopy: {
+    width: '100%',
+    alignItems: 'center',
+  },
   sectionHeadingRow: {
     flexDirection: 'row',
     alignItems: 'flex-end',
@@ -10659,8 +10726,10 @@ const styles = StyleSheet.create({
   },
   logisticsHubCard: {
     borderRadius: 22,
-    padding: theme.spacing.lg,
-    gap: theme.spacing.md,
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: 20,
+    paddingBottom: theme.spacing.lg,
+    gap: 18,
     overflow: 'hidden',
     ...theme.shadows.card,
   },
@@ -10674,14 +10743,14 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.1)',
   },
   logisticsHubHeader: {
-    flexDirection: 'row',
     alignItems: 'center',
-    gap: theme.spacing.md,
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
   },
   logisticsHubIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 15,
+    width: 52,
+    height: 52,
+    borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: 'rgba(255,255,255,0.15)',
@@ -10689,8 +10758,8 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,255,255,0.2)',
   },
   logisticsHubCopy: {
-    flex: 1,
-    minWidth: 0,
+    width: '100%',
+    alignItems: 'center',
     gap: 3,
   },
   logisticsHubTitle: {
@@ -10698,20 +10767,26 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.semantic.bodyLg,
     fontWeight: theme.typography.weights.bold,
     color: '#FFFFFF',
+    textAlign: 'center',
   },
   logisticsHubText: {
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.caption,
     lineHeight: 16,
     color: '#F9EDEF',
+    textAlign: 'center',
+    maxWidth: 245,
   },
   logisticsPromiseRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 4,
+    width: '100%',
+    paddingHorizontal: 4,
+    paddingVertical: 2,
   },
   logisticsPromiseItem: {
+    width: 54,
     alignItems: 'center',
     gap: 5,
   },
@@ -10728,7 +10803,7 @@ const styles = StyleSheet.create({
   logisticsPromiseLine: {
     flex: 1,
     height: 1,
-    marginHorizontal: 7,
+    marginHorizontal: 4,
     backgroundColor: 'rgba(255,255,255,0.24)',
   },
   logisticsPromiseText: {
@@ -10738,44 +10813,56 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
   },
   logisticsHubAction: {
-    minHeight: 58,
-    borderRadius: 18,
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: 8,
-    flexDirection: 'row',
+    width: '100%',
+    minHeight: 66,
+    borderRadius: 19,
+    overflow: 'hidden',
+    backgroundColor: '#FFFDFD',
+    ...theme.shadows.soft,
+  },
+  logisticsHubActionSurface: {
+    position: 'relative',
+    width: '100%',
+    minHeight: 66,
     alignItems: 'center',
-    gap: theme.spacing.sm,
-    backgroundColor: 'rgba(255,255,255,0.14)',
+    justifyContent: 'center',
+    paddingHorizontal: 52,
+    paddingVertical: 9,
+    borderRadius: 19,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.3)',
+    borderColor: '#E8CFD6',
   },
   logisticsHubActionCopy: {
-    flex: 1,
-    minWidth: 0,
+    width: '100%',
+    alignItems: 'center',
     justifyContent: 'center',
-    gap: 1,
+    gap: 2,
   },
   logisticsHubActionText: {
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.semantic.bodySm,
     fontWeight: theme.typography.weights.bold,
     lineHeight: 18,
-    color: '#FFFFFF',
+    color: theme.colors.brandPrimary,
+    textAlign: 'center',
   },
   logisticsHubActionMeta: {
     fontFamily: theme.typography.fontFamily,
     fontSize: 10,
     lineHeight: 14,
-    color: '#F7E6EB',
+    color: '#765962',
+    textAlign: 'center',
   },
   logisticsHubActionArrow: {
     width: 34,
     height: 34,
     borderRadius: 17,
+    position: 'absolute',
+    right: 9,
+    top: 15,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.16)',
-    flexShrink: 0,
+    backgroundColor: theme.colors.brandPrimary,
   },
   logisticsNativeMapFrame: {
     height: 164,
