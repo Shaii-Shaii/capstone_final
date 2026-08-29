@@ -6,6 +6,7 @@ import { useRouter } from 'expo-router';
 import Constants from 'expo-constants';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { DashboardLayout } from './DashboardLayout';
 import { AppCard } from '../ui/AppCard';
 import { AppButton } from '../ui/AppButton';
@@ -94,15 +95,6 @@ try {
   NativeWorklets = null;
   nativeFaceCameraLoadError = nativeFaceCameraLoadError || error?.message || 'Worklets Core module could not be loaded.';
 }
-
-const PHOTO_GUIDELINE_ITEMS = [
-  'Use bright, even lighting so color, shine, dryness, and frizz are visible.',
-  'Stay in a well-lit area and avoid harsh shadows or backlight so the camera can capture your hair clearly.',
-  'Keep only one person in the frame with a plain background.',
-  'Keep hair centered and fully visible from the lower cheek or neck area to the ends.',
-  'Capture the front, left side, right side, scalp, hair ends, and back hair photos.',
-  'Keep hair loose, centered, and visible from the lower cheek or neck area to the lowest visible ends.',
-];
 
 const HAIR_TEXTURE_REVIEW_OPTIONS = ['Straight', 'Wavy', 'Curly', 'Coily'];
 const HAIR_DENSITY_REVIEW_OPTIONS = ['Light', 'Medium', 'Thick', 'Dense'];
@@ -810,6 +802,19 @@ const buildReviewSummaryRows = (values = {}) => ([
   ['AI condition', getReviewDisplayValue(values.declaredCondition)],
 ]);
 
+const getQuestionChoiceIcon = (questionKey = '', optionValue = '', optionIndex = 0) => {
+  const normalized = String(optionValue || '').trim().toLowerCase();
+  if (questionKey === 'followedPreviousAdvice') {
+    if (normalized.includes('consistent')) return 'check-decagram-outline';
+    if (normalized.includes('sometimes')) return 'progress-clock';
+    return 'leaf-off';
+  }
+  if (normalized === 'yes' || normalized.includes('healthy') || normalized.includes('improved')) return 'check-circle-outline';
+  if (normalized === 'no' || normalized.includes('not_yet') || normalized.includes('worse')) return 'close-circle-outline';
+  if (normalized.includes('sometimes') || normalized.includes('moderate')) return 'circle-half-full';
+  return ['leaf', 'water-outline', 'weather-sunny', 'hair-dryer-outline', 'heart-pulse'][optionIndex % 5];
+};
+
 function ChoiceList({ value, options, onChange, multi = false, questionKey = '' }) {
   const values = Array.isArray(value) ? value : [];
 
@@ -818,10 +823,13 @@ function ChoiceList({ value, options, onChange, multi = false, questionKey = '' 
       {options.map((option) => {
         const isActive = multi ? values.includes(option.value) : value === option.value;
         const detailText = getChoiceDetailText(questionKey, option.value);
+        const optionIcon = getQuestionChoiceIcon(questionKey, option.value, options.indexOf(option));
 
         return (
           <Pressable
             key={option.value}
+            accessibilityRole={multi ? 'checkbox' : 'radio'}
+            accessibilityState={multi ? { checked: isActive } : { selected: isActive }}
             onPress={() => {
               if (multi) {
                 const nextValues = isActive
@@ -833,18 +841,37 @@ function ChoiceList({ value, options, onChange, multi = false, questionKey = '' 
 
               onChange(option.value);
             }}
-            style={[styles.choiceCard, isActive ? styles.choiceCardActive : null]}
+            style={({ pressed }) => [
+              styles.choiceCard,
+              isActive ? styles.choiceCardActive : null,
+              pressed ? styles.choiceCardPressed : null,
+            ]}
           >
-            <View style={styles.choiceCardCopy}>
-              <Text style={[styles.choiceLabel, isActive ? styles.choiceLabelActive : null]}>{option.label}</Text>
-              {detailText ? <Text style={styles.choiceDescription}>{detailText}</Text> : null}
-            </View>
-            <View style={[styles.choiceRadio, isActive ? styles.choiceRadioActive : null]}>
-              <MaterialCommunityIcons
-                name={isActive ? 'check' : 'circle-outline'}
-                size={16}
-                color={isActive ? theme.colors.textOnBrand : theme.colors.textMuted}
-              />
+            <LinearGradient
+              pointerEvents="none"
+              colors={isActive ? ['#FFF5F8', '#F1D7DF'] : ['#FFFFFF', '#FFF9FA']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.choiceCardGradient}
+            />
+            {isActive ? <View pointerEvents="none" style={styles.choiceCardActiveAccent} /> : null}
+            <View style={styles.choiceCardContent}>
+              <View style={[styles.choiceIconWrap, isActive ? styles.choiceIconWrapActive : null]}>
+                <MaterialCommunityIcons
+                  name={optionIcon}
+                  size={20}
+                  color={isActive ? theme.colors.textOnBrand : theme.colors.brandPrimary}
+                />
+              </View>
+              <View style={styles.choiceCardCopy}>
+                <Text style={[styles.choiceLabel, isActive ? styles.choiceLabelActive : null]}>{option.label}</Text>
+                {detailText ? <Text style={styles.choiceDescription}>{detailText}</Text> : null}
+              </View>
+              <View style={[styles.choiceRadio, isActive ? styles.choiceRadioActive : null]}>
+                {isActive ? (
+                  <MaterialCommunityIcons name="check" size={16} color={theme.colors.textOnBrand} />
+                ) : null}
+              </View>
             </View>
           </Pressable>
         );
@@ -856,12 +883,9 @@ function ChoiceList({ value, options, onChange, multi = false, questionKey = '' 
 function HairAnalysisTopBar({
   title,
   onBack,
-  backgroundColor,
   iconColor,
   textColor,
   showBackButton = true,
-  stepLabel = '',
-  stepProgress = 0,
 }) {
   const { height } = useWindowDimensions();
   const horizontalInset = height < theme.layout.shortScreenHeight
@@ -870,16 +894,20 @@ function HairAnalysisTopBar({
 
   return (
     <View style={styles.analysisFlowTopBarShell}>
-      <View
+      <LinearGradient
+        colors={[theme.colors.palette.wine900, theme.colors.palette.wine700]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
         style={[
           styles.analysisFlowTopBar,
           {
-            backgroundColor,
             marginHorizontal: -horizontalInset,
             paddingHorizontal: horizontalInset,
           },
         ]}
       >
+        <View pointerEvents="none" style={styles.analysisFlowTopBarGlowLarge} />
+        <View pointerEvents="none" style={styles.analysisFlowTopBarGlowSmall} />
         <View style={[styles.analysisFlowTopBarSide, styles.analysisFlowTopBarSideStart]}>
           {showBackButton ? (
             <Pressable
@@ -901,18 +929,9 @@ function HairAnalysisTopBar({
           {title}
         </Text>
         <View style={[styles.analysisFlowTopBarSide, styles.analysisFlowTopBarSideEnd]}>
-          {stepLabel ? (
-            <View style={styles.analysisFlowTopBarMeta}>
-              <Text style={[styles.analysisFlowTopBarStepLabel, { color: textColor }]}>{stepLabel}</Text>
-              <View style={[styles.analysisFlowTopBarTrack, { backgroundColor: 'rgba(255, 255, 255, 0.18)' }]}>
-                <View style={[styles.analysisFlowTopBarFill, { backgroundColor: iconColor, width: `${stepProgress}%` }]} />
-              </View>
-            </View>
-          ) : (
-            <View style={styles.analysisFlowTopBarSpacer} />
-          )}
+          <View style={styles.analysisFlowTopBarBalance} />
         </View>
-      </View>
+      </LinearGradient>
     </View>
   );
 }
@@ -1037,6 +1056,23 @@ function CaptureInstructionPopup({
   const [shouldRender, setShouldRender] = useState(visible);
   const viewTitle = currentView?.tutorialTitle || getViewCaptureLabel(currentView);
   const displayTip = currentView?.displayTip || 'Keep hair loose, centered, and well lit.';
+  const activePhotoNumber = Math.min(completedPhotoCount + 1, requiredCount);
+  const popupCardAnimatedStyle = {
+    transform: [
+      {
+        translateY: fadeAnim.interpolate({
+          inputRange: [0, 1],
+          outputRange: [24, 0],
+        }),
+      },
+      {
+        scale: fadeAnim.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0.97, 1],
+        }),
+      },
+    ],
+  };
 
   useEffect(() => {
     if (visible) {
@@ -1078,46 +1114,311 @@ function CaptureInstructionPopup({
           accessibilityRole="button"
           accessibilityLabel="Close photo instruction"
         />
-        <View style={styles.captureInstructionPopupCard}>
-          <View style={styles.captureInstructionPopupHeader}>
-            <View style={styles.captureInstructionPopupIconWrap}>
-              <AppIcon name="tutorial" size="md" state="inverse" />
+        <Animated.View style={[styles.captureInstructionPopupCard, popupCardAnimatedStyle]}>
+          <LinearGradient
+            colors={[theme.colors.palette.wine900, theme.colors.palette.wine700]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.captureInstructionPopupHero}
+          >
+            <View pointerEvents="none" style={styles.captureInstructionPopupGlow} />
+            <View style={styles.captureInstructionPopupHeader}>
+              <View style={styles.captureInstructionPopupIconWrap}>
+                <MaterialCommunityIcons name="image-filter-center-focus" size={23} color="#FFFFFF" />
+              </View>
+              <View style={styles.captureInstructionPopupCopy}>
+                <Text style={styles.captureInstructionPopupStep}>
+                  PHOTO {activePhotoNumber} OF {requiredCount}
+                </Text>
+                <Text style={styles.captureInstructionPopupTitle}>{viewTitle}</Text>
+              </View>
+              <Pressable
+                onPress={onClose}
+                hitSlop={10}
+                style={({ pressed }) => [styles.captureInstructionPopupClose, pressed ? styles.pressedMuted : null]}
+                accessibilityRole="button"
+                accessibilityLabel="Close photo instruction"
+              >
+                <MaterialCommunityIcons name="close" size={19} color="#FFFFFF" />
+              </Pressable>
             </View>
-            <View style={styles.captureInstructionPopupCopy}>
-              <Text style={styles.captureInstructionPopupStep}>
-                Photo {Math.min(completedPhotoCount + 1, requiredCount)} of {requiredCount}
-              </Text>
-              <Text style={styles.captureInstructionPopupTitle}>{viewTitle}</Text>
-            </View>
-            <Pressable
-              onPress={onClose}
-              hitSlop={10}
-              style={styles.captureInstructionPopupClose}
-              accessibilityRole="button"
-              accessibilityLabel="Close photo instruction"
-            >
-              <AppIcon name="close" size="sm" state="default" />
-            </Pressable>
-          </View>
-          <Text style={styles.captureInstructionPopupTip}>{displayTip}</Text>
-          {tips.length ? (
-            <View style={styles.captureInstructionPopupTips}>
-              {tips.slice(0, 2).map((tip) => (
-                <View key={tip} style={styles.captureInstructionPopupTipRow}>
-                  <View style={styles.captureInstructionPopupDot} />
-                  <Text style={styles.captureInstructionPopupTipText}>{tip}</Text>
-                </View>
+            <Text style={styles.captureInstructionPopupHeroText}>Set up this view before the camera starts.</Text>
+          </LinearGradient>
+
+          <View style={styles.captureInstructionPopupBody}>
+            <View style={styles.captureInstructionPopupProgress}>
+              {Array.from({ length: requiredCount }).map((_, index) => (
+                <View
+                  key={`capture-popup-progress-${index}`}
+                  style={[
+                    styles.captureInstructionPopupProgressDot,
+                    index < activePhotoNumber ? styles.captureInstructionPopupProgressDotActive : null,
+                    index === activePhotoNumber - 1 ? styles.captureInstructionPopupProgressDotCurrent : null,
+                  ]}
+                />
               ))}
             </View>
-          ) : null}
-          <AppButton
-            title="Got it"
-            fullWidth
-            onPress={onClose}
-            style={styles.captureInstructionPopupAction}
-          />
-        </View>
+
+            <View style={styles.captureInstructionPopupFocusRow}>
+              <View style={styles.captureInstructionPopupFocusIcon}>
+                <MaterialCommunityIcons name="account-box-outline" size={21} color={theme.colors.brandPrimary} />
+              </View>
+              <View style={styles.captureInstructionPopupFocusCopy}>
+                <Text style={styles.captureInstructionPopupFocusLabel}>How to position your hair</Text>
+                <Text style={styles.captureInstructionPopupTip}>{displayTip}</Text>
+              </View>
+            </View>
+
+            {tips.length ? (
+              <View style={styles.captureInstructionPopupTips}>
+                {tips.slice(0, 2).map((tip) => (
+                  <View key={tip} style={styles.captureInstructionPopupTipRow}>
+                    <View style={styles.captureInstructionPopupCheck}>
+                      <MaterialCommunityIcons name="check" size={14} color="#FFFFFF" />
+                    </View>
+                    <Text style={styles.captureInstructionPopupTipText}>{tip}</Text>
+                  </View>
+                ))}
+              </View>
+            ) : null}
+
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Close instructions and start this photo"
+              onPress={onClose}
+              style={({ pressed }) => [styles.captureInstructionPopupAction, pressed ? styles.questionDockButtonPressed : null]}
+            >
+              <LinearGradient
+                pointerEvents="none"
+                colors={[theme.colors.palette.wine700, theme.colors.palette.wine900]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.captureInstructionPopupActionSurface}
+              >
+                <MaterialCommunityIcons name="camera-outline" size={20} color="#FFFFFF" />
+                <Text style={styles.captureInstructionPopupActionText}>I&apos;m ready for this photo</Text>
+                <View style={styles.captureInstructionPopupActionArrow}>
+                  <MaterialCommunityIcons name="arrow-right" size={17} color="#FFFFFF" />
+                </View>
+              </LinearGradient>
+            </Pressable>
+          </View>
+        </Animated.View>
       </Animated.View>
+    </Modal>
+  );
+}
+
+function DonationRequirementsIntroModal({
+  donationRequirement = null,
+  visible,
+  onContinue,
+  onBack,
+}) {
+  const hasCurrentRequirement = Boolean(donationRequirement?.donation_requirement_id);
+  const minimumLength = Number(donationRequirement?.minimum_hair_length_inches);
+  const minimumDonorCount = Number(donationRequirement?.minimum_number_donor);
+  const requirementUpdatedAt = donationRequirement?.updated_at
+    ? new Date(donationRequirement.updated_at)
+    : null;
+  const requirementUpdatedLabel = requirementUpdatedAt && !Number.isNaN(requirementUpdatedAt.getTime())
+    ? `Updated ${requirementUpdatedAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
+    : hasCurrentRequirement
+      ? 'Current guide'
+      : 'Guide unavailable';
+  const restrictedTreatments = [
+    donationRequirement?.chemical_treatment_status === false ? 'chemical treatments' : '',
+    donationRequirement?.colored_hair_status === false ? 'hair color' : '',
+    donationRequirement?.bleached_hair_status === false ? 'bleach' : '',
+    donationRequirement?.rebonded_hair_status === false ? 'rebonding' : '',
+  ].filter(Boolean);
+  const textureRequirement = String(donationRequirement?.hair_texture_status || '').trim();
+  const organizationNotes = String(donationRequirement?.notes || '').trim();
+  const treatmentCopy = restrictedTreatments.length
+    ? `Hair with ${restrictedTreatments.join(', ')} may need extra review or may not qualify.`
+    : 'Share any coloring or treatment history so the result can be reviewed correctly.';
+
+  return (
+    <Modal
+      transparent
+      visible={visible}
+      animationType="fade"
+      presentationStyle="overFullScreen"
+      statusBarTranslucent
+      onRequestClose={onBack}
+    >
+      <View style={styles.requirementsIntroOverlay}>
+        <View style={styles.requirementsIntroBackdrop} />
+        <View style={styles.requirementsIntroCard}>
+          <LinearGradient
+            colors={[theme.colors.palette.wine900, theme.colors.palette.wine700]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.requirementsIntroHero}
+          >
+            <View pointerEvents="none" style={styles.requirementsIntroGlowLarge} />
+            <View pointerEvents="none" style={styles.requirementsIntroGlowSmall} />
+            <View style={styles.requirementsIntroHeroTopRow}>
+              <View style={styles.requirementsIntroIconWrap}>
+                <MaterialCommunityIcons name="clipboard-check-outline" size={25} color="#FFFFFF" />
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Go back"
+                hitSlop={10}
+                onPress={onBack}
+                style={({ pressed }) => [styles.requirementsIntroClose, pressed ? styles.pressedMuted : null]}
+              >
+                <MaterialCommunityIcons name="close" size={20} color="#FFFFFF" />
+              </Pressable>
+            </View>
+            <Text style={styles.requirementsIntroEyebrow}>BEFORE YOUR HAIR CHECK</Text>
+            <Text style={styles.requirementsIntroTitle}>Know the donation requirements</Text>
+            <Text style={styles.requirementsIntroSubtitle}>
+              These details help the AI compare your photos with the organization&apos;s current guidelines.
+            </Text>
+          </LinearGradient>
+
+          <ScrollView
+            style={styles.requirementsIntroScroll}
+            contentContainerStyle={styles.requirementsIntroBody}
+            showsVerticalScrollIndicator={false}
+          >
+            <View style={styles.requirementsIntroSectionHeading}>
+              <Text style={styles.requirementsIntroSectionTitle}>What we will check</Text>
+              <View
+                style={[
+                  styles.requirementsIntroCurrentChip,
+                  !hasCurrentRequirement ? styles.requirementsIntroCurrentChipUnavailable : null,
+                ]}
+              >
+                <View
+                  style={[
+                    styles.requirementsIntroCurrentDot,
+                    !hasCurrentRequirement ? styles.requirementsIntroCurrentDotUnavailable : null,
+                  ]}
+                />
+                <Text
+                  style={[
+                    styles.requirementsIntroCurrentText,
+                    !hasCurrentRequirement ? styles.requirementsIntroCurrentTextUnavailable : null,
+                  ]}
+                >
+                  {requirementUpdatedLabel}
+                </Text>
+              </View>
+            </View>
+
+            {!hasCurrentRequirement ? (
+              <View style={styles.requirementsIntroUnavailableNotice}>
+                <MaterialCommunityIcons name="cloud-alert-outline" size={20} color={theme.colors.brandPrimary} />
+                <Text style={styles.requirementsIntroUnavailableText}>
+                  The current donation guide could not be loaded. You may continue with a hair health check, but the organization must confirm donation eligibility.
+                </Text>
+              </View>
+            ) : null}
+
+            <View style={styles.requirementsIntroRequirementList}>
+              <View style={styles.requirementsIntroRequirementRow}>
+                <View style={styles.requirementsIntroRequirementIcon}>
+                  <MaterialCommunityIcons name="ruler" size={20} color={theme.colors.brandPrimary} />
+                </View>
+                <View style={styles.requirementsIntroRequirementCopy}>
+                  <Text style={styles.requirementsIntroRequirementLabel}>Hair length</Text>
+                  <Text style={styles.requirementsIntroRequirementValue}>
+                    {Number.isFinite(minimumLength) && minimumLength > 0
+                      ? `At least ${minimumLength.toFixed(1)} inches`
+                      : 'The organization will confirm the minimum length.'}
+                  </Text>
+                </View>
+              </View>
+
+              {Number.isFinite(minimumDonorCount) && minimumDonorCount > 0 ? (
+                <>
+                  <View style={styles.requirementsIntroDivider} />
+                  <View style={styles.requirementsIntroRequirementRow}>
+                    <View style={styles.requirementsIntroRequirementIcon}>
+                      <MaterialCommunityIcons name="account-group-outline" size={20} color={theme.colors.brandPrimary} />
+                    </View>
+                    <View style={styles.requirementsIntroRequirementCopy}>
+                      <Text style={styles.requirementsIntroRequirementLabel}>Donor contributions</Text>
+                      <Text style={styles.requirementsIntroRequirementValue}>
+                        A completed wig may need hair from at least {minimumDonorCount} {minimumDonorCount === 1 ? 'donor' : 'donors'}.
+                      </Text>
+                    </View>
+                  </View>
+                </>
+              ) : null}
+
+              <View style={styles.requirementsIntroDivider} />
+
+              <View style={styles.requirementsIntroRequirementRow}>
+                <View style={styles.requirementsIntroRequirementIcon}>
+                  <MaterialCommunityIcons name="flask-outline" size={20} color={theme.colors.brandPrimary} />
+                </View>
+                <View style={styles.requirementsIntroRequirementCopy}>
+                  <Text style={styles.requirementsIntroRequirementLabel}>Color and treatments</Text>
+                  <Text style={styles.requirementsIntroRequirementValue}>{treatmentCopy}</Text>
+                </View>
+              </View>
+
+              {textureRequirement ? (
+                <>
+                  <View style={styles.requirementsIntroDivider} />
+                  <View style={styles.requirementsIntroRequirementRow}>
+                    <View style={styles.requirementsIntroRequirementIcon}>
+                      <MaterialCommunityIcons name="waves" size={20} color={theme.colors.brandPrimary} />
+                    </View>
+                    <View style={styles.requirementsIntroRequirementCopy}>
+                      <Text style={styles.requirementsIntroRequirementLabel}>Hair texture</Text>
+                      <Text style={styles.requirementsIntroRequirementValue}>{textureRequirement}</Text>
+                    </View>
+                  </View>
+                </>
+              ) : null}
+            </View>
+
+            {organizationNotes ? (
+              <View style={styles.requirementsIntroNote}>
+                <MaterialCommunityIcons name="information-outline" size={19} color={theme.colors.brandPrimary} />
+                <View style={styles.requirementsIntroNoteCopy}>
+                  <Text style={styles.requirementsIntroNoteTitle}>Organization note</Text>
+                  <Text style={styles.requirementsIntroNoteText}>{organizationNotes}</Text>
+                </View>
+              </View>
+            ) : null}
+
+            <View style={styles.requirementsIntroReminder}>
+              <MaterialCommunityIcons name="shield-check-outline" size={20} color="#FFFFFF" />
+              <Text style={styles.requirementsIntroReminderText}>
+                The AI result is a guide. The organization makes the final donation decision.
+              </Text>
+            </View>
+          </ScrollView>
+
+          <View style={styles.requirementsIntroActions}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Continue to hair check questions"
+              onPress={onContinue}
+              style={({ pressed }) => [styles.requirementsIntroContinue, pressed ? styles.questionDockButtonPressed : null]}
+            >
+              <LinearGradient
+                pointerEvents="none"
+                colors={[theme.colors.palette.wine700, theme.colors.palette.wine900]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.requirementsIntroContinueSurface}
+              >
+                <Text style={styles.requirementsIntroContinueText}>Continue to questions</Text>
+                <View style={styles.requirementsIntroContinueIcon}>
+                  <MaterialCommunityIcons name="arrow-right" size={18} color="#FFFFFF" />
+                </View>
+              </LinearGradient>
+            </Pressable>
+          </View>
+        </View>
+      </View>
     </Modal>
   );
 }
@@ -2613,6 +2914,7 @@ export function DonorHairSubmissionScreen() {
   const lastTransientErrorKeyRef = useRef('');
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [isAnalyzerActive, setIsAnalyzerActive] = useState(true);
+  const [hasAcknowledgedRequirementIntro, setHasAcknowledgedRequirementIntro] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
   const [questionIndex, setQuestionIndex] = useState(0);
   const [photoIndex, setPhotoIndex] = useState(0);
@@ -2635,6 +2937,8 @@ export function DonorHairSubmissionScreen() {
   const captureSessionIdRef = useRef(`cap_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
   const pendingQuestionAdvanceTimeoutRef = useRef(null);
   const questionContentOpacity = useRef(new Animated.Value(1)).current;
+  const readinessEntrance = useRef(new Animated.Value(0)).current;
+  const readinessPulse = useRef(new Animated.Value(0)).current;
   const [autoCaptureCountdown, setAutoCaptureCountdown] = useState(0);
   const [analysisHistory, setAnalysisHistory] = useState([]);
   const [registeredEventDrives, setRegisteredEventDrives] = useState([]);
@@ -2768,6 +3072,46 @@ export function DonorHairSubmissionScreen() {
   }, [isAnalyzerActive, isDonorProfileComplete]);
 
   useEffect(() => {
+    if (stepIndex !== 1) {
+      readinessEntrance.stopAnimation();
+      readinessPulse.stopAnimation();
+      readinessEntrance.setValue(0);
+      readinessPulse.setValue(0);
+      return undefined;
+    }
+
+    readinessEntrance.setValue(0);
+    readinessPulse.setValue(0);
+    Animated.spring(readinessEntrance, {
+      toValue: 1,
+      friction: 8,
+      tension: 54,
+      useNativeDriver: true,
+    }).start();
+
+    const pulseAnimation = Animated.loop(
+      Animated.sequence([
+        Animated.timing(readinessPulse, {
+          toValue: 1,
+          duration: 1250,
+          useNativeDriver: true,
+        }),
+        Animated.timing(readinessPulse, {
+          toValue: 0,
+          duration: 1250,
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    pulseAnimation.start();
+
+    return () => {
+      readinessEntrance.stopAnimation();
+      pulseAnimation.stop();
+    };
+  }, [readinessEntrance, readinessPulse, stepIndex]);
+
+  useEffect(() => {
     if (!canUseNativeLiveCamera || !NativeVisionCamera?.getCameraPermissionStatus) return;
 
     let mounted = true;
@@ -2792,6 +3136,23 @@ export function DonorHairSubmissionScreen() {
   const currentQuestionMatterText = getQuestionMatterText(currentQuestion, effectiveQuestionnaireValues);
   const questionContentAnimatedStyle = {
     opacity: questionContentOpacity,
+  };
+  const readinessAnimatedStyle = {
+    opacity: readinessEntrance,
+    transform: [{
+      translateY: readinessEntrance.interpolate({
+        inputRange: [0, 1],
+        outputRange: [18, 0],
+      }),
+    }],
+  };
+  const readinessPulseStyle = {
+    transform: [{
+      scale: readinessPulse.interpolate({
+        inputRange: [0, 1],
+        outputRange: [1, 1.06],
+      }),
+    }],
   };
   const currentView = requiredViews[photoIndex];
   const currentPhoto = photos[photoIndex];
@@ -2844,6 +3205,16 @@ export function DonorHairSubmissionScreen() {
   const weeklyScanLimit = useMemo(
     () => buildWeeklyScanLimitState(savedHistory.latestEntry),
     [savedHistory.latestEntry]
+  );
+  const shouldShowRequirementIntro = (
+    isDonorProfileComplete
+    && isAnalyzerActive
+    && stepIndex === 0
+    && questionIndex === 0
+    && !isLoadingContext
+    && !isLoadingHistory
+    && !weeklyScanLimit.isLocked
+    && !hasAcknowledgedRequirementIntro
   );
   const isRetryCooldownActive = Boolean(error?.retryUntil && retryCountdownSeconds > 0);
   const countdownErrorMessage = useMemo(
@@ -3067,6 +3438,13 @@ export function DonorHairSubmissionScreen() {
     router.replace('/donor/donations');
   }, [router]);
 
+  const openAnalyzerWithRequirements = React.useCallback(() => {
+    setHasAcknowledgedRequirementIntro(false);
+    setQuestionIndex(0);
+    setStepIndex(0);
+    setIsAnalyzerActive(true);
+  }, []);
+
   const openScanImagePreview = React.useCallback((uri, galleryPhotos = []) => {
     if (!uri) return;
     const fallbackGallery = photos
@@ -3105,13 +3483,7 @@ export function DonorHairSubmissionScreen() {
   }, [profile?.user_id, stepTitles, user?.id]);
 
   const canMovePastQuestion = isAnswered(currentQuestion, effectiveQuestionnaireValues);
-  const isAutoAdvanceQuestion = false;
   const isCurrentPhotoComplete = Boolean(photos[photoIndex]);
-  const showFooterPrimaryAction = stepIndex !== 1 && stepIndex !== 2 && !(stepIndex === 3 && Boolean(analysis));
-  const questionStepProgressPercent = Math.max(8, Math.round(((questionIndex + 1) / Math.max(visibleQuestions.length, 1)) * 100));
-  const questionStepLabel = stepIndex === 0
-    ? `Step ${questionIndex + 1} of ${visibleQuestions.length}`
-    : '';
   const isNextDisabled = (
     (stepIndex === 0 && !canMovePastQuestion)
     || (stepIndex === 2 && !isCurrentPhotoComplete)
@@ -3404,8 +3776,42 @@ export function DonorHairSubmissionScreen() {
 
     return (
       <View style={styles.questionContentCard}>
-        <Text style={styles.questionTitle}>{currentQuestion.title}</Text>
-        {questionSubtitle ? <Text style={styles.questionHelper}>{questionSubtitle}</Text> : null}
+        <LinearGradient
+          colors={[theme.colors.palette.wine900, theme.colors.palette.wine700]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.questionHeroCard}
+        >
+          <View pointerEvents="none" style={styles.questionHeroGlowLarge} />
+          <View pointerEvents="none" style={styles.questionHeroGlowSmall} />
+          <View style={styles.questionHeroTopRow}>
+            <View style={styles.questionHeroIdentity}>
+              <View style={styles.questionHeroIcon}>
+                <MaterialCommunityIcons name="head-heart-outline" size={21} color="#FFFFFF" />
+              </View>
+              <Text style={styles.questionHeroEyebrow}>
+                {questionnaireMode === 'returning_follow_up' ? 'YOUR HAIR FOLLOW-UP' : 'YOUR HAIR PROFILE'}
+              </Text>
+            </View>
+            <View style={styles.questionHeroStepChip}>
+              <Text style={styles.questionHeroStepText}>{currentQuestion.multi ? 'SELECT ALL' : 'SELECT ONE'}</Text>
+            </View>
+          </View>
+          <Text style={styles.questionHeroTitle}>{currentQuestion.title}</Text>
+          {questionSubtitle ? <Text style={styles.questionHeroHelper}>{questionSubtitle}</Text> : null}
+          <View style={styles.questionHeroProgressRow}>
+            {visibleQuestions.map((question, index) => (
+              <View
+                key={question.key}
+                style={[
+                  styles.questionHeroProgressDot,
+                  index <= questionIndex ? styles.questionHeroProgressDotActive : null,
+                  index === questionIndex ? styles.questionHeroProgressDotCurrent : null,
+                ]}
+              />
+            ))}
+          </View>
+        </LinearGradient>
         <Controller
           control={questionForm.control}
           name={fieldName}
@@ -3831,6 +4237,83 @@ export function DonorHairSubmissionScreen() {
     }
   };
 
+  const renderQuestionNavigationDock = () => {
+    if (
+      stepIndex !== 0
+      || isLoadingHistory
+      || isLoadingContext
+      || weeklyScanLimit.isLocked
+      || !hasAcknowledgedRequirementIntro
+    ) return null;
+
+    return (
+      <View
+        style={styles.questionNavigationDock}
+      >
+        <View style={styles.questionNavigationActions}>
+          {questionIndex > 0 ? (
+            <View style={styles.questionPreviousButtonWrap}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Go to previous question"
+                onPress={goPrevious}
+                style={({ pressed }) => [
+                  styles.questionDockButton,
+                  styles.questionPreviousButton,
+                  pressed ? styles.questionDockButtonPressed : null,
+                ]}
+              >
+                <View style={styles.questionPreviousButtonContent}>
+                  <View style={styles.questionPreviousIconWrap}>
+                    <MaterialCommunityIcons name="arrow-left" size={18} color={theme.colors.brandPrimary} />
+                  </View>
+                  <Text numberOfLines={1} style={styles.questionPreviousButtonText}>Previous</Text>
+                </View>
+              </Pressable>
+            </View>
+          ) : null}
+          <View style={styles.questionNextButtonWrap}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={isNextDisabled ? 'Choose an option to continue' : nextButtonTitle}
+              accessibilityState={{ disabled: isNextDisabled }}
+              onPress={handleNext}
+              disabled={isNextDisabled}
+              style={({ pressed }) => [
+                styles.questionDockButton,
+                styles.questionNextButton,
+                isNextDisabled ? styles.questionNextButtonDisabled : null,
+                pressed && !isNextDisabled ? styles.questionDockButtonPressed : null,
+              ]}
+            >
+              <LinearGradient
+                pointerEvents="none"
+                colors={isNextDisabled ? ['#FFF9FA', '#F3E5E9'] : [theme.colors.palette.wine700, theme.colors.palette.wine900]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={[
+                  styles.questionNextButtonSurface,
+                  isNextDisabled ? styles.questionNextButtonSurfaceDisabled : null,
+                ]}
+              >
+                <Text style={isNextDisabled ? styles.questionNextButtonTextDisabled : styles.questionNextButtonText}>
+                  {isNextDisabled ? 'Choose an option' : nextButtonTitle}
+                </Text>
+                <View style={[styles.questionNextArrow, isNextDisabled ? styles.questionNextArrowDisabled : null]}>
+                  <MaterialCommunityIcons
+                    name="arrow-right"
+                    size={18}
+                    color={isNextDisabled ? '#A58B93' : theme.colors.textOnBrand}
+                  />
+                </View>
+              </LinearGradient>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    );
+  };
+
   const renderStepContent = () => {
     if ((isAnalysisLaunching || isAnalyzing) && stepIndex === 3 && !analysis) {
       return (
@@ -3872,11 +4355,11 @@ export function DonorHairSubmissionScreen() {
 
     switch (stepIndex) {
       case 0:
-        if (isLoadingHistory) {
+        if (isLoadingHistory || isLoadingContext || !hasAcknowledgedRequirementIntro) {
           return (
             <View style={styles.inlineLoadingState}>
               <ActivityIndicator size="small" color={resolvedTheme?.primaryColor || theme.colors.brandPrimary} />
-              <Text style={styles.inlineLoadingText}>Loading...</Text>
+              <Text style={styles.inlineLoadingText}>Preparing your hair check...</Text>
             </View>
           );
         }
@@ -3890,42 +4373,28 @@ export function DonorHairSubmissionScreen() {
             </Animated.View>
             <View style={styles.questionnaireFooterDock}>
               {currentQuestionMatterText ? (
-                <View style={styles.questionInfoCard}>
+                <LinearGradient
+                  colors={[theme.colors.brandPrimaryMuted, theme.colors.backgroundPrimary]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.questionInfoCard}
+                >
+                  <View style={styles.questionInfoAccent} />
                   <View style={styles.questionInfoIconWrap}>
-                    <MaterialCommunityIcons name="information-outline" size={18} color={theme.colors.brandPrimary} />
+                    <MaterialCommunityIcons name="lightbulb-on-outline" size={19} color={theme.colors.brandPrimary} />
                   </View>
                   <View style={styles.questionInfoCopy}>
                     <Text style={styles.questionInfoTitle}>Why does this matter?</Text>
                     <Text style={styles.questionInfoBody}>{currentQuestionMatterText}</Text>
                   </View>
-                </View>
+                </LinearGradient>
               ) : null}
-              <Text style={styles.questionDisclaimer}>
-                This feature provides general hair-care guidance only and is not a medical diagnosis.
-              </Text>
-              {!isAutoAdvanceQuestion && showFooterPrimaryAction ? (
-                <View style={styles.footerNav}>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel="Go to previous question"
-                    onPress={goPrevious}
-                    disabled={stepIndex === 0 && questionIndex === 0 && photoIndex === 0}
-                    style={[
-                      styles.iconNavButton,
-                      stepIndex === 0 && questionIndex === 0 && photoIndex === 0 ? styles.iconNavButtonDisabled : null,
-                    ]}
-                  >
-                    <AppIcon name="arrow-left" size="md" state="muted" />
-                  </Pressable>
-                  <AppButton
-                    title={nextButtonTitle}
-                    fullWidth={false}
-                    onPress={handleNext}
-                    loading={(stepIndex === 2 || stepIndex === 3) && isAnalyzing}
-                    disabled={isNextDisabled}
-                  />
-                </View>
-              ) : null}
+              <View style={styles.questionDisclaimerRow}>
+                <MaterialCommunityIcons name="shield-check-outline" size={15} color={theme.colors.textMuted} />
+                <Text style={styles.questionDisclaimer}>
+                  General hair-care guidance only. This is not a medical diagnosis.
+                </Text>
+              </View>
             </View>
           </View>
         );
@@ -3936,10 +4405,10 @@ export function DonorHairSubmissionScreen() {
           const chemicalQuestion = reviewVisibleQuestions.find((question) => (
             question.key === 'chemicalProcessHistory' || question.key === 'chemicalTreatmentSinceLastCheck'
           ));
-          const lengthAnswer = 'To be scanned';
+          const lengthAnswer = 'Measured by camera';
           const textureAnswer = reviewAnswers?.hairTexture
             ? getChoiceDisplayLabel('hairTexture', reviewAnswers?.hairTexture)
-            : 'To be scanned';
+            : 'Checked by camera';
           const bleachValue = chemicalQuestion
             ? getChoiceDisplayLabel(chemicalQuestion.optionsKey, reviewAnswers?.[chemicalQuestion.key])
             : 'No Bleach';
@@ -3950,100 +4419,185 @@ export function DonorHairSubmissionScreen() {
               : reviewAnswers?.heatUse
           );
           const reviewItems = [
-            { label: 'Treatment', value: bleachValue },
-            { label: 'Heat use', value: heatValue },
-            { label: 'Length', value: lengthAnswer },
-            { label: 'Texture', value: textureAnswer },
+            { label: 'Treatment history', value: bleachValue, icon: 'flask-outline' },
+            { label: 'Heat styling', value: heatValue, icon: 'weather-sunny' },
+            { label: 'Hair length', value: lengthAnswer, icon: 'ruler' },
+            { label: 'Hair texture', value: textureAnswer, icon: 'waves' },
+          ];
+          const scanTips = [
+            'Use bright, even light so your hair details are clear.',
+            'Keep your full hair in frame and avoid shadows or backlight.',
+            'Make sure only one person appears against a simple background.',
           ];
 
         return (
-          <View style={styles.readinessStage}>
-            <View style={styles.readinessHeader}>
-              <Text style={styles.readinessTitle}>Ready to Scan</Text>
-              <Text style={styles.readinessBody}>Review your answers, then open the camera.</Text>
-            </View>
+          <Animated.View style={[styles.readinessStage, readinessAnimatedStyle]}>
+            <LinearGradient
+              colors={[theme.colors.palette.wine900, theme.colors.palette.wine700]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.readinessHero}
+            >
+              <View pointerEvents="none" style={styles.readinessHeroGlowLarge} />
+              <View pointerEvents="none" style={styles.readinessHeroGlowSmall} />
+              <View style={styles.readinessHeroContent}>
+                <Animated.View style={[styles.readinessScanOrb, readinessPulseStyle]}>
+                  <View style={styles.readinessScanOrbInner}>
+                    <MaterialCommunityIcons name="camera-iris" size={31} color="#FFFFFF" />
+                  </View>
+                </Animated.View>
+                <View style={styles.readinessHeroCopy}>
+                  <Text style={styles.readinessEyebrow}>PHOTO CHECK</Text>
+                  <Text style={styles.readinessTitle}>Your guided scan is ready</Text>
+                  <Text style={styles.readinessBody}>
+                    Check your answers, then capture six clear views of your hair.
+                  </Text>
+                </View>
+              </View>
+              <View style={styles.readinessStatusRow}>
+                <View style={styles.readinessStatusChip}>
+                  <MaterialCommunityIcons name="camera-outline" size={15} color="#FFFFFF" />
+                  <Text style={styles.readinessStatusText}>6 guided photos</Text>
+                </View>
+                <View style={styles.readinessStatusChip}>
+                  <MaterialCommunityIcons name="shield-check-outline" size={15} color="#FFFFFF" />
+                  <Text style={styles.readinessStatusText}>Quality checked</Text>
+                </View>
+              </View>
+            </LinearGradient>
 
             <View style={styles.recapCard}>
               <View style={styles.recapHeader}>
-                <AppIcon name="clipboard-check-outline" size="md" state="active" />
-                <Text style={styles.recapTitle}>Scan summary</Text>
+                <View style={styles.recapHeaderIcon}>
+                  <MaterialCommunityIcons name="clipboard-check-outline" size={20} color={theme.colors.brandPrimary} />
+                </View>
+                <View style={styles.recapHeaderCopy}>
+                  <Text style={styles.recapTitle}>Your scan profile</Text>
+                  <Text style={styles.recapSubtitle}>Answers you can review before opening the camera</Text>
+                </View>
               </View>
-              <View style={styles.recapGrid}>
-                {reviewItems.map((item) => (
-                  <View key={item.label} style={styles.recapMiniItem}>
+              {reviewItems.map((item, index) => (
+                <React.Fragment key={item.label}>
+                  {index > 0 ? <View style={styles.recapDivider} /> : null}
+                  <View style={styles.recapDetailRow}>
+                    <View style={styles.recapDetailIcon}>
+                      <MaterialCommunityIcons name={item.icon} size={18} color={theme.colors.brandPrimary} />
+                    </View>
                     <Text style={styles.recapLabel}>{item.label}</Text>
-                    <Text style={styles.recapPill} numberOfLines={1}>{item.value}</Text>
+                    <Text style={styles.recapValue}>{item.value}</Text>
                   </View>
-                ))}
-              </View>
+                </React.Fragment>
+              ))}
             </View>
 
             <View style={styles.tipsCard}>
-              <Text style={styles.tipsTitle}>Before you scan</Text>
-              {PHOTO_GUIDELINE_ITEMS.slice(0, 3).map((item) => (
+              <View style={styles.tipsHeader}>
+                <View style={styles.tipsHeaderIcon}>
+                  <MaterialCommunityIcons name="lightbulb-on-outline" size={20} color={theme.colors.brandPrimary} />
+                </View>
+                <View style={styles.tipsHeaderCopy}>
+                  <Text style={styles.tipsTitle}>Set up a clear photo</Text>
+                  <Text style={styles.tipsSubtitle}>Three quick steps for a better result</Text>
+                </View>
+              </View>
+              {scanTips.map((item, index) => (
                 <View key={item} style={styles.tipRow}>
-                  <AppIcon name="check-circle-outline" size="sm" state="active" />
-                  <Text style={styles.tipText} numberOfLines={2}>{item}</Text>
+                  <View style={styles.tipNumberWrap}>
+                    <Text style={styles.tipNumber}>{index + 1}</Text>
+                  </View>
+                  <Text style={styles.tipText}>{item}</Text>
                 </View>
               ))}
-              <View style={styles.aiAssessmentNotice}>
-                <AppIcon name="info" size="md" state="active" />
-                <Text style={styles.aiAssessmentNoticeText}>
-                  Photo quality may affect AI analysis accuracy. Blurry or low-quality photos may miss details.
-                </Text>
-              </View>
             </View>
 
-            <AppButton
-              title="Start Camera Scan"
-              onPress={async () => {
-                const reviewAnswers = getCurrentQuestionnaireAnswers();
-                const reviewQuestions = getVisibleQuestions(reviewAnswers, questionnaireMode);
-                const firstUnansweredIndex = findFirstUnansweredQuestionIndex(reviewQuestions, reviewAnswers);
+            <View style={styles.readinessQualityNotice}>
+              <View style={styles.readinessQualityIcon}>
+                <MaterialCommunityIcons name="image-check-outline" size={20} color={theme.colors.brandPrimary} />
+              </View>
+              <Text style={styles.readinessQualityText}>
+                Clear photos help the AI notice hair length, texture, dryness, and visible damage.
+              </Text>
+            </View>
 
-                if (firstUnansweredIndex >= 0) {
-                  setQuestionIndex(firstUnansweredIndex);
-                  setStepIndex(0);
-                  return;
-                }
+            <View style={styles.readinessActions}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Open the guided hair camera"
+                onPress={async () => {
+                  const currentReviewAnswers = getCurrentQuestionnaireAnswers();
+                  const reviewQuestions = getVisibleQuestions(currentReviewAnswers, questionnaireMode);
+                  const firstUnansweredIndex = findFirstUnansweredQuestionIndex(reviewQuestions, currentReviewAnswers);
 
-                Object.entries(reviewAnswers).forEach(([key, value]) => {
-                  questionForm.setValue(key, value, {
-                    shouldDirty: true,
-                    shouldTouch: true,
-                    shouldValidate: false,
+                  if (firstUnansweredIndex >= 0) {
+                    setQuestionIndex(firstUnansweredIndex);
+                    setStepIndex(0);
+                    return;
+                  }
+
+                  Object.entries(currentReviewAnswers).forEach(([key, value]) => {
+                    questionForm.setValue(key, value, {
+                      shouldDirty: true,
+                      shouldTouch: true,
+                      shouldValidate: false,
+                    });
                   });
-                });
 
-                const isValid = await questionForm.trigger();
-                if (!isValid) {
-                  const latestAnswers = getCurrentQuestionnaireAnswers();
-                  const latestQuestions = getVisibleQuestions(latestAnswers, questionnaireMode);
-                  const latestMissingIndex = findFirstUnansweredQuestionIndex(latestQuestions, latestAnswers);
-                  setQuestionIndex(Math.max(latestMissingIndex, 0));
+                  const isValid = await questionForm.trigger();
+                  if (!isValid) {
+                    const latestAnswers = getCurrentQuestionnaireAnswers();
+                    const latestQuestions = getVisibleQuestions(latestAnswers, questionnaireMode);
+                    const latestMissingIndex = findFirstUnansweredQuestionIndex(latestQuestions, latestAnswers);
+                    setQuestionIndex(Math.max(latestMissingIndex, 0));
+                    setStepIndex(0);
+                    return;
+                  }
+
+                  complianceForm.setValue('acknowledged', true, { shouldDirty: true, shouldTouch: true, shouldValidate: true });
+                  setStepIndex(2);
+                  requestLiveCameraPermission().catch(() => {
+                    setCameraModalError('Camera permission could not be checked. Tap Allow Camera to continue.');
+                  });
+                }}
+                style={({ pressed }) => [styles.readinessPrimaryAction, pressed ? styles.questionDockButtonPressed : null]}
+              >
+                <LinearGradient
+                  pointerEvents="none"
+                  colors={[theme.colors.palette.wine700, theme.colors.palette.wine900]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.readinessPrimarySurface}
+                >
+                  <View style={styles.readinessPrimaryIcon}>
+                    <MaterialCommunityIcons name="camera-outline" size={23} color="#FFFFFF" />
+                  </View>
+                  <View style={styles.readinessPrimaryCopy}>
+                    <Text style={styles.readinessPrimaryTitle}>Open guided camera</Text>
+                    <Text style={styles.readinessPrimarySubtitle}>Capture six hair views</Text>
+                  </View>
+                  <View style={styles.readinessPrimaryArrow}>
+                    <MaterialCommunityIcons name="arrow-right" size={19} color="#FFFFFF" />
+                  </View>
+                </LinearGradient>
+              </Pressable>
+
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Edit questionnaire answers"
+                onPress={() => {
+                  setQuestionIndex(0);
                   setStepIndex(0);
-                  return;
-                }
-
-                complianceForm.setValue('acknowledged', true, { shouldDirty: true, shouldTouch: true, shouldValidate: true });
-                setStepIndex(2);
-                requestLiveCameraPermission().catch(() => {
-                  setCameraModalError('Camera permission could not be checked. Tap Allow Camera to continue.');
-                });
-              }}
-              leading={<AppIcon name="camera" state="inverse" />}
-              fullWidth
-            />
-            <AppButton
-              title="Edit Answers"
-              variant="ghost"
-              onPress={() => {
-                setQuestionIndex(0);
-                setStepIndex(0);
-              }}
-              fullWidth
-            />
-          </View>
+                }}
+                style={({ pressed }) => [styles.readinessEditAction, pressed ? styles.pressedMuted : null]}
+              >
+                <View style={styles.readinessEditContent}>
+                  <View style={styles.readinessEditIconWrap}>
+                    <MaterialCommunityIcons name="pencil-outline" size={17} color={theme.colors.brandPrimary} />
+                  </View>
+                  <Text numberOfLines={1} style={styles.readinessEditText}>Edit my answers</Text>
+                </View>
+              </Pressable>
+            </View>
+          </Animated.View>
         );
         }
       case 2:
@@ -4452,6 +5006,7 @@ export function DonorHairSubmissionScreen() {
                     setPhotoIndex(0);
                     setQuestionIndex(0);
                     setStepIndex(0);
+                    setHasAcknowledgedRequirementIntro(false);
                   }}
                   disabled={isSaving || isAnalyzing}
                   style={styles.scanAgainLink}
@@ -4585,6 +5140,14 @@ export function DonorHairSubmissionScreen() {
     setPreviewImageUris([]);
     setPreviewImageIndex(0);
   };
+  const donationRequirementsIntroModal = (
+    <DonationRequirementsIntroModal
+      donationRequirement={donationRequirement}
+      visible={shouldShowRequirementIntro}
+      onContinue={() => setHasAcknowledgedRequirementIntro(true)}
+      onBack={closeAnalyzerToHome}
+    />
+  );
   const previewImageModal = (
     <Modal
       transparent
@@ -4660,7 +5223,12 @@ export function DonorHairSubmissionScreen() {
 
   if (isDonorProfileComplete && isAnalyzerActive) {
     const analyzerContent = (
-      <View style={stepIndex === 2 ? styles.cameraWizardStage : styles.wizardStage}>
+      <View
+        style={[
+          stepIndex === 2 ? styles.cameraWizardStage : styles.wizardStage,
+          stepIndex === 0 ? styles.questionnaireWizardStage : null,
+        ]}
+      >
         <View style={styles.stepContentWrap}>
           {renderStepContent()}
         </View>
@@ -4674,12 +5242,9 @@ export function DonorHairSubmissionScreen() {
             <HairAnalysisTopBar
               title="Check Hair"
               onBack={handleHeaderBack}
-              backgroundColor={roles.primaryActionBackground}
               iconColor={theme.colors.backgroundPrimary}
               textColor={theme.colors.backgroundPrimary}
               showBackButton
-              stepLabel={questionStepLabel}
-              stepProgress={questionStepProgressPercent}
             />
           )}
           {stepIndex === 2 ? analyzerContent : (
@@ -4692,7 +5257,9 @@ export function DonorHairSubmissionScreen() {
               {analyzerContent}
             </ScrollView>
           )}
+          {renderQuestionNavigationDock()}
         </View>
+        {donationRequirementsIntroModal}
         {previewImageModal}
       </>
     );
@@ -4794,7 +5361,7 @@ export function DonorHairSubmissionScreen() {
                 <HairConditionLogCard
                   submissions={analysisHistory}
                   registeredDrives={registeredEventDrives}
-                  onOpenAnalyzer={() => setIsAnalyzerActive(true)}
+                  onOpenAnalyzer={openAnalyzerWithRequirements}
                   onSelectDate={openHistoryDate}
                   trendLabel={latestTrendLabel}
                 />
@@ -4803,7 +5370,12 @@ export function DonorHairSubmissionScreen() {
           ) : null}
         </View>
       ) : (
-        <View style={stepIndex === 2 ? styles.cameraWizardStage : styles.wizardStage}>
+        <View
+          style={[
+            stepIndex === 2 ? styles.cameraWizardStage : styles.wizardStage,
+            stepIndex === 0 ? styles.questionnaireWizardStage : null,
+          ]}
+        >
           {stepIndex === 2 ? null : (
             <View style={styles.closeOnlyHeader}>
               <Pressable onPress={closeAnalyzerToHome} style={styles.iconNavButton}>
@@ -4815,6 +5387,7 @@ export function DonorHairSubmissionScreen() {
           <View style={styles.stepContentWrap}>
             {renderStepContent()}
           </View>
+          {renderQuestionNavigationDock()}
         </View>
       )}
 
@@ -4828,7 +5401,7 @@ export function DonorHairSubmissionScreen() {
           setSelectedHistoryDate('');
           setSelectedHistoryEntries([]);
           setSelectedHistoryEvents([]);
-          setIsAnalyzerActive(true);
+          openAnalyzerWithRequirements();
         }}
         onClose={() => {
           setSelectedHistoryDate('');
@@ -4837,6 +5410,7 @@ export function DonorHairSubmissionScreen() {
         }}
       />
 
+      {donationRequirementsIntroModal}
       {previewImageModal}
     </DashboardLayout>
   );
@@ -4848,7 +5422,7 @@ const styles = StyleSheet.create({
     minHeight: '100%',
     backgroundColor: theme.colors.backgroundSecondary,
     paddingTop: theme.spacing.xl,
-    paddingBottom: theme.spacing.lg,
+    paddingBottom: 0,
   },
   pressedMuted: {
     opacity: 0.72,
@@ -4858,7 +5432,7 @@ const styles = StyleSheet.create({
   },
   analyzerScrollContent: {
     flexGrow: 1,
-    paddingBottom: 120,
+    paddingBottom: 124,
   },
   wizardStage: {
     width: '100%',
@@ -4868,6 +5442,9 @@ const styles = StyleSheet.create({
     gap: theme.spacing.sm,
     paddingHorizontal: theme.spacing.md,
     paddingBottom: theme.spacing.md,
+  },
+  questionnaireWizardStage: {
+    paddingBottom: 112,
   },
   cameraWizardStage: {
     width: '100%',
@@ -4891,23 +5468,45 @@ const styles = StyleSheet.create({
     gap: theme.spacing.sm,
   },
   analysisFlowTopBarShell: {
-    paddingTop: theme.spacing.xs,
-    paddingBottom: theme.spacing.xs,
+    paddingTop: 0,
+    paddingBottom: theme.spacing.sm,
   },
   analysisFlowTopBar: {
-    minHeight: 58,
+    position: 'relative',
+    overflow: 'hidden',
+    minHeight: 66,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: theme.spacing.sm,
     paddingHorizontal: 0,
-    paddingVertical: theme.spacing.xs,
+    paddingVertical: theme.spacing.sm,
     marginBottom: theme.spacing.md,
     borderBottomWidth: 0,
-    borderRadius: 0,
+    borderBottomLeftRadius: 22,
+    borderBottomRightRadius: 22,
+    ...theme.shadows.card,
+  },
+  analysisFlowTopBarGlowLarge: {
+    position: 'absolute',
+    width: 130,
+    height: 130,
+    borderRadius: 65,
+    right: -36,
+    top: -72,
+    backgroundColor: 'rgba(255,255,255,0.10)',
+  },
+  analysisFlowTopBarGlowSmall: {
+    position: 'absolute',
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    left: -18,
+    bottom: -30,
+    backgroundColor: 'rgba(255,255,255,0.06)',
   },
   analysisFlowTopBarSide: {
-    width: 116,
+    width: 96,
     flexShrink: 0,
     flexDirection: 'row',
     alignItems: 'center',
@@ -4916,7 +5515,8 @@ const styles = StyleSheet.create({
     paddingLeft: theme.spacing.sm,
   },
   analysisFlowTopBarSideEnd: {
-    paddingRight: theme.spacing.lg,
+    justifyContent: 'flex-end',
+    paddingRight: theme.spacing.sm,
   },
   analysisFlowTopBarButton: {
     width: 40,
@@ -4924,7 +5524,13 @@ const styles = StyleSheet.create({
     borderRadius: theme.radius.full,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'transparent',
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.18)',
+  },
+  analysisFlowTopBarBalance: {
+    width: 40,
+    height: 40,
   },
   analysisFlowTopBarTitle: {
     flex: 1,
@@ -4935,31 +5541,6 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.semantic.bodyLg,
     fontWeight: theme.typography.weights.bold,
     marginHorizontal: theme.spacing.sm,
-  },
-  analysisFlowTopBarSpacer: {
-    width: 40,
-    height: 40,
-  },
-  analysisFlowTopBarMeta: {
-    flex: 1,
-    alignItems: 'flex-end',
-    gap: 2,
-    minWidth: 0,
-  },
-  analysisFlowTopBarStepLabel: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.caption,
-    fontWeight: theme.typography.weights.semibold,
-  },
-  analysisFlowTopBarTrack: {
-    width: 64,
-    height: 4,
-    borderRadius: theme.radius.full,
-    overflow: 'hidden',
-  },
-  analysisFlowTopBarFill: {
-    height: '100%',
-    borderRadius: theme.radius.full,
   },
   flowStep: {
     minWidth: 126,
@@ -5675,28 +6256,71 @@ const styles = StyleSheet.create({
     color: theme.colors.textPrimary,
   },
   choiceList: {
-    gap: theme.spacing.sm,
+    gap: theme.spacing.md,
   },
   choiceCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: theme.spacing.md,
-    minHeight: 74,
+    position: 'relative',
+    overflow: 'hidden',
+    minHeight: 72,
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.md,
-    borderRadius: 12,
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: theme.colors.borderSubtle,
     backgroundColor: theme.colors.backgroundPrimary,
+    ...theme.shadows.soft,
   },
   choiceCardActive: {
     borderColor: theme.colors.brandPrimary,
+    borderWidth: 1.5,
+    ...theme.shadows.card,
+  },
+  choiceCardActiveAccent: {
+    position: 'absolute',
+    left: 0,
+    top: 10,
+    bottom: 10,
+    width: 4,
+    borderTopRightRadius: 4,
+    borderBottomRightRadius: 4,
+    backgroundColor: theme.colors.brandPrimary,
+  },
+  choiceCardPressed: {
+    opacity: 0.88,
+    transform: [{ scale: 0.985 }],
+  },
+  choiceCardGradient: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  choiceCardContent: {
+    width: '100%',
+    minHeight: 44,
+    position: 'relative',
+    justifyContent: 'center',
+  },
+  choiceIconWrap: {
+    position: 'absolute',
+    left: 0,
+    top: '50%',
+    marginTop: -21,
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
     backgroundColor: theme.colors.brandPrimaryMuted,
+    borderWidth: 1,
+    borderColor: theme.colors.borderSubtle,
+  },
+  choiceIconWrapActive: {
+    backgroundColor: theme.colors.brandPrimary,
+    borderColor: theme.colors.brandPrimary,
   },
   choiceCardCopy: {
-    flex: 1,
-    minWidth: 0,
+    width: '100%',
+    paddingLeft: 54,
+    paddingRight: 44,
     gap: 2,
   },
   choiceLabel: {
@@ -5708,6 +6332,7 @@ const styles = StyleSheet.create({
   },
   choiceLabelActive: {
     fontWeight: theme.typography.weights.semibold,
+    color: theme.colors.brandPrimary,
   },
   choiceDescription: {
     fontFamily: theme.typography.fontFamily,
@@ -5716,13 +6341,18 @@ const styles = StyleSheet.create({
     color: theme.colors.textSecondary,
   },
   choiceRadio: {
-    width: 28,
-    height: 28,
+    position: 'absolute',
+    right: 0,
+    top: '50%',
+    marginTop: -15,
+    width: 30,
+    height: 30,
     borderRadius: theme.radius.full,
     borderWidth: 1.5,
-    borderColor: theme.colors.borderSubtle,
+    borderColor: '#C9ABB4',
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.72)',
   },
   choiceRadioActive: {
     backgroundColor: theme.colors.brandPrimary,
@@ -5730,7 +6360,7 @@ const styles = StyleSheet.create({
   },
   questionnaireStage: {
     flex: 1,
-    gap: theme.spacing.lg,
+    gap: theme.spacing.md,
   },
   questionTransitionWrap: {
     gap: theme.spacing.lg,
@@ -5740,21 +6370,139 @@ const styles = StyleSheet.create({
     paddingVertical: 0,
   },
   questionContentCard: {
-    gap: theme.spacing.md,
+    gap: theme.spacing.lg,
+  },
+  questionHeroCard: {
+    position: 'relative',
+    overflow: 'hidden',
+    borderRadius: 24,
+    padding: theme.spacing.lg,
+    gap: theme.spacing.sm,
+    ...theme.shadows.card,
+  },
+  questionHeroGlowLarge: {
+    position: 'absolute',
+    width: 150,
+    height: 150,
+    borderRadius: 75,
+    right: -54,
+    top: -78,
+    backgroundColor: 'rgba(255,255,255,0.10)',
+  },
+  questionHeroGlowSmall: {
+    position: 'absolute',
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    right: 38,
+    bottom: -52,
+    backgroundColor: 'rgba(255,255,255,0.07)',
+  },
+  questionHeroTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: theme.spacing.sm,
+  },
+  questionHeroIdentity: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  questionHeroIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.22)',
+  },
+  questionHeroEyebrow: {
+    flex: 1,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 1,
+    color: '#F7DCE3',
+  },
+  questionHeroStepChip: {
+    minWidth: 48,
+    height: 30,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.22)',
+  },
+  questionHeroStepText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 10,
+    fontWeight: theme.typography.weights.bold,
+    color: '#FFFFFF',
+  },
+  questionHeroTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.titleSm,
+    lineHeight: theme.typography.semantic.titleSm * theme.typography.lineHeights.snug,
+    fontWeight: theme.typography.weights.bold,
+    color: '#FFFFFF',
+  },
+  questionHeroHelper: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+    lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.relaxed,
+    color: '#F9EDEF',
+  },
+  questionHeroProgressRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: 2,
+  },
+  questionHeroProgressDot: {
+    flex: 1,
+    height: 4,
+    maxWidth: 28,
+    borderRadius: 2,
+    backgroundColor: 'rgba(255,255,255,0.22)',
+  },
+  questionHeroProgressDotActive: {
+    backgroundColor: 'rgba(255,255,255,0.58)',
+  },
+  questionHeroProgressDotCurrent: {
+    height: 6,
+    backgroundColor: '#FFFFFF',
   },
   questionnaireFooterDock: {
     marginTop: 'auto',
     gap: theme.spacing.md,
   },
   questionInfoCard: {
+    position: 'relative',
+    overflow: 'hidden',
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: theme.spacing.sm,
     padding: theme.spacing.md,
-    borderRadius: 12,
+    paddingLeft: theme.spacing.lg,
+    borderRadius: 18,
     borderWidth: 1,
     borderColor: theme.colors.borderSubtle,
-    backgroundColor: theme.colors.backgroundPrimary,
+    ...theme.shadows.soft,
+  },
+  questionInfoAccent: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: 4,
+    backgroundColor: theme.colors.brandPrimary,
   },
   questionInfoIconWrap: {
     width: 34,
@@ -5781,110 +6529,643 @@ const styles = StyleSheet.create({
     color: theme.colors.textSecondary,
   },
   readinessStage: {
+    gap: theme.spacing.lg,
+    paddingBottom: theme.spacing.xl,
+  },
+  readinessHero: {
+    position: 'relative',
+    overflow: 'hidden',
+    gap: theme.spacing.md,
+    padding: theme.spacing.lg,
+    borderRadius: 26,
+    ...theme.shadows.card,
+  },
+  readinessHeroGlowLarge: {
+    position: 'absolute',
+    width: 170,
+    height: 170,
+    borderRadius: 85,
+    right: -62,
+    top: -92,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+  },
+  readinessHeroGlowSmall: {
+    position: 'absolute',
+    width: 88,
+    height: 88,
+    borderRadius: 44,
+    left: -34,
+    bottom: -48,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+  },
+  readinessHeroContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: theme.spacing.md,
   },
-  readinessHeader: {
+  readinessScanOrb: {
+    width: 74,
+    height: 74,
+    borderRadius: 37,
+    padding: 7,
     alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.26)',
+  },
+  readinessScanOrbInner: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.14)',
+  },
+  readinessHeroCopy: {
+    flex: 1,
+    minWidth: 0,
     gap: 4,
+  },
+  readinessEyebrow: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 1.1,
+    color: '#F5D9E1',
   },
   readinessTitle: {
     fontFamily: theme.typography.fontFamilyDisplay,
-    fontSize: theme.typography.semantic.title,
+    fontSize: theme.typography.semantic.titleSm,
+    lineHeight: theme.typography.semantic.titleSm * theme.typography.lineHeights.snug,
     fontWeight: theme.typography.weights.bold,
-    color: theme.colors.brandPrimary,
-    textAlign: 'center',
+    color: '#FFFFFF',
   },
   readinessBody: {
     fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.body,
-    lineHeight: theme.typography.compact.body * theme.typography.lineHeights.normal,
-    color: theme.colors.textSecondary,
-    textAlign: 'center',
+    fontSize: theme.typography.compact.bodySm,
+    lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.relaxed,
+    color: '#FAEDF1',
   },
-  readinessGrid: {
-    gap: theme.spacing.md,
+  readinessStatusRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: theme.spacing.sm,
+  },
+  readinessStatusChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minHeight: 32,
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: theme.radius.pill,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+  },
+  readinessStatusText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 10,
+    fontWeight: theme.typography.weights.semibold,
+    color: '#FFFFFF',
   },
   recapCard: {
-    gap: theme.spacing.sm,
-    padding: theme.spacing.md,
-    borderRadius: 16,
+    overflow: 'hidden',
+    borderRadius: 22,
     borderWidth: 1,
-    borderColor: theme.colors.borderSubtle,
-    backgroundColor: theme.colors.backgroundPrimary,
+    borderColor: '#E7D4DA',
+    backgroundColor: '#FFFCFD',
+    ...theme.shadows.soft,
   },
   recapHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: theme.spacing.sm,
+    padding: theme.spacing.md,
+    backgroundColor: '#FAEEF1',
+  },
+  recapHeaderIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E9D4DA',
+  },
+  recapHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
   },
   recapTitle: {
     fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.semantic.bodySm,
+    fontSize: theme.typography.semantic.body,
     fontWeight: theme.typography.weights.bold,
     color: theme.colors.textPrimary,
   },
-  recapGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: theme.spacing.sm,
+  recapSubtitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.caption,
+    color: theme.colors.textMuted,
   },
-  recapMiniItem: {
-    width: '48%',
-    gap: 4,
-    padding: theme.spacing.sm,
-    borderRadius: 14,
-    backgroundColor: theme.colors.surfaceSoft,
-  },
-  recapRow: {
+  recapDetailRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
     gap: theme.spacing.sm,
-    paddingVertical: 8,
-    borderTopWidth: 1,
-    borderTopColor: theme.colors.borderSubtle,
+    minHeight: 54,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+  },
+  recapDetailIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F7E9ED',
   },
   recapLabel: {
     flex: 1,
     fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.caption,
+    fontSize: theme.typography.compact.bodySm,
     color: theme.colors.textSecondary,
   },
-  recapPill: {
-    overflow: 'hidden',
-    borderRadius: theme.radius.full,
-    paddingHorizontal: 0,
-    paddingVertical: 0,
+  recapValue: {
+    maxWidth: '45%',
     fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.body,
+    fontSize: theme.typography.compact.bodySm,
     fontWeight: theme.typography.weights.semibold,
     color: theme.colors.brandPrimary,
+    textAlign: 'right',
+  },
+  recapDivider: {
+    height: StyleSheet.hairlineWidth,
+    marginLeft: 62,
+    backgroundColor: '#EBDCE0',
   },
   tipsCard: {
-    gap: theme.spacing.xs,
-    padding: theme.spacing.md,
-    borderRadius: 16,
+    gap: theme.spacing.md,
+    padding: theme.spacing.lg,
+    borderRadius: 22,
     borderWidth: 1,
-    borderColor: theme.colors.borderSubtle,
-    backgroundColor: theme.colors.backgroundPrimary,
+    borderColor: '#E7D4DA',
+    backgroundColor: '#FFFFFF',
+    ...theme.shadows.soft,
+  },
+  tipsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  tipsHeaderIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FFF0F4',
+  },
+  tipsHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
   },
   tipsTitle: {
     fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.semantic.bodySm,
+    fontSize: theme.typography.semantic.body,
     fontWeight: theme.typography.weights.bold,
-    color: theme.colors.brandPrimary,
+    color: theme.colors.textPrimary,
+  },
+  tipsSubtitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.caption,
+    color: theme.colors.textMuted,
   },
   tipRow: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: theme.spacing.xs,
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  tipNumberWrap: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.brandPrimary,
+  },
+  tipNumber: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 11,
+    fontWeight: theme.typography.weights.bold,
+    color: '#FFFFFF',
   },
   tipText: {
     flex: 1,
     fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.body,
-    lineHeight: theme.typography.compact.body * theme.typography.lineHeights.normal,
+    fontSize: theme.typography.compact.bodySm,
+    lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.relaxed,
     color: theme.colors.textSecondary,
+  },
+  readinessQualityNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#ECD7DD',
+    backgroundColor: '#FFF4F7',
+  },
+  readinessQualityIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
+  },
+  readinessQualityText: {
+    flex: 1,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.caption,
+    lineHeight: theme.typography.semantic.caption * theme.typography.lineHeights.relaxed,
+    color: theme.colors.textSecondary,
+  },
+  readinessActions: {
+    gap: theme.spacing.sm,
+  },
+  readinessPrimaryAction: {
+    overflow: 'hidden',
+    minHeight: 66,
+    borderRadius: 21,
+    ...theme.shadows.card,
+  },
+  readinessPrimarySurface: {
+    minHeight: 66,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.md,
+    borderRadius: 21,
+  },
+  readinessPrimaryIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.14)',
+  },
+  readinessPrimaryCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 1,
+  },
+  readinessPrimaryTitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.body,
+    fontWeight: theme.typography.weights.bold,
+    color: '#FFFFFF',
+  },
+  readinessPrimarySubtitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 10,
+    color: '#F7E7EB',
+  },
+  readinessPrimaryArrow: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.14)',
+  },
+  readinessEditAction: {
+    width: 184,
+    minHeight: 50,
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'center',
+    paddingHorizontal: 7,
+    paddingVertical: 6,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1,
+    borderColor: '#E4CCD3',
+    backgroundColor: '#FFF9FA',
+    ...theme.shadows.soft,
+  },
+  readinessEditContent: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
+  },
+  readinessEditIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F5E4E9',
+  },
+  readinessEditText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.bodySm,
+    fontWeight: theme.typography.weights.semibold,
+    color: theme.colors.brandPrimary,
+    textAlign: 'center',
+  },
+  requirementsIntroOverlay: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.xxl,
+  },
+  requirementsIntroBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(35, 8, 16, 0.68)',
+  },
+  requirementsIntroCard: {
+    width: '100%',
+    maxWidth: 430,
+    maxHeight: '88%',
+    overflow: 'hidden',
+    borderRadius: 28,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.36)',
+    backgroundColor: '#FFFBFC',
+    ...theme.shadows.card,
+  },
+  requirementsIntroHero: {
+    position: 'relative',
+    overflow: 'hidden',
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.lg,
+    paddingBottom: theme.spacing.xl,
+    gap: 7,
+  },
+  requirementsIntroGlowLarge: {
+    position: 'absolute',
+    width: 190,
+    height: 190,
+    borderRadius: 95,
+    right: -72,
+    top: -98,
+    backgroundColor: 'rgba(255,255,255,0.11)',
+  },
+  requirementsIntroGlowSmall: {
+    position: 'absolute',
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    left: -38,
+    bottom: -54,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+  },
+  requirementsIntroHeroTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: theme.spacing.xs,
+  },
+  requirementsIntroIconWrap: {
+    width: 46,
+    height: 46,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.24)',
+  },
+  requirementsIntroClose: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+  },
+  requirementsIntroEyebrow: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 1.1,
+    color: '#F6DCE3',
+  },
+  requirementsIntroTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: 24,
+    lineHeight: 29,
+    fontWeight: theme.typography.weights.bold,
+    color: '#FFFFFF',
+  },
+  requirementsIntroSubtitle: {
+    maxWidth: 340,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.bodySm,
+    lineHeight: theme.typography.semantic.bodySm * theme.typography.lineHeights.relaxed,
+    color: '#F9EDEF',
+  },
+  requirementsIntroScroll: {
+    flexShrink: 1,
+  },
+  requirementsIntroBody: {
+    padding: theme.spacing.lg,
+    gap: theme.spacing.md,
+  },
+  requirementsIntroSectionHeading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: theme.spacing.sm,
+  },
+  requirementsIntroSectionTitle: {
+    flex: 1,
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.body,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.textPrimary,
+  },
+  requirementsIntroCurrentChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+    borderRadius: theme.radius.pill,
+    backgroundColor: '#F5E8EC',
+  },
+  requirementsIntroCurrentChipUnavailable: {
+    backgroundColor: '#F2EFF0',
+  },
+  requirementsIntroCurrentDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: theme.colors.brandPrimary,
+  },
+  requirementsIntroCurrentDotUnavailable: {
+    backgroundColor: theme.colors.textMuted,
+  },
+  requirementsIntroCurrentText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 10,
+    fontWeight: theme.typography.weights.semibold,
+    color: theme.colors.brandPrimary,
+  },
+  requirementsIntroCurrentTextUnavailable: {
+    color: theme.colors.textMuted,
+  },
+  requirementsIntroUnavailableNotice: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: theme.spacing.sm,
+    padding: theme.spacing.md,
+    borderRadius: 17,
+    borderWidth: 1,
+    borderColor: '#E8CED5',
+    backgroundColor: '#FFF5F7',
+  },
+  requirementsIntroUnavailableText: {
+    flex: 1,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.caption,
+    lineHeight: theme.typography.semantic.caption * theme.typography.lineHeights.relaxed,
+    color: theme.colors.textSecondary,
+  },
+  requirementsIntroRequirementList: {
+    overflow: 'hidden',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#E8D6DB',
+    backgroundColor: '#FFFFFF',
+  },
+  requirementsIntroRequirementRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: theme.spacing.md,
+    padding: theme.spacing.md,
+  },
+  requirementsIntroRequirementIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F7E9ED',
+  },
+  requirementsIntroRequirementCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
+  },
+  requirementsIntroRequirementLabel: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.caption,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 0.35,
+    textTransform: 'uppercase',
+    color: theme.colors.brandPrimary,
+  },
+  requirementsIntroRequirementValue: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.bodySm,
+    lineHeight: theme.typography.semantic.bodySm * theme.typography.lineHeights.relaxed,
+    color: theme.colors.textSecondary,
+  },
+  requirementsIntroDivider: {
+    height: StyleSheet.hairlineWidth,
+    marginLeft: 68,
+    backgroundColor: '#ECDDE1',
+  },
+  requirementsIntroNote: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: theme.spacing.sm,
+    padding: theme.spacing.md,
+    borderRadius: 17,
+    backgroundColor: '#FFF3F6',
+    borderWidth: 1,
+    borderColor: '#F0D5DC',
+  },
+  requirementsIntroNoteCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  requirementsIntroNoteTitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.caption,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.textPrimary,
+  },
+  requirementsIntroNoteText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.caption,
+    lineHeight: theme.typography.semantic.caption * theme.typography.lineHeights.relaxed,
+    color: theme.colors.textSecondary,
+  },
+  requirementsIntroReminder: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: theme.spacing.sm,
+    padding: theme.spacing.md,
+    borderRadius: 17,
+    backgroundColor: theme.colors.palette.wine700,
+  },
+  requirementsIntroReminderText: {
+    flex: 1,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.caption,
+    lineHeight: theme.typography.semantic.caption * theme.typography.lineHeights.relaxed,
+    color: '#FFFFFF',
+  },
+  requirementsIntroActions: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.sm,
+    paddingBottom: theme.spacing.lg,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#ECDDE1',
+    backgroundColor: '#FFFBFC',
+  },
+  requirementsIntroContinue: {
+    overflow: 'hidden',
+    minHeight: 56,
+    borderRadius: 18,
+    ...theme.shadows.soft,
+  },
+  requirementsIntroContinueSurface: {
+    minHeight: 56,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.md,
+    borderRadius: 18,
+  },
+  requirementsIntroContinueText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.body,
+    fontWeight: theme.typography.weights.bold,
+    color: '#FFFFFF',
+  },
+  requirementsIntroContinueIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.15)',
   },
   captureTutorialOverlay: {
     flex: 1,
@@ -6007,20 +7288,39 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: theme.spacing.md,
-    backgroundColor: 'rgba(0, 0, 0, 0.48)',
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.xxl,
+    backgroundColor: 'rgba(17, 4, 8, 0.64)',
   },
   captureInstructionPopupBackdrop: {
     ...StyleSheet.absoluteFillObject,
   },
   captureInstructionPopupCard: {
     width: '100%',
-    maxWidth: 390,
+    maxWidth: 400,
+    overflow: 'hidden',
+    borderRadius: 27,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.38)',
+    backgroundColor: '#FFFBFC',
+    ...theme.shadows.card,
+  },
+  captureInstructionPopupHero: {
+    position: 'relative',
+    overflow: 'hidden',
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.lg,
+    paddingBottom: theme.spacing.md,
     gap: theme.spacing.sm,
-    padding: theme.spacing.md,
-    borderRadius: 18,
-    backgroundColor: theme.colors.backgroundPrimary,
-    ...theme.shadows.md,
+  },
+  captureInstructionPopupGlow: {
+    position: 'absolute',
+    width: 150,
+    height: 150,
+    borderRadius: 75,
+    right: -58,
+    top: -86,
+    backgroundColor: 'rgba(255,255,255,0.11)',
   },
   captureInstructionPopupHeader: {
     flexDirection: 'row',
@@ -6028,12 +7328,14 @@ const styles = StyleSheet.create({
     gap: theme.spacing.sm,
   },
   captureInstructionPopupIconWrap: {
-    width: 42,
-    height: 42,
-    borderRadius: theme.radius.full,
+    width: 46,
+    height: 46,
+    borderRadius: 15,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: theme.colors.brandPrimary,
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.24)',
   },
   captureInstructionPopupCopy: {
     flex: 1,
@@ -6043,54 +7345,137 @@ const styles = StyleSheet.create({
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.caption,
     fontWeight: theme.typography.weights.bold,
-    color: theme.colors.brandPrimary,
-    textTransform: 'uppercase',
+    letterSpacing: 0.9,
+    color: '#F4D7DF',
   },
   captureInstructionPopupTitle: {
     fontFamily: theme.typography.fontFamilyDisplay,
     fontSize: theme.typography.semantic.bodyLg,
     fontWeight: theme.typography.weights.bold,
-    color: theme.colors.textPrimary,
+    color: '#FFFFFF',
   },
   captureInstructionPopupClose: {
-    width: 34,
-    height: 34,
-    borderRadius: theme.radius.full,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: theme.colors.surfaceSoft,
+    backgroundColor: 'rgba(255,255,255,0.13)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+  },
+  captureInstructionPopupHeroText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.caption,
+    color: '#F9EDEF',
+  },
+  captureInstructionPopupBody: {
+    gap: theme.spacing.md,
+    padding: theme.spacing.lg,
+  },
+  captureInstructionPopupProgress: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  captureInstructionPopupProgressDot: {
+    width: 18,
+    height: 5,
+    borderRadius: theme.radius.pill,
+    backgroundColor: '#E8D9DD',
+  },
+  captureInstructionPopupProgressDotActive: {
+    backgroundColor: '#C98B9B',
+  },
+  captureInstructionPopupProgressDotCurrent: {
+    width: 30,
+    backgroundColor: theme.colors.brandPrimary,
+  },
+  captureInstructionPopupFocusRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: theme.spacing.sm,
+    paddingVertical: theme.spacing.xs,
+  },
+  captureInstructionPopupFocusIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F7E8EC',
+  },
+  captureInstructionPopupFocusCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
+  },
+  captureInstructionPopupFocusLabel: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.caption,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 0.25,
+    color: theme.colors.brandPrimary,
   },
   captureInstructionPopupTip: {
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.semantic.bodySm,
     lineHeight: theme.typography.semantic.bodySm * theme.typography.lineHeights.relaxed,
-    fontWeight: theme.typography.weights.semibold,
-    color: theme.colors.textPrimary,
+    color: theme.colors.textSecondary,
   },
   captureInstructionPopupTips: {
-    gap: 6,
+    gap: theme.spacing.sm,
   },
   captureInstructionPopupTipRow: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: theme.spacing.xs,
+    alignItems: 'center',
+    gap: theme.spacing.sm,
   },
-  captureInstructionPopupDot: {
-    width: 6,
-    height: 6,
-    borderRadius: theme.radius.full,
-    marginTop: 7,
+  captureInstructionPopupCheck: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
     backgroundColor: theme.colors.brandPrimary,
   },
   captureInstructionPopupTipText: {
     flex: 1,
     fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.body,
-    lineHeight: theme.typography.compact.body * theme.typography.lineHeights.normal,
+    fontSize: theme.typography.compact.bodySm,
+    lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.relaxed,
     color: theme.colors.textSecondary,
   },
   captureInstructionPopupAction: {
+    overflow: 'hidden',
+    minHeight: 56,
     marginTop: theme.spacing.xs,
+    borderRadius: 18,
+    ...theme.shadows.soft,
+  },
+  captureInstructionPopupActionSurface: {
+    minHeight: 56,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.md,
+    borderRadius: 18,
+  },
+  captureInstructionPopupActionText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.bodySm,
+    fontWeight: theme.typography.weights.bold,
+    color: '#FFFFFF',
+  },
+  captureInstructionPopupActionArrow: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.15)',
   },
   answerSummaryCompact: {
     gap: theme.spacing.xs,
@@ -6139,12 +7524,19 @@ const styles = StyleSheet.create({
     marginBottom: theme.spacing.md,
   },
   questionDisclaimer: {
+    flex: 1,
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.semantic.caption,
     lineHeight: theme.typography.semantic.caption * theme.typography.lineHeights.relaxed,
     color: theme.colors.textMuted,
-    textAlign: 'center',
-    paddingHorizontal: theme.spacing.md,
+  },
+  questionDisclaimerRow: {
+    maxWidth: 300,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+    paddingHorizontal: theme.spacing.sm,
   },
   questionError: {
     marginTop: theme.spacing.xs,
@@ -7977,31 +9369,132 @@ const styles = StyleSheet.create({
     minHeight: 92,
     textAlignVertical: 'top',
   },
-  footerNav: {
+  questionNavigationDock: {
+    position: 'absolute',
+    left: theme.spacing.md,
+    right: theme.spacing.md,
+    bottom: theme.spacing.md,
+    zIndex: 30,
+    elevation: 18,
+  },
+  questionNavigationActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
     gap: theme.spacing.sm,
-    marginTop: theme.spacing.xs,
-    marginBottom: 0,
+    padding: 7,
+    borderRadius: 25,
+    borderWidth: 1,
+    borderColor: 'rgba(122, 38, 62, 0.16)',
+    backgroundColor: 'rgba(255, 252, 253, 0.98)',
+    ...theme.shadows.card,
   },
-  footerNavCentered: {
+  questionPreviousButtonWrap: {
+    flex: 0.85,
+    minWidth: 0,
+  },
+  questionDockButton: {
+    position: 'relative',
+    overflow: 'hidden',
+    width: '100%',
+    minHeight: 56,
+    flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'center',
+    gap: theme.spacing.sm,
+    borderWidth: 1,
   },
-  footerPrimaryButton: {
-    minWidth: 132,
+  questionDockButtonPressed: {
+    opacity: 0.9,
+    transform: [{ scale: 0.98 }],
+  },
+  questionPreviousButton: {
+    minHeight: 56,
+    borderRadius: 18,
+    backgroundColor: '#FFFFFF',
+    borderColor: '#D7BCC4',
+    ...theme.shadows.soft,
+  },
+  questionPreviousButtonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+  },
+  questionPreviousIconWrap: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F7E9ED',
+  },
+  questionPreviousButtonText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.body,
+    fontWeight: theme.typography.weights.semibold,
+    color: theme.colors.brandPrimary,
   },
   iconNavButton: {
-    width: 42,
-    height: 42,
-    borderRadius: theme.radius.full,
+    width: 54,
+    height: 54,
+    borderRadius: 17,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.colors.surfaceSoft,
     borderWidth: 1,
     borderColor: theme.colors.borderSubtle,
+    ...theme.shadows.soft,
   },
-  iconNavButtonDisabled: {
-    opacity: 0.35,
+  questionNextButtonWrap: {
+    flex: 1.15,
+    minWidth: 0,
+  },
+  questionNextButton: {
+    minHeight: 56,
+    borderRadius: 18,
+    borderColor: theme.colors.brandPrimary,
+    padding: 0,
+    ...theme.shadows.soft,
+  },
+  questionNextButtonDisabled: {
+    borderColor: '#E2CBD2',
+    ...theme.shadows.none,
+  },
+  questionNextButtonSurface: {
+    width: '100%',
+    minHeight: 56,
+    paddingHorizontal: theme.spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
+    borderRadius: 17,
+  },
+  questionNextButtonSurfaceDisabled: {
+    opacity: 0.92,
+  },
+  questionNextButtonText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.body,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 0.2,
+    color: theme.colors.textOnBrand,
+  },
+  questionNextButtonTextDisabled: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.body,
+    fontWeight: theme.typography.weights.semibold,
+    color: '#806770',
+  },
+  questionNextArrow: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.15)',
+  },
+  questionNextArrowDisabled: {
+    backgroundColor: 'rgba(122, 38, 62, 0.08)',
   },
 });

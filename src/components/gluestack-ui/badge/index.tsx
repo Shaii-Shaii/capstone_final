@@ -1,12 +1,12 @@
 'use client';
 import React from 'react';
 import { Text, View } from 'react-native';
-import { tva } from '@gluestack-ui/utils/nativewind-utils';
 import {
+  tva,
   withStyleContext,
   useStyleContext,
+  type VariantProps,
 } from '@gluestack-ui/utils/nativewind-utils';
-import type { VariantProps } from '@gluestack-ui/utils/nativewind-utils';
 const SCOPE = 'BADGE';
 
 const badgeStyle = tva({

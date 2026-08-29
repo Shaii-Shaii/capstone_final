@@ -173,3 +173,6 @@ After deployment, monitor:
 - Frequency of "Retake Photos" decisions
 - Confidence scores from AI responses
 - History assessment quality when available
+
+
+WEH AUTO SAVE ITO?

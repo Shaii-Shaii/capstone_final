@@ -1,13 +1,14 @@
 import React from 'react';
-import { Alert, Image, Modal, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { Alert, Image, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Camera, Map as MapLibreMap, Marker } from '@maplibre/maplibre-react-native';
 import { DashboardLayout } from './DashboardLayout';
 import { AppButton } from '../ui/AppButton';
 import { AppIcon } from '../ui/AppIcon';
-import { DASHBOARD_TAB_BAR_HEIGHT } from '../ui/DashboardTabBar';
 import { DonationEventsEmptyState } from '../ui/DonationEventsEmptyState';
 import { GradientActionButton } from '../ui/GradientActionButton';
 import { SectionTitleRow } from '../ui/SectionTitleRow';
@@ -86,6 +87,25 @@ const LENGTH_UNIT_OPTIONS = [
 const DONATION_REALTIME_DEBOUNCE_MS = 420;
 let cachedDonorDonationModuleData = null;
 let cachedDonorDonationModuleUserId = '';
+
+const DONATION_MAP_STYLE = {
+  version: 8,
+  sources: {
+    openStreetMap: {
+      type: 'raster',
+      tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+      tileSize: 256,
+      attribution: '© OpenStreetMap contributors',
+    },
+  },
+  layers: [{
+    id: 'openStreetMapRaster',
+    type: 'raster',
+    source: 'openStreetMap',
+    minzoom: 0,
+    maxzoom: 19,
+  }],
+};
 
 const formatRequirementLengthInputValue = (donationRequirement = null) => {
   const value = Number(donationRequirement?.minimum_hair_length_inches);
@@ -315,8 +335,8 @@ const DONATION_MODULE_SCREEN = {
 };
 
 const DONATION_EVENT_SORT_OPTIONS = [
-  { key: 'latest', label: 'Latest' },
-  { key: 'oldest', label: 'Oldest' },
+  { key: 'soonest', label: 'Soonest date' },
+  { key: 'latest', label: 'Latest date' },
 ];
 
 const DONATION_EVENT_VISIBILITY_OPTIONS = [
@@ -335,13 +355,13 @@ const getDonationEventSortTime = (drive = null) => {
   return Number.isFinite(time) ? time : 0;
 };
 
-const sortDonationEventsByDate = (drives = [], sortOrder = 'latest') => (
+const sortDonationEventsByDate = (drives = [], sortOrder = 'soonest') => (
   [...drives].sort((left, right) => {
     const leftTime = getDonationEventSortTime(left);
     const rightTime = getDonationEventSortTime(right);
 
     if (leftTime !== rightTime) {
-      return sortOrder === 'oldest'
+      return sortOrder === 'soonest'
         ? leftTime - rightTime
         : rightTime - leftTime;
     }
@@ -353,6 +373,21 @@ const sortDonationEventsByDate = (drives = [], sortOrder = 'latest') => (
     return Number(right?.donation_drive_id || 0) - Number(left?.donation_drive_id || 0);
   })
 );
+
+const isDriveRegisteredForUser = (drive = null) => {
+  const registration = drive?.registration || null;
+  if (!registration?.registration_id) return false;
+  const status = String(registration?.registration_status || '').trim().toLowerCase();
+  return !['cancelled', 'canceled', 'declined', 'rejected'].includes(status);
+};
+
+const getLogisticsMapCoordinate = (logisticsSettings = null) => {
+  const latitude = Number(logisticsSettings?.latitude);
+  const longitude = Number(logisticsSettings?.longitude);
+  const isValidLatitude = Number.isFinite(latitude) && latitude >= -90 && latitude <= 90;
+  const isValidLongitude = Number.isFinite(longitude) && longitude >= -180 && longitude <= 180;
+  return isValidLatitude && isValidLongitude ? [longitude, latitude] : null;
+};
 
 const isSubmittedDonationStatus = (status = '') => (
   String(status || '').trim().toLowerCase().includes('submitted')
@@ -1058,8 +1093,8 @@ function HairEligibilityPromptModal({
   actionTitle = 'Start First Hair Check',
   iconName = 'chart-line',
 }) {
-  const insets = useSafeAreaInsets();
   const { height: viewportHeight } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   if (!visible) return null;
 
   const availableHeight = Math.max(360, viewportHeight - insets.top - insets.bottom - theme.spacing.lg * 2);
@@ -1158,103 +1193,106 @@ function HairEligibilityPromptModal({
 
 const HairEligibilityGateCard = HairEligibilityPromptModal;
 
-function DonationFilterDropdown({
+function DonationEventFilterSheet({
   roles,
-  label,
-  value,
-  options,
-  onChange,
+  visible,
+  sortOrder,
+  visibilityFilter,
+  onChangeSort,
+  onChangeVisibility,
+  onReset,
+  onClose,
 }) {
-  const [isOpen, setIsOpen] = React.useState(false);
-  const activeOption = options.find((option) => option.key === value) || options[0];
-
-  const handleSelect = React.useCallback((nextValue) => {
-    onChange?.(nextValue);
-    setIsOpen(false);
-  }, [onChange]);
-
   return (
-    <>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel={`${label} filter. Current selection ${activeOption?.label || 'All'}`}
-        onPress={() => setIsOpen(true)}
-        style={({ pressed }) => [
-          styles.donationEventFilterButton,
-          {
-            backgroundColor: roles.defaultCardBackground,
-            borderColor: roles.defaultCardBorder,
-          },
-          pressed ? styles.cardPressed : null,
-        ]}
-      >
-        <View style={styles.donationEventFilterCopy}>
-          <Text style={[styles.donationEventFilterLabel, { color: roles.metaText }]} numberOfLines={1}>
-            {label}
-          </Text>
-          <Text style={[styles.donationEventFilterValue, { color: roles.headingText }]} numberOfLines={1}>
-            {activeOption?.label || 'All'}
-          </Text>
-        </View>
-        <MaterialCommunityIcons name="chevron-down" size={18} color={roles.iconPrimaryColor} />
-      </Pressable>
+    <Modal transparent animationType="slide" visible={visible} onRequestClose={onClose}>
+      <View style={styles.eventFilterSheetOverlay}>
+        <Pressable style={styles.modalBackdrop} onPress={onClose} />
+        <View style={[styles.eventFilterSheet, { backgroundColor: roles.pageBackground, borderColor: roles.defaultCardBorder }]}>
+          <View style={styles.eventFilterHandle} />
+          <View style={styles.eventFilterHeader}>
+            <View>
+              <Text style={[styles.eventFilterTitle, { color: roles.headingText }]}>Filter events</Text>
+              <Text style={[styles.eventFilterSubtitle, { color: roles.metaText }]}>Choose how events are shown.</Text>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Close event filters"
+              onPress={onClose}
+              style={[styles.eventFilterClose, { backgroundColor: roles.iconPrimarySurface }]}
+            >
+              <MaterialCommunityIcons name="close" size={20} color={roles.iconPrimaryColor} />
+            </Pressable>
+          </View>
 
-      <Modal
-        transparent
-        animationType="fade"
-        visible={isOpen}
-        onRequestClose={() => setIsOpen(false)}
-      >
-        <View style={styles.donationEventFilterModalOverlay}>
-          <Pressable style={styles.modalBackdrop} onPress={() => setIsOpen(false)} />
-          <View style={[
-            styles.donationEventFilterModalCard,
-            {
-              backgroundColor: roles.pageBackground,
-              borderColor: roles.defaultCardBorder,
-            },
-          ]}>
-            <Text style={[styles.donationEventFilterModalTitle, { color: roles.headingText }]}>
-              {label}
-            </Text>
-            <View style={styles.donationEventFilterOptionList}>
-              {options.map((option) => {
-                const isSelected = option.key === value;
+          <View style={styles.eventFilterGroup}>
+            <Text style={[styles.eventFilterGroupTitle, { color: roles.headingText }]}>Sort by date</Text>
+            <View style={styles.eventFilterOptionGrid}>
+              {DONATION_EVENT_SORT_OPTIONS.map((option) => {
+                const selected = option.key === sortOrder;
                 return (
                   <Pressable
                     key={option.key}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: isSelected }}
-                    onPress={() => handleSelect(option.key)}
+                    accessibilityRole="radio"
+                    accessibilityState={{ checked: selected }}
+                    onPress={() => onChangeSort?.(option.key)}
                     style={[
-                      styles.donationEventFilterOption,
+                      styles.eventFilterChoice,
                       {
-                        backgroundColor: isSelected ? roles.iconPrimarySurface : roles.defaultCardBackground,
-                        borderColor: isSelected ? roles.primaryActionBackground : roles.defaultCardBorder,
+                        backgroundColor: selected ? roles.iconPrimarySurface : roles.defaultCardBackground,
+                        borderColor: selected ? roles.primaryActionBackground : roles.defaultCardBorder,
                       },
                     ]}
                   >
-                    <Text style={[
-                      styles.donationEventFilterOptionText,
-                      { color: isSelected ? roles.primaryActionBackground : roles.headingText },
-                    ]}>
-                      {option.label}
-                    </Text>
-                    {isSelected ? (
-                      <MaterialCommunityIcons
-                        name="check"
-                        size={18}
-                        color={roles.primaryActionBackground}
-                      />
-                    ) : null}
+                    <MaterialCommunityIcons
+                      name={selected ? 'radiobox-marked' : 'radiobox-blank'}
+                      size={18}
+                      color={selected ? roles.primaryActionBackground : roles.metaText}
+                    />
+                    <Text style={[styles.eventFilterChoiceText, { color: roles.headingText }]}>{option.label}</Text>
                   </Pressable>
                 );
               })}
             </View>
           </View>
+
+          <View style={styles.eventFilterGroup}>
+            <Text style={[styles.eventFilterGroupTitle, { color: roles.headingText }]}>Event type</Text>
+            <View style={styles.eventFilterOptionGrid}>
+              {DONATION_EVENT_VISIBILITY_OPTIONS.map((option) => {
+                const selected = option.key === visibilityFilter;
+                return (
+                  <Pressable
+                    key={option.key}
+                    accessibilityRole="radio"
+                    accessibilityState={{ checked: selected }}
+                    onPress={() => onChangeVisibility?.(option.key)}
+                    style={[
+                      styles.eventFilterChoice,
+                      {
+                        backgroundColor: selected ? roles.iconPrimarySurface : roles.defaultCardBackground,
+                        borderColor: selected ? roles.primaryActionBackground : roles.defaultCardBorder,
+                      },
+                    ]}
+                  >
+                    <MaterialCommunityIcons
+                      name={selected ? 'radiobox-marked' : 'radiobox-blank'}
+                      size={18}
+                      color={selected ? roles.primaryActionBackground : roles.metaText}
+                    />
+                    <Text style={[styles.eventFilterChoiceText, { color: roles.headingText }]}>{option.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+
+          <View style={styles.eventFilterActions}>
+            <AppButton title="Reset" variant="outline" fullWidth={false} onPress={onReset} style={styles.eventFilterAction} />
+            <AppButton title="Show events" fullWidth={false} onPress={onClose} style={styles.eventFilterAction} />
+          </View>
         </View>
-      </Modal>
-    </>
+      </View>
+    </Modal>
   );
 }
 
@@ -1262,66 +1300,247 @@ function DonationEventCard({ roles, drive, onOpenDetails }) {
   const [imageFailed, setImageFailed] = React.useState(false);
   const imageUrl = drive?.event_image_url || drive?.organization_logo_url || '';
   const driveDateLabel = getDriveDateLabel(drive);
+  const locationLabel = getDriveLocationLabel(drive);
+  const isRegistered = isDriveRegisteredForUser(drive);
+  const visibilityLabel = isDonationDrivePublic(drive) ? 'Public event' : 'Private event';
 
   React.useEffect(() => {
     setImageFailed(false);
   }, [imageUrl]);
 
-  const cardContent = (
-    <View style={[styles.eventHistoryCard, { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder }]}>
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`Open event details for ${drive?.event_title || 'donation event'}`}
+      onPress={onOpenDetails}
+      style={({ pressed }) => [styles.eventFeedPressable, pressed ? styles.eventFeedPressed : null]}
+    >
+      <View style={[styles.eventFeedCard, { backgroundColor: roles.primaryActionBackground, borderColor: roles.defaultCardBorder }]}>
       {imageUrl && !imageFailed ? (
         <Image
           source={{ uri: imageUrl }}
-          style={styles.eventHistoryImage}
+          style={styles.eventFeedImage}
           resizeMode="cover"
           onError={() => setImageFailed(true)}
         />
       ) : (
-        <View style={[styles.eventHistoryImage, styles.myDonationImageFallback, { backgroundColor: roles.iconPrimarySurface }]}>
-          <MaterialCommunityIcons name="calendar-heart" size={26} color={roles.iconPrimaryColor} />
-        </View>
+        <LinearGradient
+          colors={[theme.colors.palette.wine900, theme.colors.palette.wine700]}
+          style={styles.eventFeedImage}
+        >
+          <MaterialCommunityIcons name="calendar-heart" size={54} color="rgba(255,255,255,0.28)" />
+        </LinearGradient>
       )}
 
-      <View style={styles.eventHistoryCopy}>
-        <Text style={[styles.eventHistoryTitle, { color: roles.headingText }]} numberOfLines={2}>
-          {drive?.event_title || 'Donation event'}
-        </Text>
-        <View style={styles.eventHistoryDateRow}>
-          <MaterialCommunityIcons name="calendar-check-outline" size={16} color={roles.iconPrimaryColor} />
-          <Text style={[styles.eventHistoryDate, { color: roles.metaText }]} numberOfLines={1}>
-            {driveDateLabel}
-          </Text>
+      <LinearGradient
+        colors={['rgba(42, 8, 14, 0.04)', 'rgba(42, 8, 14, 0.94)']}
+        locations={[0.15, 1]}
+        style={styles.eventFeedShade}
+      />
+
+      <View style={styles.eventFeedTopRow}>
+        <View style={styles.eventFeedVisibilityChip}>
+          <Text style={styles.eventFeedVisibilityText}>{visibilityLabel}</Text>
+        </View>
+        {isRegistered ? (
+          <View style={styles.eventFeedRegisteredChip}>
+            <MaterialCommunityIcons name="check-circle" size={14} color="#FFFFFF" />
+            <Text style={styles.eventFeedRegisteredText}>Registered</Text>
+          </View>
+        ) : null}
+      </View>
+
+      <View style={styles.eventFeedContent}>
+        <Text style={styles.eventFeedTitle} numberOfLines={2}>{drive?.event_title || 'Donation event'}</Text>
+        <View style={styles.eventFeedMetaRow}>
+          <MaterialCommunityIcons name="calendar-month-outline" size={15} color="#FBECEF" />
+          <Text style={styles.eventFeedMetaText} numberOfLines={1}>{driveDateLabel}</Text>
+        </View>
+        <View style={styles.eventFeedMetaRow}>
+          <MaterialCommunityIcons name="map-marker-outline" size={15} color="#FBECEF" />
+          <Text style={styles.eventFeedMetaText} numberOfLines={1}>{locationLabel}</Text>
         </View>
       </View>
-    </View>
+      <View style={styles.eventFeedArrow}>
+        <MaterialCommunityIcons name="arrow-top-right" size={19} color={roles.primaryActionBackground} />
+      </View>
+      </View>
+    </Pressable>
   );
+}
 
-  if (!onOpenDetails) {
-    return cardContent;
-  }
+function LogisticsMapPreview({ roles, logisticsSettings }) {
+  const coordinate = React.useMemo(
+    () => getLogisticsMapCoordinate(logisticsSettings),
+    [logisticsSettings]
+  );
+  const address = getLogisticsAddressLines(logisticsSettings).join(', ');
+  const directionsUrl = coordinate
+    ? Platform.OS === 'ios'
+      ? `http://maps.apple.com/?daddr=${coordinate[1]},${coordinate[0]}`
+      : `geo:${coordinate[1]},${coordinate[0]}?q=${coordinate[1]},${coordinate[0]}`
+    : address
+      ? `geo:0,0?q=${encodeURIComponent(address)}`
+      : '';
+
+  const handleOpenDirections = React.useCallback(() => {
+    if (!directionsUrl) return;
+    Linking.openURL(directionsUrl).catch(() => {});
+  }, [directionsUrl]);
 
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`Open event details for ${drive?.event_title || 'donation drive'}`}
-      onPress={onOpenDetails}
-      style={({ pressed }) => [pressed ? styles.cardPressed : null]}
-    >
-      {cardContent}
-    </Pressable>
+    <View style={[styles.logisticsNativeMapFrame, { backgroundColor: roles.supportCardBackground, borderColor: roles.defaultCardBorder }]}>
+      {coordinate ? (
+        <MapLibreMap
+          style={styles.logisticsNativeMap}
+          mapStyle={DONATION_MAP_STYLE}
+          scrollEnabled={false}
+          rotateEnabled={false}
+          pitchEnabled={false}
+        >
+          <Camera initialViewState={{ center: coordinate, zoom: 14 }} />
+          <Marker id="donation-send-off-location" lngLat={coordinate}>
+            <View style={[styles.logisticsMapMarker, { backgroundColor: roles.primaryActionBackground }]}>
+              <MaterialCommunityIcons name="map-marker" size={21} color={roles.primaryActionText} />
+            </View>
+          </Marker>
+        </MapLibreMap>
+      ) : (
+        <View style={styles.logisticsMapEmpty}>
+          <MaterialCommunityIcons name="map-marker-alert-outline" size={30} color={roles.iconPrimaryColor} />
+          <Text style={[styles.logisticsMapEmptyTitle, { color: roles.headingText }]}>Location map coming soon</Text>
+          <Text style={[styles.logisticsMapEmptyText, { color: roles.metaText }]}>The organization has not added map coordinates yet.</Text>
+        </View>
+      )}
+      {coordinate ? <Text style={styles.logisticsMapAttribution}>© OpenStreetMap</Text> : null}
+      {directionsUrl ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Open send-off directions"
+          onPress={handleOpenDirections}
+          style={[styles.logisticsDirectionsButton, { backgroundColor: roles.primaryActionBackground }]}
+        >
+          <MaterialCommunityIcons name="directions" size={15} color={roles.primaryActionText} />
+          <Text style={[styles.logisticsDirectionsText, { color: roles.primaryActionText }]}>Directions</Text>
+        </Pressable>
+      ) : null}
+    </View>
+  );
+}
+
+function LogisticsDonationSection({
+  roles,
+  activeDonationCount = 0,
+  onOpenLogistics,
+}) {
+  return (
+    <View style={styles.logisticsHubSection}>
+      <View style={styles.sectionHeadingRow}>
+        <View>
+          <Text style={[styles.sectionEyebrow, { color: roles.primaryActionBackground }]}>SEND YOUR DONATION</Text>
+          <Text style={[styles.sectionHeading, { color: roles.headingText }]}>Logistics donation</Text>
+        </View>
+        {activeDonationCount > 0 ? (
+          <View style={[styles.activeDonationBadge, { backgroundColor: roles.iconPrimarySurface }]}>
+            <Text style={[styles.activeDonationBadgeText, { color: roles.iconPrimaryColor }]}>
+              {activeDonationCount} active
+            </Text>
+          </View>
+        ) : null}
+      </View>
+
+      <LinearGradient
+        colors={[theme.colors.palette.wine900, theme.colors.palette.wine700]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.logisticsHubCard}
+      >
+        <View pointerEvents="none" style={styles.logisticsHubGlow} />
+        <View style={styles.logisticsHubHeader}>
+          <View style={styles.logisticsHubIcon}>
+            <MaterialCommunityIcons name="hand-heart-outline" size={25} color="#FFFFFF" />
+          </View>
+          <View style={styles.logisticsHubCopy}>
+            <Text style={styles.logisticsHubTitle}>Donate on your schedule</Text>
+            <Text style={styles.logisticsHubText}>You can donate even without joining an event. We will guide you through each step.</Text>
+          </View>
+        </View>
+
+        <View style={styles.logisticsPromiseRow}>
+          <View style={styles.logisticsPromiseItem}>
+            <View style={styles.logisticsPromiseIcon}>
+              <MaterialCommunityIcons name="content-cut" size={17} color="#FFFFFF" />
+            </View>
+            <Text style={styles.logisticsPromiseText}>Prepare</Text>
+          </View>
+          <View style={styles.logisticsPromiseLine} />
+          <View style={styles.logisticsPromiseItem}>
+            <View style={styles.logisticsPromiseIcon}>
+              <MaterialCommunityIcons name="package-variant" size={17} color="#FFFFFF" />
+            </View>
+            <Text style={styles.logisticsPromiseText}>Send</Text>
+          </View>
+          <View style={styles.logisticsPromiseLine} />
+          <View style={styles.logisticsPromiseItem}>
+            <View style={styles.logisticsPromiseIcon}>
+              <MaterialCommunityIcons name="map-marker-path" size={17} color="#FFFFFF" />
+            </View>
+            <Text style={styles.logisticsPromiseText}>Track</Text>
+          </View>
+        </View>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Open logistics donation"
+          onPress={onOpenLogistics}
+          style={({ pressed }) => [styles.logisticsHubAction, pressed ? styles.eventFeedPressed : null]}
+        >
+          <View style={styles.logisticsHubActionCopy}>
+            <Text style={styles.logisticsHubActionText}>Explore logistics donation</Text>
+            <Text style={styles.logisticsHubActionMeta}>Start a new donation or view its progress</Text>
+          </View>
+          <View style={styles.logisticsHubActionArrow}>
+            <MaterialCommunityIcons name="arrow-right" size={18} color="#FFFFFF" />
+          </View>
+        </Pressable>
+      </LinearGradient>
+    </View>
   );
 }
 
 function DonationHomeOverview({
   roles,
-  completedDrives = [],
+  drives = [],
+  registeredDrives = [],
+  activeDonationCount = 0,
   onOpenDonationDetails,
+  onOpenLogistics,
 }) {
-  const [eventSortOrder, setEventSortOrder] = React.useState('latest');
+  const [searchQuery, setSearchQuery] = React.useState('');
+  const [eventSortOrder, setEventSortOrder] = React.useState('soonest');
   const [eventVisibilityFilter, setEventVisibilityFilter] = React.useState('all');
+  const [isFilterSheetOpen, setIsFilterSheetOpen] = React.useState(false);
+  const activeFilterCount = Number(eventSortOrder !== 'soonest') + Number(eventVisibilityFilter !== 'all');
+  const allEventDrives = React.useMemo(() => {
+    const byId = new Map();
+    [...(drives || []), ...(registeredDrives || [])].filter(Boolean).forEach((drive) => {
+      const id = Number(drive?.donation_drive_id);
+      const key = Number.isFinite(id) && id > 0
+        ? `drive-${id}`
+        : `${drive?.event_title || 'event'}-${drive?.start_date || drive?.updated_at || ''}`;
+      const current = byId.get(key) || {};
+      byId.set(key, {
+        ...current,
+        ...drive,
+        registration: drive?.registration || current?.registration || null,
+      });
+    });
+    return Array.from(byId.values());
+  }, [drives, registeredDrives]);
   const visibleEventDrives = React.useMemo(() => {
     const seen = new Set();
-    const eventDonationDrives = (completedDrives || [])
+    const normalizedSearch = searchQuery.trim().toLowerCase();
+    const eventDonationDrives = allEventDrives
       .filter(Boolean)
       .filter((drive) => {
         const driveId = Number(drive?.donation_drive_id);
@@ -1337,36 +1556,104 @@ function DonationHomeOverview({
         if (eventVisibilityFilter === 'public') return isPublic;
         if (eventVisibilityFilter === 'private') return !isPublic;
         return true;
+      })
+      .filter((drive) => {
+        if (!normalizedSearch) return true;
+        const searchable = [
+          drive?.event_title,
+          getDriveOrganizationLabel(drive),
+          getDriveLocationLabel(drive),
+        ].map((value) => String(value || '').toLowerCase()).join(' ');
+        return searchable.includes(normalizedSearch);
       });
 
     return sortDonationEventsByDate(eventDonationDrives, eventSortOrder);
-  }, [completedDrives, eventSortOrder, eventVisibilityFilter]);
+  }, [allEventDrives, eventSortOrder, eventVisibilityFilter, searchQuery]);
 
   return (
     <View style={[styles.flowScreen, styles.donationEventBrowserScreen]}>
-      <ScrollView
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.donationEventBrowserContent}
-      >
-        <View style={styles.donationEventBrowserFilters}>
-          <View style={styles.donationEventBrowserFilterCell}>
-            <DonationFilterDropdown
-              roles={roles}
-              label="Sort"
-              value={eventSortOrder}
-              options={DONATION_EVENT_SORT_OPTIONS}
-              onChange={setEventSortOrder}
-            />
+      <View style={styles.donationEventBrowserContent}>
+        <LinearGradient
+          colors={[theme.colors.palette.wine900, theme.colors.palette.wine700]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.donationExploreHero}
+        >
+          <View pointerEvents="none" style={styles.donationExploreGlow} />
+          <View style={styles.donationExploreIcon}>
+            <MaterialCommunityIcons name="hand-heart-outline" size={24} color="#FFFFFF" />
           </View>
-          <View style={styles.donationEventBrowserFilterCell}>
-            <DonationFilterDropdown
-              roles={roles}
-              label="Event type"
-              value={eventVisibilityFilter}
-              options={DONATION_EVENT_VISIBILITY_OPTIONS}
-              onChange={setEventVisibilityFilter}
-            />
+          <View style={styles.donationExploreCopy}>
+            <Text style={styles.donationExploreTitle}>Find a donation event</Text>
+            <Text style={styles.donationExploreText}>Explore events and choose how you want to join.</Text>
           </View>
+        </LinearGradient>
+
+        <View style={styles.eventSearchControlRow}>
+          <View style={[styles.eventSearchBar, { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder }]}>
+            <MaterialCommunityIcons name="magnify" size={21} color={roles.iconPrimaryColor} />
+            <TextInput
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder="Find an event..."
+              placeholderTextColor={roles.metaText}
+              returnKeyType="search"
+              style={[styles.eventSearchInput, { color: roles.headingText }]}
+            />
+            {searchQuery ? (
+              <Pressable accessibilityLabel="Clear event search" hitSlop={8} onPress={() => setSearchQuery('')}>
+                <MaterialCommunityIcons name="close-circle" size={19} color={roles.metaText} />
+              </Pressable>
+            ) : null}
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Filter events${activeFilterCount ? `, ${activeFilterCount} active` : ''}`}
+            onPress={() => setIsFilterSheetOpen(true)}
+            style={({ pressed }) => [
+              styles.eventFilterButton,
+              {
+                backgroundColor: activeFilterCount ? roles.primaryActionBackground : roles.iconPrimarySurface,
+                borderColor: activeFilterCount ? roles.primaryActionBackground : roles.defaultCardBorder,
+              },
+              pressed ? styles.eventFeedPressed : null,
+            ]}
+          >
+            <MaterialCommunityIcons
+              name="tune-variant"
+              size={21}
+              color={activeFilterCount ? roles.primaryActionText : roles.iconPrimaryColor}
+            />
+            {activeFilterCount ? (
+              <View style={styles.eventFilterCountBadge}>
+                <Text style={styles.eventFilterCountText}>{activeFilterCount}</Text>
+              </View>
+            ) : null}
+          </Pressable>
+        </View>
+
+        <DonationEventFilterSheet
+          roles={roles}
+          visible={isFilterSheetOpen}
+          sortOrder={eventSortOrder}
+          visibilityFilter={eventVisibilityFilter}
+          onChangeSort={setEventSortOrder}
+          onChangeVisibility={setEventVisibilityFilter}
+          onReset={() => {
+            setEventSortOrder('soonest');
+            setEventVisibilityFilter('all');
+          }}
+          onClose={() => setIsFilterSheetOpen(false)}
+        />
+
+        <View style={styles.eventResultsHeading}>
+          <View>
+            <Text style={[styles.sectionEyebrow, { color: roles.primaryActionBackground }]}>DONATION EVENTS</Text>
+            <Text style={[styles.sectionHeading, { color: roles.headingText }]}>Available events</Text>
+          </View>
+          <Text style={[styles.eventResultCount, { color: roles.metaText }]}>
+            {visibleEventDrives.length} {visibleEventDrives.length === 1 ? 'event' : 'events'}
+          </Text>
         </View>
 
         {visibleEventDrives.length ? (
@@ -1382,11 +1669,17 @@ function DonationHomeOverview({
           </View>
         ) : (
           <DonationEventsEmptyState
-            title="No hair donation events yet."
-            message="Events appear here after you are marked present or after an event donation is completed."
+            title={searchQuery ? 'No matching events' : 'No events available yet'}
+            message={searchQuery ? 'Try another event name or location.' : 'New donation events will appear here when they are published.'}
           />
         )}
-      </ScrollView>
+
+        <LogisticsDonationSection
+          roles={roles}
+          activeDonationCount={activeDonationCount}
+          onOpenLogistics={onOpenLogistics}
+        />
+      </View>
     </View>
   );
 /*
@@ -3286,16 +3579,13 @@ function MyJoinedDonationsScreen({
   logisticsSettings = null,
   donationItems = [],
   onViewDonation,
+  onAddDonation,
+  isPreparingDonation = false,
+  onBack,
 }) {
-  const [sendOffMapFailed, setSendOffMapFailed] = React.useState(false);
-  const [isSendOffExpanded, setIsSendOffExpanded] = React.useState(false);
   const shippingFeeNote = getShippingFeeNote();
   const sendOffAddressRows = React.useMemo(
     () => getLogisticsSummaryRows(logisticsSettings),
-    [logisticsSettings]
-  );
-  const sendOffMapPreviewUrl = React.useMemo(
-    () => buildStaticMapPreviewUrl(logisticsSettings),
     [logisticsSettings]
   );
   const independentDonationItems = React.useMemo(() => (
@@ -3306,83 +3596,171 @@ function MyJoinedDonationsScreen({
       && !isClosedDonationStatus(item?.submission?.status)
     ))
   ), [donationItems]);
-  React.useEffect(() => {
-    setSendOffMapFailed(false);
-  }, [sendOffMapPreviewUrl]);
-
   return (
     <View style={[styles.flowScreen, styles.logisticHistoryScreen]}>
-      <View style={[styles.logisticLocationCard, { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder }]}>
+      <View style={styles.logisticScreenHeader}>
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel={isSendOffExpanded ? 'Collapse send-off location details' : 'Expand send-off location details'}
-          onPress={() => setIsSendOffExpanded((current) => !current)}
-          style={styles.logisticLocationToggle}
+          accessibilityLabel="Back to all donation options"
+          onPress={onBack}
+          style={[styles.logisticBackButton, { backgroundColor: roles.iconPrimarySurface }]}
         >
-          <View style={styles.logisticLocationToggleCopy}>
-            <View style={[styles.upcomingDonationIcon, { backgroundColor: roles.iconPrimarySurface }]}>
-              <MaterialCommunityIcons name="map-marker-radius-outline" size={24} color={roles.iconPrimaryColor} />
-            </View>
-            <View style={styles.upcomingDonationCopy}>
-              <Text style={[styles.upcomingDonationTitle, { color: roles.headingText }]} numberOfLines={1}>
-                Send-off location
-              </Text>
-            </View>
-          </View>
-          <MaterialCommunityIcons
-            name={isSendOffExpanded ? 'chevron-up' : 'chevron-down'}
-            size={24}
-            color={roles.iconPrimaryColor}
-          />
+          <MaterialCommunityIcons name="arrow-left" size={21} color={roles.iconPrimaryColor} />
         </Pressable>
+        <View style={styles.logisticScreenHeaderCopy}>
+          <Text style={[styles.sectionEyebrow, { color: roles.primaryActionBackground }]}>LOGISTICS DONATION</Text>
+          <Text style={[styles.logisticScreenTitle, { color: roles.headingText }]}>Send your hair donation</Text>
+          <Text style={[styles.logisticScreenSubtitle, { color: roles.metaText }]}>Create and track a donation without joining an event.</Text>
+        </View>
+      </View>
 
-        {isSendOffExpanded ? (
-          <View style={styles.logisticLocationBody}>
-            <Text style={[styles.upcomingDonationBody, { color: roles.bodyText }]}>
-              {shippingFeeNote}
-            </Text>
-            {sendOffMapPreviewUrl && !sendOffMapFailed ? (
-              <View style={[styles.eventMapFrame, { backgroundColor: roles.supportCardBackground, borderColor: roles.defaultCardBorder }]}>
-                <Image
-                  source={{ uri: sendOffMapPreviewUrl }}
-                  style={styles.eventMapImage}
-                  resizeMode="cover"
-                  onError={() => setSendOffMapFailed(true)}
-                />
+      <LinearGradient
+        colors={[theme.colors.palette.wine900, theme.colors.palette.wine700]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.logisticWelcomeCard}
+      >
+        <View pointerEvents="none" style={styles.logisticWelcomeGlow} />
+        <View style={styles.logisticWelcomeHeader}>
+          <View style={styles.logisticWelcomeIcon}>
+            <MaterialCommunityIcons name="gift-outline" size={27} color="#FFFFFF" />
+          </View>
+          <View style={styles.logisticWelcomeCopy}>
+            <Text style={styles.logisticWelcomeTitle}>Your donation, your schedule</Text>
+            <Text style={styles.logisticWelcomeText}>Start when your hair is ready. The app will guide you from preparation to receipt.</Text>
+          </View>
+        </View>
+        <View style={styles.logisticGuideRow}>
+          {[
+            { icon: 'text-box-check-outline', label: 'Add details' },
+            { icon: 'send-check-outline', label: 'Send safely' },
+            { icon: 'timeline-check-outline', label: 'Track it' },
+          ].map((step, index) => (
+            <React.Fragment key={step.label}>
+              {index ? <View style={styles.logisticGuideConnector} /> : null}
+              <View style={styles.logisticGuideItem}>
+                <View style={styles.logisticGuideIcon}>
+                  <MaterialCommunityIcons name={step.icon} size={17} color="#FFFFFF" />
+                </View>
+                <Text style={styles.logisticGuideText}>{step.label}</Text>
               </View>
-            ) : (
-              <View style={[styles.eventMapFrame, { backgroundColor: roles.supportCardBackground, borderColor: roles.defaultCardBorder }]}>
-                <View style={styles.eventMapFallback}>
-                  <MaterialCommunityIcons name="map-marker-radius-outline" size={28} color={roles.iconPrimaryColor} />
-                  <Text style={[styles.flowMetaText, { color: roles.bodyText }]}>
-                    {sendOffMapPreviewUrl
-                      ? 'Map preview could not load right now.'
-                      : 'Map coordinates are not available yet.'}
-                  </Text>
+            </React.Fragment>
+          ))}
+        </View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Start a logistics donation"
+          disabled={isPreparingDonation}
+          onPress={onAddDonation}
+          style={({ pressed }) => [
+            styles.logisticWelcomeAction,
+            pressed ? styles.eventFeedPressed : null,
+            isPreparingDonation ? styles.logisticWelcomeActionDisabled : null,
+          ]}
+        >
+          <View style={styles.logisticWelcomeActionIcon}>
+            <MaterialCommunityIcons name={isPreparingDonation ? 'progress-clock' : 'plus'} size={19} color="#FFFFFF" />
+          </View>
+          <View style={styles.logisticWelcomeActionCopy}>
+            <Text style={styles.logisticWelcomeActionText}>
+              {isPreparingDonation ? 'Checking your latest result' : 'Start a logistics donation'}
+            </Text>
+            <Text style={styles.logisticWelcomeActionMeta}>
+              {isPreparingDonation ? 'Please wait a moment' : 'Add details and choose how to send it'}
+            </Text>
+          </View>
+          <View style={styles.logisticWelcomeActionArrow}>
+            <MaterialCommunityIcons name="arrow-right" size={19} color="#FFFFFF" />
+          </View>
+        </Pressable>
+      </LinearGradient>
+
+      <View style={styles.logisticSectionHeading}>
+        <Text style={[styles.sectionEyebrow, { color: roles.primaryActionBackground }]}>BEFORE YOU SEND</Text>
+        <Text style={[styles.sectionHeading, { color: roles.headingText }]}>Prepare your donation</Text>
+      </View>
+
+      <View style={styles.logisticPrepGrid}>
+        {[
+          { icon: 'weather-sunny', title: 'Clean and dry', body: 'Hair must be fully dry.' },
+          { icon: 'content-cut', title: 'Tie securely', body: 'Keep the hair together.' },
+          { icon: 'package-variant-closed', title: 'Pack safely', body: 'Use a sealed bag.' },
+        ].map((item) => (
+          <View
+            key={item.title}
+            style={[styles.logisticPrepWidget, { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder }]}
+          >
+            <View style={[styles.logisticPrepIcon, { backgroundColor: roles.iconPrimarySurface }]}>
+              <MaterialCommunityIcons name={item.icon} size={20} color={roles.iconPrimaryColor} />
+            </View>
+            <Text style={[styles.logisticPrepTitle, { color: roles.headingText }]}>{item.title}</Text>
+            <Text style={[styles.logisticPrepBody, { color: roles.metaText }]}>{item.body}</Text>
+          </View>
+        ))}
+      </View>
+
+      <View style={styles.logisticSectionHeading}>
+        <Text style={[styles.sectionEyebrow, { color: roles.primaryActionBackground }]}>RECEIVING LOCATION</Text>
+        <Text style={[styles.sectionHeading, { color: roles.headingText }]}>Where your donation goes</Text>
+      </View>
+
+      <View style={[styles.logisticLocationPanel, { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder }]}>
+        <View style={styles.logisticLocationPanelHeader}>
+          <View style={[styles.logisticLocationPanelIcon, { backgroundColor: roles.iconPrimarySurface }]}>
+            <MaterialCommunityIcons name="office-building-marker-outline" size={24} color={roles.iconPrimaryColor} />
+          </View>
+          <View style={styles.logisticLocationPanelCopy}>
+            <Text style={[styles.logisticLocationPanelTitle, { color: roles.headingText }]}>Organization receiving center</Text>
+            <Text style={[styles.logisticLocationPanelBody, { color: roles.metaText }]}>Use this address after choosing your sending method.</Text>
+          </View>
+          <View style={[styles.logisticVerifiedBadge, { backgroundColor: roles.iconPrimarySurface }]}>
+            <MaterialCommunityIcons name="check-decagram" size={15} color={roles.iconPrimaryColor} />
+            <Text style={[styles.logisticVerifiedText, { color: roles.iconPrimaryColor }]}>Verified</Text>
+          </View>
+        </View>
+
+        <LogisticsMapPreview roles={roles} logisticsSettings={logisticsSettings} />
+
+        {sendOffAddressRows.length ? (
+          <View style={styles.logisticContactList}>
+            {sendOffAddressRows.map((row, index) => (
+              <View
+                key={`${row.label}-${row.value}`}
+                style={[
+                  styles.logisticContactRow,
+                  index < sendOffAddressRows.length - 1 ? { borderBottomColor: roles.defaultCardBorder, borderBottomWidth: 1 } : null,
+                ]}
+              >
+                <View style={[styles.logisticContactIcon, { backgroundColor: roles.iconPrimarySurface }]}>
+                  <MaterialCommunityIcons
+                    name={index === 0 ? 'office-building-outline' : index === 1 ? 'map-marker-outline' : 'account-outline'}
+                    size={17}
+                    color={roles.iconPrimaryColor}
+                  />
+                </View>
+                <View style={styles.logisticContactCopy}>
+                  <Text style={[styles.logisticContactLabel, { color: roles.metaText }]}>{row.label}</Text>
+                  <Text style={[styles.logisticContactValue, { color: roles.headingText }]}>{row.value}</Text>
                 </View>
               </View>
-            )}
-            {sendOffAddressRows.length ? (
-              <View style={styles.logisticsTable}>
-                {sendOffAddressRows.map((row) => (
-                  <View key={`${row.label}-${row.value}`} style={[styles.logisticsTableRow, { borderColor: roles.defaultCardBorder }]}>
-                    <Text style={[styles.logisticsTableLabel, { color: roles.metaText }]}>{row.label}</Text>
-                    <Text style={[styles.logisticsTableValue, { color: roles.headingText }]}>{row.value}</Text>
-                  </View>
-                ))}
-              </View>
-            ) : (
-              <Text style={[styles.flowMetaText, { color: roles.bodyText }]}>
-                The send-off address will appear here once logistics settings are available.
-              </Text>
-            )}
+            ))}
           </View>
-        ) : null}
+        ) : (
+          <Text style={[styles.flowMetaText, { color: roles.bodyText }]}>The receiving address will appear here when it is available.</Text>
+        )}
+
+        <View style={[styles.logisticFeeNote, { backgroundColor: roles.iconPrimarySurface }]}>
+          <MaterialCommunityIcons name="information-outline" size={18} color={roles.iconPrimaryColor} />
+          <Text style={[styles.logisticFeeText, { color: roles.bodyText }]}>{shippingFeeNote}</Text>
+        </View>
       </View>
 
       {independentDonationItems.length ? (
       <View style={styles.flowCardList}>
-        <Text style={[styles.summarySectionTitle, { color: roles.headingText }]}>Donation in progress</Text>
+        <View style={styles.logisticSectionHeading}>
+          <Text style={[styles.sectionEyebrow, { color: roles.primaryActionBackground }]}>YOUR DONATIONS</Text>
+          <Text style={[styles.sectionHeading, { color: roles.headingText }]}>In progress</Text>
+        </View>
         {independentDonationItems.map((item) => {
           const primaryPreview = item.previewItems?.[0] || null;
           return (
@@ -3430,7 +3808,22 @@ function MyJoinedDonationsScreen({
           );
         })}
       </View>
-      ) : null}
+      ) : (
+        <LinearGradient
+          colors={[roles.iconPrimarySurface, roles.defaultCardBackground]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={[styles.logisticEmptyCard, { borderColor: roles.defaultCardBorder }]}
+        >
+          <View style={[styles.logisticEmptyIcon, { backgroundColor: roles.defaultCardBackground }]}>
+            <MaterialCommunityIcons name="package-variant-plus" size={28} color={roles.iconPrimaryColor} />
+          </View>
+          <View style={styles.logisticEmptyCopy}>
+            <Text style={[styles.logisticEmptyTitle, { color: roles.headingText }]}>No active logistics donation</Text>
+            <Text style={[styles.logisticEmptyText, { color: roles.metaText }]}>When you start, your progress will appear here.</Text>
+          </View>
+        </LinearGradient>
+      )}
     </View>
   );
 /*
@@ -4263,11 +4656,9 @@ export function DonorDonationStatusScreen() {
   const router = useRouter();
   const routeParams = useLocalSearchParams();
   const { width } = useWindowDimensions();
-  const insets = useSafeAreaInsets();
   const { user, profile, resolvedTheme } = useAuth();
   const isMobileViewport = width < 768;
   const roles = resolveThemeRoles(resolvedTheme, { isMobile: isMobileViewport });
-  const headerPrimaryColor = resolvedTheme?.primaryColor || roles.primaryActionBackground;
   const { unreadCount } = useNotifications({
     role: 'donor',
     userId: user?.id,
@@ -4356,6 +4747,7 @@ export function DonorDonationStatusScreen() {
       getDonorDonationsModuleData({
         userId: user.id,
         databaseUserId: profile?.user_id || null,
+        driveLimit: 50,
       }),
       fetchLatestLogisticsSettings(),
     ]);
@@ -5054,49 +5446,11 @@ export function DonorDonationStatusScreen() {
     if (!drive?.donation_drive_id) return;
     hasManualDonationViewSelectionRef.current = true;
     setActiveDonationTabKey('hair-event');
-
-    const driveId = Number(drive.donation_drive_id);
-    const matchingItem = myDonationItems.find((item) => (
-      Number(item?.drive?.donation_drive_id || item?.submission?.donation_drive_id) === driveId
-    ));
-
-    if (matchingItem) {
-      setSelectedDonationStatusItem({
-        ...matchingItem,
-        originScreen: DONATION_MODULE_SCREEN.EVENTS,
-      });
-      setDonationModuleScreen(DONATION_MODULE_SCREEN.DONATION_STATUS);
-      return;
-    }
-
-    const statusMeta = getDonationCardMeta({ drive });
-    const checkedIn = isRsvpCheckedIn(drive?.registration || null);
-    setSelectedDonationStatusItem({
-      key: `event-drive-${drive.donation_drive_id}`,
-      type: 'drive',
-      submission: null,
-      submissions: [],
-      previewItems: [],
-      drive,
-      title: drive?.event_title || 'Donation drive',
-      organizationName: getDriveOrganizationLabel(drive),
-      recipientName: getDriveOrganizationLabel(drive),
-      dateLabel: getDriveDateLabel(drive),
-      locationLabel: getDriveLocationLabel(drive),
-      imageUrl: drive?.event_image_url || drive?.organization_logo_url || '',
-      statusLabel: checkedIn ? 'Marked present' : statusMeta.label,
-      statusCategory: checkedIn ? 'submitted' : statusMeta.category,
-      statusIcon: checkedIn ? 'account-check-outline' : statusMeta.icon,
-      hairCount: 0,
-      updatedAt: drive?.registration?.rsvp_scanned_at
-        || drive?.registration?.updated_at
-        || drive?.updated_at
-        || drive?.start_date
-        || '',
-      originScreen: DONATION_MODULE_SCREEN.EVENTS,
+    router.push({
+      pathname: '/donor/drives/[driveId]',
+      params: { driveId: String(drive.donation_drive_id) },
     });
-    setDonationModuleScreen(DONATION_MODULE_SCREEN.DONATION_STATUS);
-  }, [myDonationItems]);
+  }, [router]);
   const handleOpenLogisticDonationDetails = React.useCallback((item) => {
     if (!item?.submission?.submission_id) return;
     setActiveDonationTabKey('logistic');
@@ -5255,6 +5609,11 @@ export function DonorDonationStatusScreen() {
   const handleAddLogisticDonation = React.useCallback(async () => {
     if (isPreparingLogisticDonation) return;
 
+    if (!isProfileComplete) {
+      router.navigate('/profile');
+      return;
+    }
+
     let eligibilityData = moduleDataRef.current || moduleData;
     if (!eligibilityData) {
       setIsPreparingLogisticDonation(true);
@@ -5270,6 +5629,14 @@ export function DonorDonationStatusScreen() {
     );
     const freshIsAiEligible = Boolean(eligibilityData?.isAiEligible);
 
+    if (eligibilityData?.hasOngoingDonation) {
+      setModuleFeedback({
+        message: 'You already have a donation in progress. Open it below to view the latest update.',
+        variant: 'info',
+      });
+      return;
+    }
+
     if (!freshHasHairScanLog || !freshIsAiEligible) {
       setIsHairEligibilityPromptOpen(true);
       return;
@@ -5281,7 +5648,7 @@ export function DonorDonationStatusScreen() {
     setSelectedRecipient({ type: 'organization', patient: null });
     setSelectedDonationStatusItem(null);
     setIsDonationMethodModalOpen(true);
-  }, [isPreparingLogisticDonation, loadModuleData, moduleData]);
+  }, [isPreparingLogisticDonation, isProfileComplete, loadModuleData, moduleData, router]);
 
   const handleChooseLogisticMethod = React.useCallback((method) => {
     setSelectedLogisticMethod(method);
@@ -6544,7 +6911,7 @@ export function DonorDonationStatusScreen() {
 
   // â”€â”€ Render
   const donationFlowContent = React.useMemo(() => {
-    if (!isProfileComplete) {
+    if (!isProfileComplete && effectiveDonationModuleScreen !== DONATION_MODULE_SCREEN.EVENTS) {
       return (
         <ProfilePendingCard
           roles={roles}
@@ -6558,10 +6925,16 @@ export function DonorDonationStatusScreen() {
       return (
         <DonationHomeOverview
           roles={roles}
-          completedDrives={(moduleData?.completedEventDrives || []).filter((drive) => (
-            isRsvpCheckedIn(drive?.registration || null)
-          ))}
+          drives={moduleData?.drives || []}
+          registeredDrives={moduleData?.registeredDrives || []}
+          activeDonationCount={myDonationItems.filter((item) => (
+            item?.submission?.submission_id
+            && !Number(item?.submission?.donation_drive_id)
+            && item?.submission?.from_event !== true
+            && !isClosedDonationStatus(item?.submission?.status)
+          )).length}
           onOpenDonationDetails={handleOpenEventDonationDetails}
+          onOpenLogistics={handleShowLogisticTab}
         />
       );
     }
@@ -6674,6 +7047,9 @@ export function DonorDonationStatusScreen() {
           logisticsSettings={moduleData?.logisticsSettings || null}
           donationItems={myDonationItems}
           onViewDonation={handleOpenLogisticDonationDetails}
+          onAddDonation={handleAddLogisticDonation}
+          isPreparingDonation={isPreparingLogisticDonation}
+          onBack={handleShowHairEventTab}
         />
       );
     }
@@ -6719,6 +7095,9 @@ export function DonorDonationStatusScreen() {
         logisticsSettings={moduleData?.logisticsSettings || null}
         donationItems={myDonationItems}
         onViewDonation={handleOpenLogisticDonationDetails}
+        onAddDonation={handleAddLogisticDonation}
+        isPreparingDonation={isPreparingLogisticDonation}
+        onBack={handleShowHairEventTab}
       />
     );
   }, [
@@ -6729,8 +7108,11 @@ export function DonorDonationStatusScreen() {
     accountDonorName,
     certificate,
     handleEnsureEventRsvp,
+    handleAddLogisticDonation,
     handleOpenEventDonationDetails,
     handleOpenLogisticDonationDetails,
+    handleShowHairEventTab,
+    handleShowLogisticTab,
     handleRemoveSummaryHair,
     handlePrintQrFromScreen,
     handleSaveQrFromScreen,
@@ -6744,6 +7126,7 @@ export function DonorDonationStatusScreen() {
     isAiEligible,
     isGeneratingEventRsvp,
     isGeneratingQr,
+    isPreparingLogisticDonation,
     isLoadingWalkInAvailability,
     isSchedulingDropoff,
     isProfileComplete,
@@ -6753,7 +7136,8 @@ export function DonorDonationStatusScreen() {
     moduleData?.timelineStages,
     moduleData?.parcelImages,
     moduleData?.latestAiEligibility?.reason,
-    moduleData?.completedEventDrives,
+    moduleData?.drives,
+    moduleData?.registeredDrives,
     moduleData?.logisticsSettings,
     myDonationItems,
     pendingWalkInSubmission,
@@ -6777,35 +7161,6 @@ export function DonorDonationStatusScreen() {
     walkInAvailabilityError,
     walkInScheduleReturnScreen,
   ]);
-  const logisticStickyAction = effectiveDonationModuleScreen === DONATION_MODULE_SCREEN.MY_DONATIONS ? (
-    <View
-      pointerEvents="box-none"
-      style={[
-        styles.logisticFabOverlay,
-        { bottom: insets.bottom + DASHBOARD_TAB_BAR_HEIGHT + 22 },
-      ]}
-    >
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Add donation"
-        disabled={isPreparingLogisticDonation}
-        onPress={handleAddLogisticDonation}
-        style={({ pressed }) => [
-          styles.logisticFab,
-          {
-            backgroundColor: roles.primaryActionBackground,
-            opacity: isPreparingLogisticDonation ? 0.72 : pressed ? 0.92 : 1,
-          },
-        ]}
-      >
-        <MaterialCommunityIcons name="plus" size={22} color={roles.primaryActionText} />
-        <Text style={[styles.logisticFabText, { color: roles.primaryActionText }]}>
-          {isPreparingLogisticDonation ? 'Checking eligibility...' : 'Add Donation'}
-        </Text>
-      </Pressable>
-    </View>
-  ) : null;
-
   if (isManualModalOpen) {
     return (
       <DashboardLayout
@@ -6862,7 +7217,7 @@ export function DonorDonationStatusScreen() {
       screenVariant="default"
       refreshing={isRefreshing}
       onRefresh={handleRefreshModuleData}
-      floatingOverlay={logisticStickyAction}
+      floatingOverlay={null}
       loadingOverlay={isLoading ? (
         <DonivraLoadingOverlay visible label="Loading donation details..." />
       ) : null}
@@ -6896,51 +7251,6 @@ export function DonorDonationStatusScreen() {
         />
       ) : null}
       <View style={styles.page}>
-        <View style={[styles.donationTypeTabs, { borderBottomColor: roles.defaultCardBorder }]}>
-          <Pressable
-            onPress={handleShowHairEventTab}
-            style={[
-              styles.donationTypeTab,
-              activeDonationTabKey === 'hair-event'
-                ? [styles.donationTypeTabActive, { borderBottomColor: headerPrimaryColor }]
-                : null,
-            ]}
-          >
-            <Text
-              numberOfLines={1}
-              adjustsFontSizeToFit
-              minimumFontScale={0.9}
-              style={[
-                styles.donationTypeTabText,
-                { color: activeDonationTabKey === 'hair-event' ? headerPrimaryColor : roles.metaText },
-              ]}
-            >
-              Hair Event Donation
-            </Text>
-          </Pressable>
-          <Pressable
-            onPress={handleShowLogisticTab}
-            style={[
-              styles.donationTypeTab,
-              activeDonationTabKey === 'logistic'
-                ? [styles.donationTypeTabActive, { borderBottomColor: headerPrimaryColor }]
-                : null,
-            ]}
-          >
-            <Text
-              numberOfLines={1}
-              adjustsFontSizeToFit
-              minimumFontScale={0.9}
-              style={[
-                styles.donationTypeTabText,
-                { color: activeDonationTabKey === 'logistic' ? headerPrimaryColor : roles.metaText },
-              ]}
-            >
-              Logistic Donation
-            </Text>
-          </Pressable>
-        </View>
-
         {donationFlowContent}
 
           {/* â”€â”€ Profile gate */}
@@ -7518,8 +7828,120 @@ const styles = StyleSheet.create({
     paddingBottom: 108,
   },
   donationEventBrowserContent: {
-    gap: theme.spacing.md,
+    gap: theme.spacing.lg,
     paddingBottom: theme.spacing.xl,
+  },
+  donationExploreHero: {
+    minHeight: 112,
+    borderRadius: 22,
+    padding: theme.spacing.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    overflow: 'hidden',
+    ...theme.shadows.card,
+  },
+  donationExploreGlow: {
+    position: 'absolute',
+    width: 150,
+    height: 150,
+    borderRadius: 75,
+    right: -52,
+    top: -82,
+    backgroundColor: 'rgba(255,255,255,0.11)',
+  },
+  donationExploreIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.22)',
+  },
+  donationExploreCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 4,
+  },
+  donationExploreTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.titleSm,
+    fontWeight: theme.typography.weights.bold,
+    color: '#FFFFFF',
+  },
+  donationExploreText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+    lineHeight: 18,
+    color: '#F9EDEF',
+  },
+  eventSearchBar: {
+    flex: 1,
+    minHeight: 52,
+    borderWidth: 1,
+    borderRadius: 17,
+    paddingHorizontal: theme.spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    ...theme.shadows.soft,
+  },
+  eventSearchControlRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  eventSearchInput: {
+    flex: 1,
+    minWidth: 0,
+    paddingVertical: theme.spacing.sm,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.bodySm,
+  },
+  eventFilterButton: {
+    width: 52,
+    height: 52,
+    borderWidth: 1,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...theme.shadows.soft,
+  },
+  eventFilterCountBadge: {
+    position: 'absolute',
+    top: 5,
+    right: 5,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    paddingHorizontal: 3,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
+  },
+  eventFilterCountText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 8,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.palette.wine900,
+  },
+  eventResultsHeading: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    gap: theme.spacing.md,
+  },
+  sectionHeading: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.titleSm,
+    fontWeight: theme.typography.weights.bold,
+  },
+  eventResultCount: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    fontWeight: theme.typography.weights.semibold,
   },
   donationEventBrowserHero: {
     borderWidth: 1,
@@ -7613,6 +8035,85 @@ const styles = StyleSheet.create({
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.semantic.bodySm,
     fontWeight: theme.typography.weights.semibold,
+  },
+  eventFilterSheetOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  eventFilterSheet: {
+    borderWidth: 1,
+    borderTopLeftRadius: 26,
+    borderTopRightRadius: 26,
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: 10,
+    paddingBottom: 30,
+    gap: theme.spacing.lg,
+    ...theme.shadows.lg,
+  },
+  eventFilterHandle: {
+    width: 42,
+    height: 4,
+    borderRadius: 2,
+    alignSelf: 'center',
+    backgroundColor: theme.colors.palette.blush200,
+  },
+  eventFilterHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: theme.spacing.md,
+  },
+  eventFilterTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.titleSm,
+    fontWeight: theme.typography.weights.bold,
+  },
+  eventFilterSubtitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    marginTop: 2,
+  },
+  eventFilterClose: {
+    width: 38,
+    height: 38,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  eventFilterGroup: {
+    gap: theme.spacing.sm,
+  },
+  eventFilterGroupTitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.bodySm,
+    fontWeight: theme.typography.weights.bold,
+  },
+  eventFilterOptionGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: theme.spacing.sm,
+  },
+  eventFilterChoice: {
+    minHeight: 44,
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: theme.spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+  },
+  eventFilterChoiceText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+    fontWeight: theme.typography.weights.semibold,
+  },
+  eventFilterActions: {
+    flexDirection: 'row',
+    gap: theme.spacing.sm,
+  },
+  eventFilterAction: {
+    flex: 1,
+    borderRadius: 15,
   },
   donationTypeTabs: {
     minHeight: 44,
@@ -7764,6 +8265,332 @@ const styles = StyleSheet.create({
   logisticHistoryScreen: {
     position: 'relative',
     paddingBottom: 108,
+  },
+  logisticScreenHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: theme.spacing.md,
+  },
+  logisticBackButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  logisticScreenHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
+  },
+  logisticScreenTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.titleSm,
+    fontWeight: theme.typography.weights.bold,
+  },
+  logisticScreenSubtitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 16,
+  },
+  logisticWelcomeCard: {
+    borderRadius: 22,
+    padding: theme.spacing.lg,
+    gap: theme.spacing.lg,
+    overflow: 'hidden',
+    ...theme.shadows.card,
+  },
+  logisticWelcomeGlow: {
+    position: 'absolute',
+    width: 155,
+    height: 155,
+    borderRadius: 78,
+    right: -58,
+    top: -84,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+  },
+  logisticWelcomeHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+  },
+  logisticWelcomeIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.22)',
+  },
+  logisticWelcomeCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 4,
+  },
+  logisticWelcomeTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.bodyLg,
+    fontWeight: theme.typography.weights.bold,
+    color: '#FFFFFF',
+  },
+  logisticWelcomeText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 17,
+    color: '#F9EDEF',
+  },
+  logisticGuideRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+  },
+  logisticGuideConnector: {
+    flex: 1,
+    height: 1,
+    marginHorizontal: 5,
+    marginTop: 18,
+    backgroundColor: 'rgba(255,255,255,0.24)',
+  },
+  logisticGuideItem: {
+    alignItems: 'center',
+    gap: 5,
+  },
+  logisticGuideIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+  },
+  logisticGuideText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    fontWeight: theme.typography.weights.semibold,
+    color: '#FFFFFF',
+  },
+  logisticWelcomeAction: {
+    minHeight: 64,
+    borderRadius: 19,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.3)',
+    ...theme.shadows.soft,
+  },
+  logisticWelcomeActionDisabled: {
+    opacity: 0.74,
+  },
+  logisticWelcomeActionIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.16)',
+  },
+  logisticWelcomeActionCopy: {
+    flex: 1,
+    minWidth: 0,
+    justifyContent: 'center',
+    gap: 2,
+  },
+  logisticWelcomeActionText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.bodySm,
+    fontWeight: theme.typography.weights.bold,
+    lineHeight: 18,
+    color: '#FFFFFF',
+  },
+  logisticWelcomeActionMeta: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 10,
+    lineHeight: 14,
+    color: '#F7E6EB',
+  },
+  logisticWelcomeActionArrow: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.16)',
+    flexShrink: 0,
+  },
+  logisticPrepGrid: {
+    flexDirection: 'row',
+    gap: theme.spacing.sm,
+  },
+  logisticPrepWidget: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 128,
+    borderWidth: 1,
+    borderRadius: 18,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: theme.spacing.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    ...theme.shadows.soft,
+  },
+  logisticPrepIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  logisticPrepTitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: theme.typography.weights.bold,
+    textAlign: 'center',
+  },
+  logisticPrepBody: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    lineHeight: 13,
+    textAlign: 'center',
+  },
+  logisticSectionHeading: {
+    gap: 2,
+  },
+  logisticLocationPanel: {
+    borderWidth: 1,
+    borderRadius: 22,
+    padding: theme.spacing.md,
+    gap: theme.spacing.md,
+    ...theme.shadows.card,
+  },
+  logisticLocationPanelHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  logisticLocationPanelIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  logisticLocationPanelCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  logisticLocationPanelTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.compact.bodySm,
+    fontWeight: theme.typography.weights.bold,
+  },
+  logisticLocationPanelBody: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 10,
+    lineHeight: 14,
+  },
+  logisticVerifiedBadge: {
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  logisticVerifiedText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 8,
+    fontWeight: theme.typography.weights.bold,
+  },
+  logisticContactList: {
+    gap: 0,
+  },
+  logisticContactRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: theme.spacing.sm,
+    paddingVertical: theme.spacing.sm,
+  },
+  logisticContactIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  logisticContactCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  logisticContactLabel: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    fontWeight: theme.typography.weights.bold,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
+  logisticContactValue: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+    lineHeight: 18,
+  },
+  logisticFeeNote: {
+    borderRadius: 14,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: theme.spacing.sm,
+  },
+  logisticFeeText: {
+    flex: 1,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 16,
+  },
+  logisticEmptyCard: {
+    minHeight: 82,
+    borderWidth: 1,
+    borderRadius: 18,
+    padding: theme.spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+  },
+  logisticEmptyIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  logisticEmptyCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
+  },
+  logisticEmptyTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.bodySm,
+    fontWeight: theme.typography.weights.bold,
+  },
+  logisticEmptyText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
   },
   logisticHistoryBanner: {
     borderWidth: 1,
@@ -9711,6 +10538,310 @@ const styles = StyleSheet.create({
     paddingTop: theme.spacing.lg,
     overflow: 'hidden',
     ...theme.shadows.soft,
+  },
+  eventFeedPressable: {
+    borderRadius: 22,
+  },
+  eventFeedPressed: {
+    opacity: 0.9,
+    transform: [{ scale: 0.985 }],
+  },
+  eventFeedCard: {
+    height: 214,
+    borderWidth: 1,
+    borderRadius: 22,
+    overflow: 'hidden',
+    justifyContent: 'flex-end',
+    ...theme.shadows.card,
+  },
+  eventFeedImage: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  eventFeedShade: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  eventFeedTopRow: {
+    position: 'absolute',
+    top: theme.spacing.md,
+    left: theme.spacing.md,
+    right: theme.spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: theme.spacing.sm,
+  },
+  eventFeedVisibilityChip: {
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: 'rgba(255,255,255,0.9)',
+  },
+  eventFeedVisibilityText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.palette.wine900,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  eventFeedRegisteredChip: {
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: 'rgba(91, 11, 28, 0.9)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.3)',
+  },
+  eventFeedRegisteredText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    fontWeight: theme.typography.weights.bold,
+    color: '#FFFFFF',
+  },
+  eventFeedContent: {
+    padding: theme.spacing.lg,
+    paddingRight: 54,
+    gap: 5,
+  },
+  eventFeedTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: 20,
+    lineHeight: 24,
+    fontWeight: theme.typography.weights.bold,
+    color: '#FFFFFF',
+  },
+  eventFeedMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  eventFeedMetaText: {
+    flex: 1,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 11,
+    color: '#FBECEF',
+  },
+  eventFeedArrow: {
+    position: 'absolute',
+    right: theme.spacing.md,
+    bottom: theme.spacing.md,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.94)',
+  },
+  logisticsHubSection: {
+    gap: theme.spacing.md,
+    marginTop: theme.spacing.sm,
+  },
+  sectionHeadingRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    gap: theme.spacing.md,
+  },
+  activeDonationBadge: {
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  activeDonationBadgeText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 10,
+    fontWeight: theme.typography.weights.bold,
+  },
+  logisticsHubCard: {
+    borderRadius: 22,
+    padding: theme.spacing.lg,
+    gap: theme.spacing.md,
+    overflow: 'hidden',
+    ...theme.shadows.card,
+  },
+  logisticsHubGlow: {
+    position: 'absolute',
+    width: 150,
+    height: 150,
+    borderRadius: 75,
+    right: -58,
+    top: -80,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+  },
+  logisticsHubHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+  },
+  logisticsHubIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+  },
+  logisticsHubCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
+  },
+  logisticsHubTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.bodyLg,
+    fontWeight: theme.typography.weights.bold,
+    color: '#FFFFFF',
+  },
+  logisticsHubText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 16,
+    color: '#F9EDEF',
+  },
+  logisticsPromiseRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 4,
+  },
+  logisticsPromiseItem: {
+    alignItems: 'center',
+    gap: 5,
+  },
+  logisticsPromiseIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+  },
+  logisticsPromiseLine: {
+    flex: 1,
+    height: 1,
+    marginHorizontal: 7,
+    backgroundColor: 'rgba(255,255,255,0.24)',
+  },
+  logisticsPromiseText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    fontWeight: theme.typography.weights.semibold,
+    color: '#FFFFFF',
+  },
+  logisticsHubAction: {
+    minHeight: 58,
+    borderRadius: 18,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.3)',
+  },
+  logisticsHubActionCopy: {
+    flex: 1,
+    minWidth: 0,
+    justifyContent: 'center',
+    gap: 1,
+  },
+  logisticsHubActionText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.bodySm,
+    fontWeight: theme.typography.weights.bold,
+    lineHeight: 18,
+    color: '#FFFFFF',
+  },
+  logisticsHubActionMeta: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 10,
+    lineHeight: 14,
+    color: '#F7E6EB',
+  },
+  logisticsHubActionArrow: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.16)',
+    flexShrink: 0,
+  },
+  logisticsNativeMapFrame: {
+    height: 164,
+    borderWidth: 1,
+    borderRadius: 17,
+    overflow: 'hidden',
+  },
+  logisticsNativeMap: {
+    flex: 1,
+  },
+  logisticsMapMarker: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 3,
+    borderColor: '#FFFFFF',
+    ...theme.shadows.soft,
+  },
+  logisticsMapEmpty: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: theme.spacing.lg,
+    gap: 4,
+  },
+  logisticsMapEmptyTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.bodySm,
+    fontWeight: theme.typography.weights.bold,
+  },
+  logisticsMapEmptyText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    textAlign: 'center',
+  },
+  logisticsMapAttribution: {
+    position: 'absolute',
+    left: 5,
+    bottom: 4,
+    borderRadius: 4,
+    paddingHorizontal: 4,
+    paddingVertical: 2,
+    backgroundColor: 'rgba(255,255,255,0.8)',
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 7,
+    color: '#333333',
+  },
+  logisticsDirectionsButton: {
+    position: 'absolute',
+    right: 8,
+    bottom: 8,
+    minHeight: 34,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 11,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    ...theme.shadows.soft,
+  },
+  logisticsDirectionsText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 10,
+    fontWeight: theme.typography.weights.bold,
   },
   hairEligibilityModalCloseBtn: {
     position: 'absolute',

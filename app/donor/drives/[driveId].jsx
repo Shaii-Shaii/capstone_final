@@ -345,7 +345,7 @@ function EventRsvpQrCard({ drive }) {
   const isVoluntary = String(registration?.attendee_type || '').trim().toLowerCase() === 'voluntary';
   const qrPayload = hasRsvp ? buildDriveInvitationQrPayload({ drive, registration }) : '';
 
-  if (!hasRsvp || !qrPayload) return null;
+  if (!hasRsvp || !qrPayload || isPresentRegistration(registration)) return null;
 
   return (
     <View style={[styles.rsvpQrCard, { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder }]}>
@@ -398,7 +398,7 @@ function EventDetailsPanel({
     || 'Join this Donivra hair donation drive and help provide meaningful support to people who need wigs and care.';
   const canDonateAndParticipate = hasHairScanLog && isAiEligible && !ended && !isRegisteredForDrive;
   const canAttendOnly = !ended && !isRegisteredForDrive;
-  const shouldShowRegisteredAction = ended || (isRegisteredForDrive && !actionDisabled);
+  const shouldShowRegisteredAction = ended;
 
   return (
     <View style={styles.detailsBlock}>
@@ -510,6 +510,150 @@ function EventDetailsPanel({
   );
 }
 
+const EVENT_TIMELINE_FALLBACK = [
+  {
+    key: 'cut_and_ship',
+    label: 'Hair received',
+    description: 'Staff scanned your RSVP and accepted your hair donation.',
+    matchKeys: ['cutandship', 'receivedbycompany', 'receivedbyhairforhope'],
+  },
+  {
+    key: 'quality_assessment',
+    label: 'Quality assessment',
+    description: 'The donated hair is reviewed before it moves to production.',
+    matchKeys: ['qualityassessment', 'qaassessment', 'qualitychecking'],
+  },
+  {
+    key: 'wig_production',
+    label: 'Wig production',
+    description: 'Approved hair is prepared and used to create a wig.',
+    matchKeys: ['wigproduction', 'forbundling'],
+  },
+  {
+    key: 'assigned_to_patient',
+    label: 'Assigned to a patient',
+    description: 'The finished wig is matched with an approved patient.',
+    matchKeys: ['assignedtopatient', 'wigdistributionhospitals', 'hospitaldistribution'],
+  },
+  {
+    key: 'received_by_patient',
+    label: 'Received by the patient',
+    description: 'The patient confirms that the wig has been received.',
+    matchKeys: ['receivedbypatient', 'distributiontopatients', 'patientdistribution'],
+  },
+];
+
+const getEventTimelineDescription = (stage = null, index = 0) => (
+  String(stage?.savedNote || stage?.description || stage?.note || '').trim()
+  || EVENT_TIMELINE_FALLBACK[index]?.description
+  || 'The organization will update this step when progress is recorded.'
+);
+
+const normalizeEventTimelineKey = (value = '') => String(value || '')
+  .trim()
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, '');
+
+const resolveEventTimelineStages = (stages = []) => {
+  const mappedStages = EVENT_TIMELINE_FALLBACK.map((fallback) => {
+    const source = (stages || []).find((stage) => {
+      const searchable = normalizeEventTimelineKey(`${stage?.key || ''} ${stage?.label || ''} ${stage?.title || ''}`);
+      return fallback.matchKeys.some((key) => searchable.includes(key));
+    }) || null;
+    return { ...fallback, ...(source || {}) };
+  });
+  const lastCompletedIndex = mappedStages.reduce((latest, stage, index) => (
+    stage.state === 'completed' || stage.evidenceAt || stage.completedAt || stage.displayEvidenceAt
+      ? index
+      : latest
+  ), 0);
+  const currentIndex = Math.min(lastCompletedIndex + 1, mappedStages.length - 1);
+
+  return mappedStages.map((stage, index) => ({
+    ...stage,
+    state: index <= lastCompletedIndex ? 'completed' : index === currentIndex ? 'current' : 'upcoming',
+    progressLabel: index <= lastCompletedIndex ? 'Complete' : index === currentIndex ? 'Ongoing' : 'Waiting',
+  }));
+};
+
+function EventDonationTimeline({ stages = [] }) {
+  const { resolvedTheme } = useAuth();
+  const roles = useResponsiveThemeRoles(resolvedTheme);
+  const resolvedStages = resolveEventTimelineStages(stages);
+
+  return (
+    <View style={styles.eventTimelineSection}>
+      <LinearGradient
+        colors={[theme.colors.palette.wine900, theme.colors.palette.wine700]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.eventTimelineHeader}
+      >
+        <View style={styles.eventTimelineHeaderIcon}>
+          <MaterialCommunityIcons name="timeline-check-outline" size={22} color="#FFFFFF" />
+        </View>
+        <View style={styles.eventTimelineHeaderCopy}>
+          <Text style={styles.eventTimelineEyebrow}>DONATION JOURNEY</Text>
+          <Text style={styles.eventTimelineTitle}>Your donation is now in progress</Text>
+          <Text style={styles.eventTimelineSubtitle}>Updates appear here as the organization processes your donation.</Text>
+        </View>
+      </LinearGradient>
+
+      <View style={styles.eventTimelineList}>
+        {resolvedStages.map((stage, index) => {
+          const isCompleted = stage.state === 'completed';
+          const isCurrent = stage.state === 'current';
+          return (
+            <View key={stage.key || `${stage.label}-${index}`} style={styles.eventTimelineRow}>
+              <View style={styles.eventTimelineMarkerColumn}>
+                <View style={[
+                  styles.eventTimelineMarker,
+                  {
+                    backgroundColor: isCompleted ? roles.primaryActionBackground : roles.defaultCardBackground,
+                    borderColor: isCompleted || isCurrent ? roles.primaryActionBackground : roles.defaultCardBorder,
+                  },
+                ]}>
+                  {isCompleted ? (
+                    <MaterialCommunityIcons name="check" size={14} color={roles.primaryActionText} />
+                  ) : isCurrent ? (
+                    <View style={[styles.eventTimelineCurrentDot, { backgroundColor: roles.primaryActionBackground }]} />
+                  ) : (
+                    <MaterialCommunityIcons name="clock-outline" size={13} color={roles.metaText} />
+                  )}
+                </View>
+                {index < resolvedStages.length - 1 ? (
+                  <View style={[
+                    styles.eventTimelineConnector,
+                    { backgroundColor: isCompleted ? roles.primaryActionBackground : roles.defaultCardBorder },
+                  ]} />
+                ) : null}
+              </View>
+
+              <View style={[
+                styles.eventTimelineCard,
+                {
+                  backgroundColor: isCurrent ? roles.iconPrimarySurface : roles.defaultCardBackground,
+                  borderColor: isCurrent ? roles.primaryActionBackground : roles.defaultCardBorder,
+                },
+              ]}>
+                <View style={styles.eventTimelineCardHeader}>
+                  <Text style={[styles.eventTimelineStageTitle, { color: roles.headingText }]}>{stage.label || stage.title}</Text>
+                  <Text style={[styles.eventTimelineStatus, { color: isCurrent ? roles.primaryActionBackground : roles.metaText }]}>
+                    {stage.progressLabel || stage.statusLabel || (isCompleted ? 'Complete' : 'Waiting')}
+                  </Text>
+                </View>
+                <Text style={[styles.eventTimelineDescription, { color: roles.bodyText }]}>
+                  {getEventTimelineDescription(stage, index)}
+                </Text>
+              </View>
+            </View>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
 export default function DonorDriveDetailRoute() {
   const router = useRouter();
   const params = useLocalSearchParams();
@@ -534,6 +678,7 @@ export default function DonorDriveDetailRoute() {
     requiresPostDonationAnalysis: false,
     hairEligibilityMessage: '',
     hasSubmittedDonationForDrive: false,
+    timelineStages: [],
   });
 
   const driveImageUrl = drive?.event_image_url || drive?.organization_logo_url || '';
@@ -607,10 +752,13 @@ export default function DonorDriveDetailRoute() {
       current || 0,
       nextDrive?.registration?.registration_id ? 1 : 0
     ));
-    const hasSubmittedDonationForDrive = [
+    const matchingEventSubmission = [
       ...(Array.isArray(donationModuleResult.activeSubmissions) ? donationModuleResult.activeSubmissions : []),
       donationModuleResult.latestSubmission,
-    ].filter(Boolean).some((submission) => Number(submission?.donation_drive_id) === Number(numericDriveId));
+    ].filter(Boolean).find((submission) => Number(submission?.donation_drive_id) === Number(numericDriveId)) || null;
+    const hasSubmittedDonationForDrive = Boolean(matchingEventSubmission?.submission_id);
+    const timelineBelongsToDrive = Number(donationModuleResult.activeDrive?.donation_drive_id) === Number(numericDriveId)
+      || Number(donationModuleResult.latestSubmission?.donation_drive_id) === Number(numericDriveId);
 
     setDonationFlowState({
       hasOngoingDonation: Boolean(donationModuleResult.hasOngoingDonation),
@@ -630,6 +778,7 @@ export default function DonorDriveDetailRoute() {
               })()
           : 'Complete a CheckHair scan to check eligibility.',
       hasSubmittedDonationForDrive,
+      timelineStages: timelineBelongsToDrive ? donationModuleResult.timelineStages || [] : [],
     });
     setIsLoading(false);
   }, [driveId, loadRegistrationCount, numericDriveId, profile?.user_id, user?.id]);
@@ -716,6 +865,12 @@ export default function DonorDriveDetailRoute() {
         table: 'Event_Attendees',
         filter: `User_ID=eq.${profile.user_id}`,
       }, onRegistrationRealtimeEvent)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'Hair_Submissions',
+        filter: `User_ID=eq.${profile.user_id}`,
+      }, onRealtimeEvent)
       .on('postgres_changes', {
         event: 'INSERT',
         schema: 'public',
@@ -977,6 +1132,9 @@ export default function DonorDriveDetailRoute() {
               ended={ended}
               onScanPress={() => router.navigate('/donor/donations')}
             />
+            {isDrivePresent ? (
+              <EventDonationTimeline stages={donationFlowState.timelineStages} />
+            ) : null}
         </>
       ) : (
         <Text style={[styles.emptyText, { color: roles.bodyText }]}>Drive details are not available right now.</Text>
@@ -1535,5 +1693,115 @@ const styles = StyleSheet.create({
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.caption,
     fontWeight: theme.typography.weights.semibold,
+  },
+  eventTimelineSection: {
+    marginTop: theme.spacing.xl,
+    gap: theme.spacing.lg,
+  },
+  eventTimelineHeader: {
+    borderRadius: 22,
+    padding: theme.spacing.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    overflow: 'hidden',
+    ...theme.shadows.card,
+  },
+  eventTimelineHeaderIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.22)',
+  },
+  eventTimelineHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
+  },
+  eventTimelineEyebrow: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 1,
+    color: '#F6DCE2',
+  },
+  eventTimelineTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.body,
+    fontWeight: theme.typography.weights.bold,
+    color: '#FFFFFF',
+  },
+  eventTimelineSubtitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 16,
+    color: '#F9EDEF',
+  },
+  eventTimelineList: {
+    gap: 0,
+  },
+  eventTimelineRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+  },
+  eventTimelineMarkerColumn: {
+    width: 38,
+    alignItems: 'center',
+  },
+  eventTimelineMarker: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1,
+  },
+  eventTimelineCurrentDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  eventTimelineConnector: {
+    width: 2,
+    flex: 1,
+    minHeight: 62,
+  },
+  eventTimelineCard: {
+    flex: 1,
+    minWidth: 0,
+    borderWidth: 1,
+    borderRadius: 17,
+    padding: theme.spacing.md,
+    marginBottom: theme.spacing.md,
+    gap: 7,
+    ...theme.shadows.soft,
+  },
+  eventTimelineCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: theme.spacing.sm,
+  },
+  eventTimelineStageTitle: {
+    flex: 1,
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.compact.bodySm,
+    fontWeight: theme.typography.weights.bold,
+  },
+  eventTimelineStatus: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    fontWeight: theme.typography.weights.semibold,
+  },
+  eventTimelineDescription: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: theme.typography.compact.caption * 1.5,
   },
 });
