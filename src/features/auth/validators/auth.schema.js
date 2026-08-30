@@ -1,7 +1,12 @@
 import { z } from 'zod';
+import {
+  hasMinimumSignupEmailLocalPart,
+  normalizeEmailAddress,
+  signupEmailLocalPartMessage,
+} from '../../../utils/emailRules';
 import { isCommonPassword, normalizePasswordComparable, passwordRules } from '../../../utils/passwordRules';
 
-const normalizeEmailValue = (value) => value.trim().toLowerCase();
+const normalizeEmailValue = normalizeEmailAddress;
 
 const hasObviousEmailIssues = (value) => {
   const normalizedValue = normalizeEmailValue(value);
@@ -22,17 +27,6 @@ const hasObviousEmailIssues = (value) => {
   if (topLevelDomain.length < 2) return true;
 
   return false;
-};
-
-const passesGmailProductRule = (value) => {
-  const normalizedValue = normalizeEmailValue(value);
-  const [localPart = '', domainPart = ''] = normalizedValue.split('@');
-
-  if (!['gmail.com', 'googlemail.com'].includes(domainPart)) {
-    return true;
-  }
-
-  return localPart.length >= 6;
 };
 
 export const calculateAgeFromBirthdate = (birthdate) => {
@@ -61,10 +55,11 @@ export const emailField = z.string()
   .refine((value) => !hasObviousEmailIssues(value), {
     message: 'Please enter a valid email address.',
   })
-  .refine((value) => passesGmailProductRule(value), {
-    message: 'Please enter a valid email address.',
-  })
   .transform(normalizeEmailValue);
+
+export const signupEmailField = emailField.refine(hasMinimumSignupEmailLocalPart, {
+  message: signupEmailLocalPartMessage,
+});
 
 export const passwordField = z.string()
   .min(passwordRules.minLength, `Password must be at least ${passwordRules.minLength} characters`)
@@ -136,7 +131,7 @@ export const resetPasswordSchema = z.object({
 
 // Shared Base Signup Schema
 export const baseSignupSchema = z.object({
-  email: emailField,
+  email: signupEmailField,
   password: passwordField,
   confirmPassword: z.string(),
   acceptedLegal: z.boolean().refine((value) => value === true, {

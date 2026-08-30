@@ -6,6 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { AppInput } from '../ui/AppInput';
 import { PasswordInput } from '../ui/PasswordInput';
 import { AppButton } from '../ui/AppButton';
+import { StatusBanner } from '../ui/StatusBanner';
 import { loginSchema } from '../../features/auth/validators/auth.schema';
 import { resolveThemeRoles, theme } from '../../design-system/theme';
 
@@ -16,6 +17,8 @@ export const LoginForm = ({
   onForgotPassword,
   buttonText = 'Log in',
   submitError = '',
+  submitErrorCode = '',
+  isLoginLocked = false,
   onFieldEdit,
   onFieldFocus,
   autofillEmail = '',
@@ -47,7 +50,7 @@ export const LoginForm = ({
   React.useEffect(() => {
     if (!autofillEmail) return;
     setValue('email', autofillEmail, { shouldDirty: true, shouldTouch: true, shouldValidate: true });
-    onFieldEdit?.();
+    onFieldEdit?.('email', autofillEmail);
   }, [autofillEmail, onFieldEdit, setValue]);
 
   const submitButtonNode = (
@@ -58,7 +61,7 @@ export const LoginForm = ({
         return onSubmit(values);
       })}
       loading={isSubmitLoading}
-      disabled={isLoading}
+      disabled={isLoading || isLoginLocked}
       variant="outline"
       size="lg"
       enableHaptics={true}
@@ -97,7 +100,15 @@ export const LoginForm = ({
 
   return (
     <View style={[styles.container, containerStyle]}>
-      {submitError ? (
+      {submitError && submitErrorCode === 'ACCOUNT_LOCKED' ? (
+        <StatusBanner
+          title="Account temporarily locked"
+          message={submitError.replace(/^Account temporarily locked\.\s*/i, '')}
+          variant="error"
+          icon="lock-alert-outline"
+          style={styles.lockoutBanner}
+        />
+      ) : submitError ? (
         <Text style={styles.submitErrorText}>
           {submitError}
         </Text>
@@ -123,7 +134,7 @@ export const LoginForm = ({
               onBlur={onBlur}
               onFocus={() => onFieldFocus?.('email')}
               onChangeText={(nextValue) => {
-                onFieldEdit?.();
+                onFieldEdit?.('email', nextValue);
                 onChange(nextValue);
               }}
               value={value}
@@ -158,7 +169,7 @@ export const LoginForm = ({
               onBlur={onBlur}
               onFocus={() => onFieldFocus?.('password')}
               onChangeText={(nextValue) => {
-                onFieldEdit?.();
+                onFieldEdit?.('password', nextValue);
                 onChange(nextValue);
               }}
               value={value}
@@ -229,6 +240,9 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.compact.bodySm,
     lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.relaxed,
     color: theme.colors.textError,
+  },
+  lockoutBanner: {
+    marginBottom: theme.spacing.md,
   },
   passwordHeaderRow: {
     marginTop: theme.spacing.xs,

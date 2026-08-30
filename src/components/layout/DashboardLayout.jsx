@@ -30,6 +30,9 @@ const SUPPORT_CHAT_ENABLED = false;
 export const DashboardLayout = ({
   children,
   header,
+  leadingContent = null,
+  stickyContent = null,
+  pinnedContent = null,
   footer,
   floatingOverlay = null,
   loadingOverlay = null,
@@ -152,23 +155,47 @@ export const DashboardLayout = ({
           {header}
         </View>
 
-        <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={[styles.scrollContent, { paddingBottom: navBottomPadding }]}
-          bounces={Boolean(onRefresh)}
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-          keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
-          automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
-          refreshControl={onRefresh ? (
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={onRefresh}
-              tintColor={resolvedTheme?.primaryColor || theme.colors.brandPrimary}
-              colors={[resolvedTheme?.primaryColor || theme.colors.brandPrimary]}
-            />
-          ) : undefined}
-        >
+        <View style={styles.scrollStage}>
+          <ScrollView
+            style={styles.scrollView}
+            contentContainerStyle={[
+              styles.scrollContent,
+              { paddingBottom: navBottomPadding },
+            ]}
+            bounces={Boolean(onRefresh)}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+            automaticallyAdjustKeyboardInsets={Platform.OS === 'ios'}
+            stickyHeaderIndices={stickyContent ? [leadingContent ? 1 : 0] : undefined}
+            refreshControl={onRefresh ? (
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                tintColor={resolvedTheme?.primaryColor || theme.colors.brandPrimary}
+                colors={[resolvedTheme?.primaryColor || theme.colors.brandPrimary]}
+              />
+            ) : undefined}
+          >
+            {leadingContent ? (
+              <View
+                style={[
+                  styles.contentStage,
+                  isShortScreen ? styles.contentStageCompact : null,
+                ]}
+              >
+                <View style={[styles.body, isShortScreen ? styles.bodyCompact : null]}>
+                  {leadingContent}
+                </View>
+              </View>
+            ) : null}
+
+            {stickyContent ? (
+              <View style={styles.stickyContentContainer}>
+                {stickyContent}
+              </View>
+            ) : null}
+
             <View
               style={[
                 styles.contentStage,
@@ -184,7 +211,14 @@ export const DashboardLayout = ({
               </View>
             ) : null}
           </View>
-        </ScrollView>
+          </ScrollView>
+
+          {pinnedContent ? (
+            <View pointerEvents="box-none" style={styles.pinnedContentContainer}>
+              {pinnedContent}
+            </View>
+          ) : null}
+        </View>
       </View>
 
       {floatingOverlay && !isLoadingOverlayVisible ? (
@@ -322,6 +356,10 @@ const styles = StyleSheet.create({
   scrollView: {
     flex: 1,
   },
+  scrollStage: {
+    flex: 1,
+    position: 'relative',
+  },
   scrollContent: {
     flexGrow: 1,
   },
@@ -337,6 +375,20 @@ const styles = StyleSheet.create({
   },
   headerContainerCompact: {
     marginBottom: 0,
+  },
+  pinnedContentContainer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 30,
+    backgroundColor: 'transparent',
+    overflow: 'visible',
+  },
+  stickyContentContainer: {
+    zIndex: 28,
+    backgroundColor: 'transparent',
+    paddingVertical: theme.spacing.sm,
   },
   contentStage: {
     position: 'relative',

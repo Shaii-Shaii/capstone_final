@@ -40,6 +40,7 @@ import {
 import { getDonorDonationsModuleData } from '../../src/features/donorDonations.service';
 import { useNotifications } from '../../src/hooks/useNotifications';
 import { useAuth } from '../../src/providers/AuthProvider';
+import { useLanguage } from '../../src/providers/LanguageProvider';
 import { resolveThemeRoles, theme } from '../../src/design-system/theme';
 import { supabase } from '../../src/api/supabase/client';
 import { buildProfileCompletionMeta } from '../../src/features/profile/services/profile.service';
@@ -896,48 +897,45 @@ function LegacyHairCalendarWidget({ hairSubmissions, registeredEventDrives = [],
 
 function HairCalendarWidget({ registeredEventDrives = [], onOpenDate }) {
   const { resolvedTheme } = useAuth();
+  const { t } = useLanguage();
   const roles = resolveThemeRoles(resolvedTheme);
   const bodyFont = resolvedTheme?.fontFamily || theme.typography.fontFamily;
   const headingFont = resolvedTheme?.secondaryFontFamily || theme.typography.fontFamilyDisplay;
   const today = React.useMemo(() => new Date(), []);
   const todayKey = toLocalDateKey(today);
-  const eventsByDate = React.useMemo(() => buildRegisteredEventsByDate(registeredEventDrives), [registeredEventDrives]);
-  const activity = React.useMemo(() => {
+  const activities = React.useMemo(() => {
+    const seenDriveIds = new Set();
     const items = [];
-    eventsByDate.forEach((events, dateKey) => {
-      const latestEvent = events[0] || null;
+
+    (registeredEventDrives || []).forEach((drive, index) => {
+      const driveId = drive?.donation_drive_id || drive?.id || `registered-event-${index}`;
+      const normalizedDriveId = String(driveId);
+      if (seenDriveIds.has(normalizedDriveId)) return;
+      seenDriveIds.add(normalizedDriveId);
+
+      const calendarDate = getRegisteredEventCalendarDate(drive);
+      const dateKey = calendarDate ? toLocalDateKey(calendarDate) : '';
       items.push({
+        drive,
+        driveId: normalizedDriveId,
         dateKey,
-        type: getRegisteredEventActivityType(latestEvent),
-        events,
+        timestamp: new Date(calendarDate || 0).getTime() || 0,
+        type: getRegisteredEventActivityType(drive),
       });
     });
-    const upcoming = items
-      .filter((item) => item.dateKey >= todayKey)
-      .sort((a, b) => a.dateKey.localeCompare(b.dateKey));
-    if (upcoming.length) return upcoming[0];
 
-    return items
-      .sort((a, b) => b.dateKey.localeCompare(a.dateKey))[0] || null;
-  }, [eventsByDate, todayKey]);
-  const drive = activity?.events?.[0] || null;
-  const imageUrl = drive?.event_image_url || drive?.organization_logo_url || '';
-  const [imageFailed, setImageFailed] = React.useState(false);
-  const eventTitle = drive?.event_title || 'Donation event';
-  const statusLabel = activity?.type ? activity.type.replace(/\s+event$/i, '') : '';
-  const eventDateLabel = drive ? formatDriveDate(drive?.start_date, drive?.end_date) : '';
-  const eventLocation = drive?.venue_name || drive?.location_label || '';
+    return items.sort((left, right) => {
+      const leftUpcoming = Boolean(left.dateKey && left.dateKey >= todayKey);
+      const rightUpcoming = Boolean(right.dateKey && right.dateKey >= todayKey);
+      if (leftUpcoming !== rightUpcoming) return leftUpcoming ? -1 : 1;
+      return leftUpcoming
+        ? left.timestamp - right.timestamp
+        : right.timestamp - left.timestamp;
+    });
+  }, [registeredEventDrives, todayKey]);
+  const [failedEventImages, setFailedEventImages] = React.useState({});
 
-  React.useEffect(() => {
-    setImageFailed(false);
-  }, [imageUrl]);
-
-  const handleActivityPress = () => {
-    if (!activity || !drive) return;
-    onOpenDate?.({ dateKey: activity.dateKey, entries: [], events: activity.events });
-  };
-
-  if (!drive) {
+  if (!activities.length) {
     return (
       <View
         style={[
@@ -967,75 +965,95 @@ function HairCalendarWidget({ registeredEventDrives = [], onOpenDate }) {
   }
 
   return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`Open ${eventTitle} event details`}
-      onPress={handleActivityPress}
-      style={({ pressed }) => [
-        styles.compactCalendarCard,
-        {
-          backgroundColor: roles.defaultCardBackground,
-          borderColor: withOpacity(roles.primaryActionBackground, 0.18),
-        },
-        pressed && styles.cardPressed,
-      ]}
-    >
-      <LinearGradient
-        colors={[roles.defaultCardBackground, roles.iconPrimarySurface]}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={styles.compactCalendarGradient}
-      >
-        <View style={[styles.activityEventAccent, { backgroundColor: roles.primaryActionBackground }]} />
-        <View style={styles.activityEventCopy}>
-          <Text style={[styles.activityEventEyebrow, { color: roles.primaryActionBackground, fontFamily: bodyFont }]}>YOUR JOINED EVENT</Text>
-          <Text numberOfLines={2} style={[styles.activityEventTitle, { color: roles.headingText, fontFamily: headingFont }]}>
-            {eventTitle}
-          </Text>
-          <View style={[styles.activityStatusPill, { backgroundColor: withOpacity(roles.primaryActionBackground, 0.1) }]}>
-            <View style={[styles.activityStatusDot, { backgroundColor: roles.primaryActionBackground }]} />
-            <Text style={[styles.activityStatusText, { color: roles.primaryActionBackground, fontFamily: bodyFont }]}>{statusLabel}</Text>
-          </View>
-          <View style={styles.activityEventMetaGroup}>
-            <View style={styles.activityEventMetaRow}>
-              <MaterialCommunityIcons name="calendar-blank-outline" size={15} color={roles.primaryActionBackground} />
-              <Text numberOfLines={1} style={[styles.activityEventMetaText, { color: roles.bodyText, fontFamily: bodyFont }]}>{eventDateLabel}</Text>
-            </View>
-            {eventLocation ? (
-              <View style={styles.activityEventMetaRow}>
-                <MaterialCommunityIcons name="map-marker-outline" size={15} color={roles.primaryActionBackground} />
-                <Text numberOfLines={1} style={[styles.activityEventMetaText, { color: roles.bodyText, fontFamily: bodyFont }]}>{eventLocation}</Text>
-              </View>
-            ) : null}
-          </View>
-        </View>
-        <View style={[styles.activityEventVisual, { backgroundColor: roles.primaryActionBackground }]}>
-          {imageUrl && !imageFailed ? (
-            <Image
-              source={{ uri: imageUrl }}
-              style={styles.activityEventImage}
-              resizeMode="cover"
-              onError={() => setImageFailed(true)}
-            />
-          ) : (
+    <View style={styles.activityEventList}>
+      {activities.map((activity) => {
+        const { drive } = activity;
+        const imageUrl = drive?.event_image_url || drive?.organization_logo_url || '';
+        const eventTitle = drive?.event_title || 'Donation event';
+        const normalizedStatus = String(activity.type || '').toLowerCase();
+        const statusLabel = normalizedStatus.startsWith('attended')
+          ? t('home.attended')
+          : normalizedStatus.startsWith('cancelled')
+            ? t('home.cancelled')
+            : t('home.registered');
+        const eventDateLabel = formatDriveDate(drive?.start_date, drive?.end_date);
+        const eventLocation = drive?.venue_name || drive?.location_label || '';
+        const imageFailed = Boolean(imageUrl && failedEventImages[imageUrl]);
+
+        return (
+          <Pressable
+            key={`home-registered-event-${activity.driveId}`}
+            accessibilityRole="button"
+            accessibilityLabel={`Open ${eventTitle} event details`}
+            onPress={() => onOpenDate?.({ dateKey: activity.dateKey, entries: [], events: [drive] })}
+            style={({ pressed }) => [
+              styles.compactCalendarCard,
+              {
+                backgroundColor: roles.defaultCardBackground,
+                borderColor: withOpacity(roles.primaryActionBackground, 0.18),
+              },
+              pressed && styles.cardPressed,
+            ]}
+          >
             <LinearGradient
-              colors={[theme.colors.dashboardDonorFrom, theme.colors.dashboardDonorTo]}
-              style={styles.activityEventImageFallback}
+              colors={[roles.defaultCardBackground, roles.iconPrimarySurface]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.compactCalendarGradient}
             >
-              <MaterialCommunityIcons name="calendar-heart" size={36} color={roles.primaryActionText} />
+              <View style={[styles.activityEventAccent, { backgroundColor: roles.primaryActionBackground }]} />
+              <View style={styles.activityEventCopy}>
+                <Text style={[styles.activityEventEyebrow, { color: roles.primaryActionBackground, fontFamily: bodyFont }]}>{t('home.joinedEvent')}</Text>
+                <Text numberOfLines={2} style={[styles.activityEventTitle, { color: roles.headingText, fontFamily: headingFont }]}>
+                  {eventTitle}
+                </Text>
+                <View style={[styles.activityStatusPill, { backgroundColor: withOpacity(roles.primaryActionBackground, 0.1) }]}>
+                  <View style={[styles.activityStatusDot, { backgroundColor: roles.primaryActionBackground }]} />
+                  <Text style={[styles.activityStatusText, { color: roles.primaryActionBackground, fontFamily: bodyFont }]}>{statusLabel}</Text>
+                </View>
+                <View style={styles.activityEventMetaGroup}>
+                  <View style={styles.activityEventMetaRow}>
+                    <MaterialCommunityIcons name="calendar-blank-outline" size={15} color={roles.primaryActionBackground} />
+                    <Text numberOfLines={1} style={[styles.activityEventMetaText, { color: roles.bodyText, fontFamily: bodyFont }]}>{eventDateLabel}</Text>
+                  </View>
+                  {eventLocation ? (
+                    <View style={styles.activityEventMetaRow}>
+                      <MaterialCommunityIcons name="map-marker-outline" size={15} color={roles.primaryActionBackground} />
+                      <Text numberOfLines={1} style={[styles.activityEventMetaText, { color: roles.bodyText, fontFamily: bodyFont }]}>{eventLocation}</Text>
+                    </View>
+                  ) : null}
+                </View>
+              </View>
+              <View style={[styles.activityEventVisual, { backgroundColor: roles.primaryActionBackground }]}>
+                {imageUrl && !imageFailed ? (
+                  <Image
+                    source={{ uri: imageUrl }}
+                    style={styles.activityEventImage}
+                    resizeMode="cover"
+                    onError={() => setFailedEventImages((current) => ({ ...current, [imageUrl]: true }))}
+                  />
+                ) : (
+                  <LinearGradient
+                    colors={[theme.colors.dashboardDonorFrom, theme.colors.dashboardDonorTo]}
+                    style={styles.activityEventImageFallback}
+                  >
+                    <MaterialCommunityIcons name="calendar-heart" size={36} color={roles.primaryActionText} />
+                  </LinearGradient>
+                )}
+                <LinearGradient
+                  pointerEvents="none"
+                  colors={['transparent', 'rgba(43, 4, 12, 0.34)']}
+                  style={styles.activityEventImageScrim}
+                />
+                <View style={styles.activityEventArrow}>
+                  <MaterialCommunityIcons name="arrow-top-right" size={18} color={roles.primaryActionBackground} />
+                </View>
+              </View>
             </LinearGradient>
-          )}
-          <LinearGradient
-            pointerEvents="none"
-            colors={['transparent', 'rgba(43, 4, 12, 0.34)']}
-            style={styles.activityEventImageScrim}
-          />
-          <View style={styles.activityEventArrow}>
-            <MaterialCommunityIcons name="arrow-top-right" size={18} color={roles.primaryActionBackground} />
-          </View>
-        </View>
-      </LinearGradient>
-    </Pressable>
+          </Pressable>
+        );
+      })}
+    </View>
   );
 }
 
@@ -2060,6 +2078,7 @@ const buildContextualGreeting = ({ hasHistory, latestCondition, checkedToday, da
 export default function DonorHomeScreen() {
   const router = useRouter();
   const { user, profile, resolvedTheme } = useAuth();
+  const { t } = useLanguage();
   const roles = resolveThemeRoles(resolvedTheme);
   const {
     unreadCount,
@@ -2076,6 +2095,7 @@ export default function DonorHomeScreen() {
   const homeCacheRef = React.useRef(cachedHome);
   const shouldAnimateHomeSections = !homeCacheMatchesUser;
   const [isLoadingHome, setIsLoadingHome] = React.useState(!homeCacheMatchesUser);
+  const [isRefreshingHome, setIsRefreshingHome] = React.useState(false);
   const [homeError, setHomeError] = React.useState('');
   const [donationDrives, setDonationDrives] = React.useState(cachedHome?.donationDrives || []);
   const [hairSubmissions, setHairSubmissions] = React.useState(cachedHome?.hairSubmissions || []);
@@ -2259,6 +2279,16 @@ export default function DonorHomeScreen() {
 
   }, [profile?.user_id, user?.id]);
 
+  const handleRefreshHome = React.useCallback(async () => {
+    if (!user?.id || isRefreshingHome) return;
+    setIsRefreshingHome(true);
+    try {
+      await loadHome({ silent: true, force: true });
+    } finally {
+      setIsRefreshingHome(false);
+    }
+  }, [isRefreshingHome, loadHome, user?.id]);
+
   const homeRealtimeRefreshRef = React.useRef(null);
   const scheduleHomeRealtimeRefresh = React.useCallback(() => {
     if (homeRealtimeRefreshRef.current) {
@@ -2415,21 +2445,8 @@ export default function DonorHomeScreen() {
     router.navigate(item.route);
   };
 
-  return (
-    <DashboardLayout
-      navItems={donorDashboardNavItems}
-      activeNavKey="home"
-      navVariant="donor"
-      onNavPress={handleNavPress}
-      screenVariant="default"
-      showSupportChat={false}
-      chatModalPresentation="centered"
-      draggableChat={true}
-      loadingOverlay={isLoadingHome ? (
-        <DonivraLoadingOverlay visible label="Loading dashboard..." />
-      ) : null}
-      header={<DonorTabHeader unreadCount={unreadCount} />}
-    >
+  const homeLeadingContent = (
+    <>
       {homeError ? (
         <StatusBanner
           variant="info"
@@ -2463,44 +2480,118 @@ export default function DonorHomeScreen() {
         />
       ) : null}
 
+      <AnimatedHomeSection delay={20} style={styles.forYouSection} animate={shouldAnimateHomeSections}>
+        <View style={styles.forYouGluestackCard}>
+          <LinearGradient
+            colors={[roles.primaryActionBackground || '#4b1020', '#7f2039']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={[styles.forYouCard, { borderColor: withOpacity(roles.primaryActionText, 0.34) }]}
+          >
+            <View style={styles.forYouHeader}>
+              <View style={styles.forYouHeaderCopy}>
+                <Text style={[styles.forYouEyebrow, { color: '#f4d8de' }]}>{t('home.hairOverview')}</Text>
+                <Text style={[styles.forYouTitle, { color: roles.primaryActionText }]}>{t('home.latestHairUpdate')}</Text>
+              </View>
+              <View style={styles.forYouSparkle}>
+                <LottieView
+                  source={require('../../src/assets/animations/hair-care-sparkle.json')}
+                  autoPlay={shouldAnimateHomeSections}
+                  loop={shouldAnimateHomeSections}
+                  style={styles.forYouLottie}
+                />
+              </View>
+            </View>
+            <AiInsightCard
+              overview={latestHairOverview}
+              onOpenResult={() => {
+                if (latestHairOverview.entry) {
+                  handleOpenHairLog(latestHairOverview.entry);
+                  return;
+                }
+                router.navigate('/donor/donations');
+              }}
+            />
+          </LinearGradient>
+        </View>
+      </AnimatedHomeSection>
+    </>
+  );
+
+  const homeStickyContent = donationDrives.length ? (
+    <View style={styles.donationEventsSearchRow}>
+      <View
+        style={[
+          styles.donationEventsSearchShell,
+          {
+            backgroundColor: roles.defaultCardBackground,
+            borderColor: withOpacity(roles.primaryActionBackground, 0.16),
+          },
+        ]}
+      >
+        <MaterialCommunityIcons name="magnify" size={20} color={roles.primaryActionBackground} />
+        <TextInput
+          value={donationEventSearchQuery}
+          onChangeText={setDonationEventSearchQuery}
+          placeholder={t('home.searchEvent')}
+          placeholderTextColor={roles.metaText}
+          style={[styles.donationEventsSearchInput, { color: roles.headingText }]}
+          returnKeyType="search"
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        {donationEventSearchQuery ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Clear event search"
+            hitSlop={8}
+            onPress={() => setDonationEventSearchQuery('')}
+          >
+            <MaterialCommunityIcons name="close-circle" size={19} color={roles.metaText} />
+          </Pressable>
+        ) : null}
+      </View>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-12 w-12 rounded-2xl border-0 bg-transparent p-0"
+        accessibilityRole="button"
+        accessibilityLabel="Open event filters"
+        onPress={() => setIsDonationFiltersOpen(true)}
+        style={[
+          styles.donationFilterButton,
+          {
+            backgroundColor: roles.iconPrimarySurface,
+            borderColor: withOpacity(roles.primaryActionBackground, 0.2),
+          },
+        ]}
+      >
+        <MaterialCommunityIcons name="tune-variant" size={20} color={roles.primaryActionBackground} />
+      </Button>
+    </View>
+  ) : null;
+
+  return (
+    <DashboardLayout
+      navItems={donorDashboardNavItems}
+      activeNavKey="home"
+      navVariant="donor"
+      onNavPress={handleNavPress}
+      screenVariant="default"
+      showSupportChat={false}
+      chatModalPresentation="centered"
+      draggableChat={true}
+      refreshing={isRefreshingHome}
+      onRefresh={handleRefreshHome}
+      leadingContent={homeLeadingContent}
+      stickyContent={homeStickyContent}
+      loadingOverlay={isLoadingHome ? (
+        <DonivraLoadingOverlay visible label="Loading dashboard..." />
+      ) : null}
+      header={<DonorTabHeader unreadCount={unreadCount} />}
+    >
       <View style={styles.homeFeed}>
         <>
-            <AnimatedHomeSection delay={20} style={styles.forYouSection} animate={shouldAnimateHomeSections}>
-              <View style={styles.forYouGluestackCard}>
-                <LinearGradient
-                  colors={[roles.primaryActionBackground || '#4b1020', '#7f2039']}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={[styles.forYouCard, { borderColor: withOpacity(roles.primaryActionText, 0.34) }]}
-                >
-                  <View style={styles.forYouHeader}>
-                    <View style={styles.forYouHeaderCopy}>
-                      <Text style={[styles.forYouEyebrow, { color: '#f4d8de' }]}>HAIR CARE OVERVIEW</Text>
-                      <Text style={[styles.forYouTitle, { color: roles.primaryActionText }]}>Your latest hair update</Text>
-                    </View>
-                    <View style={styles.forYouSparkle}>
-                      <LottieView
-                        source={require('../../src/assets/animations/hair-care-sparkle.json')}
-                        autoPlay={shouldAnimateHomeSections}
-                        loop={shouldAnimateHomeSections}
-                        style={styles.forYouLottie}
-                      />
-                    </View>
-                  </View>
-                  <AiInsightCard
-                    overview={latestHairOverview}
-                    onOpenResult={() => {
-                      if (latestHairOverview.entry) {
-                        handleOpenHairLog(latestHairOverview.entry);
-                        return;
-                      }
-                      router.navigate('/donor/donations');
-                    }}
-                  />
-                </LinearGradient>
-              </View>
-            </AnimatedHomeSection>
-
             <Modal
               transparent
               visible={isDonationFiltersOpen}
@@ -2575,41 +2666,8 @@ export default function DonorHomeScreen() {
             </Modal>
 
             <AnimatedHomeSection delay={45} style={styles.section} animate={shouldAnimateHomeSections}>
-              {donationDrives.length ? (
-                <View style={styles.donationEventsControls}>
-                  <View style={styles.donationEventsSearchRow}>
-                    <View style={[styles.donationEventsSearchShell, { backgroundColor: roles.defaultCardBackground, borderColor: withOpacity(roles.primaryActionBackground, 0.16) }]}>
-                      <MaterialCommunityIcons name="magnify" size={20} color={roles.primaryActionBackground} />
-                      <TextInput
-                        value={donationEventSearchQuery}
-                        onChangeText={setDonationEventSearchQuery}
-                        placeholder="Find an event..."
-                        placeholderTextColor={roles.metaText}
-                        style={[styles.donationEventsSearchInput, { color: roles.headingText }]}
-                        returnKeyType="search"
-                        autoCapitalize="none"
-                        autoCorrect={false}
-                      />
-                    </View>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-12 w-12 rounded-2xl border-0 bg-transparent p-0"
-                      accessibilityRole="button"
-                      accessibilityLabel="Open event filters"
-                      onPress={() => setIsDonationFiltersOpen(true)}
-                      style={[
-                        styles.donationFilterButton,
-                        { backgroundColor: roles.iconPrimarySurface, borderColor: withOpacity(roles.primaryActionBackground, 0.2) },
-                      ]}
-                    >
-                      <MaterialCommunityIcons name="tune-variant" size={20} color={roles.primaryActionBackground} />
-                    </Button>
-                  </View>
-                </View>
-              ) : null}
               <View style={styles.feedSectionHeadingRow}>
-                <HomeSectionHeader title="Upcoming donation events" icon="calendar-heart" />
+                <HomeSectionHeader title={t('home.upcomingEvents')} icon="calendar-heart" />
                 {donationEventPageCount > 1 ? (
                   <View style={[styles.eventSwipeHint, { backgroundColor: roles.iconPrimarySurface }]}>
                     <MaterialCommunityIcons name="swap-horizontal" size={15} color={roles.primaryActionBackground} />
@@ -2725,7 +2783,7 @@ export default function DonorHomeScreen() {
               {showHairActivityCalendar ? (
                 <>
                   <HomeSectionHeader
-                    title="Your activity"
+                    title={t('home.yourActivity')}
                     icon="calendar-check-outline"
                     style={styles.calendarSectionHeader}
                   />
@@ -2981,9 +3039,6 @@ const styles = StyleSheet.create({
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.caption,
     fontWeight: theme.typography.weights.semibold,
-  },
-  donationEventsControls: {
-    gap: theme.spacing.md,
   },
   donationEventsSearchRow: {
     flexDirection: 'row',
@@ -4342,6 +4397,9 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.compact.caption,
     lineHeight: theme.typography.compact.caption * theme.typography.lineHeights.relaxed,
     marginBottom: theme.spacing.sm,
+  },
+  activityEventList: {
+    gap: theme.spacing.md,
   },
   compactCalendarCard: {
     borderWidth: 1,

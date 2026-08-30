@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Animated, Image, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, Animated, BackHandler, Image, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Controller, useForm, useWatch } from 'react-hook-form';
 import { useRouter } from 'expo-router';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import Constants from 'expo-constants';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as Speech from 'expo-speech';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { DashboardLayout } from './DashboardLayout';
@@ -20,6 +22,7 @@ import { EmptyDataState } from '../ui/EmptyDataState';
 import { resolveBrandLogoSource, resolveThemeRoles, theme } from '../../design-system/theme';
 import { donorDashboardNavItems } from '../../constants/dashboard';
 import { useAuth } from '../../providers/AuthProvider';
+import { useLanguage } from '../../providers/LanguageProvider';
 import { useNotifications } from '../../hooks/useNotifications';
 import { useDonorHairSubmission } from '../../hooks/useDonorHairSubmission';
 import { fetchRegisteredDonationDrivesByUserId } from '../../features/donorHome.api';
@@ -34,7 +37,7 @@ import {
   hairAnalyzerQuestionSchema,
   buildHairReviewDefaultValues,
 } from '../../features/hairSubmission.schema';
-import { hairAnalyzerQuestionChoices } from '../../features/hairSubmission.constants';
+import { hairAnalyzerQuestionChoices, hairSubmissionImageTypes } from '../../features/hairSubmission.constants';
 import { buildProfileCompletionMeta } from '../../features/profile/services/profile.service';
 import { validateHairPhotosBeforeAnalysis } from '../../features/photoPreflight.service';
 import { logAppEvent } from '../../utils/appErrors';
@@ -46,9 +49,19 @@ let useNativeCameraDevice = null;
 let useNativeFrameProcessor = null;
 let useNativeFaceDetector = null;
 let NativeWorklets = null;
+let NativeSpeechRecognition = null;
 let nativeVisionCameraLoadError = '';
 let nativeFaceCameraLoadError = '';
 const isExpoGoRuntime = Constants?.appOwnership === 'expo';
+
+try {
+  if (!isExpoGoRuntime) {
+    const speechRecognitionModule = require('expo-speech-recognition');
+    NativeSpeechRecognition = speechRecognitionModule?.ExpoSpeechRecognitionModule || null;
+  }
+} catch (_speechRecognitionError) {
+  NativeSpeechRecognition = null;
+}
 
 try {
   if (!isExpoGoRuntime) {
@@ -815,14 +828,14 @@ const getQuestionChoiceIcon = (questionKey = '', optionValue = '', optionIndex =
   return ['leaf', 'water-outline', 'weather-sunny', 'hair-dryer-outline', 'heart-pulse'][optionIndex % 5];
 };
 
-function ChoiceList({ value, options, onChange, multi = false, questionKey = '' }) {
+function ChoiceList({ value, options, onChange, multi = false, questionKey = '', language = 'en' }) {
   const values = Array.isArray(value) ? value : [];
 
   return (
     <View style={styles.choiceList}>
       {options.map((option) => {
         const isActive = multi ? values.includes(option.value) : value === option.value;
-        const detailText = getChoiceDetailText(questionKey, option.value);
+        const detailText = getChoiceDetailText(questionKey, option.value, language);
         const optionIcon = getQuestionChoiceIcon(questionKey, option.value, options.indexOf(option));
 
         return (
@@ -936,6 +949,154 @@ function HairAnalysisTopBar({
   );
 }
 
+function LeaveHairAnalysisModal({ visible, onStay, onLeave, roles }) {
+  const entrance = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (!visible) {
+      entrance.setValue(0);
+      return;
+    }
+
+    Animated.spring(entrance, {
+      toValue: 1,
+      damping: 18,
+      stiffness: 210,
+      mass: 0.75,
+      useNativeDriver: true,
+    }).start();
+  }, [entrance, visible]);
+
+  return (
+    <Modal
+      transparent
+      visible={visible}
+      animationType="fade"
+      presentationStyle="overFullScreen"
+      statusBarTranslucent
+      onRequestClose={onStay}
+    >
+      <View style={styles.leaveAnalysisOverlay}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Continue hair analysis"
+          onPress={onStay}
+          style={styles.leaveAnalysisBackdrop}
+        />
+        <Animated.View
+          style={[
+            styles.leaveAnalysisCard,
+            {
+              backgroundColor: roles.defaultCardBackground,
+              borderColor: roles.defaultCardBorder,
+              opacity: entrance,
+              transform: [
+                { translateY: entrance.interpolate({ inputRange: [0, 1], outputRange: [26, 0] }) },
+                { scale: entrance.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] }) },
+              ],
+            },
+          ]}
+        >
+          <View pointerEvents="none" style={[styles.leaveAnalysisAccent, { backgroundColor: roles.primaryActionBackground }]} />
+          <ScrollView
+            style={styles.leaveAnalysisScroll}
+            showsVerticalScrollIndicator={false}
+            bounces={false}
+            contentContainerStyle={styles.leaveAnalysisContent}
+          >
+            <View style={[styles.leaveAnalysisIcon, { backgroundColor: roles.iconPrimarySurface }]}>
+              <MaterialCommunityIcons name="progress-alert" size={28} color={roles.primaryActionBackground} />
+            </View>
+            <Text style={[styles.leaveAnalysisEyebrow, { color: roles.primaryActionBackground }]}>UNFINISHED HAIR CHECK</Text>
+            <Text style={[styles.leaveAnalysisTitle, { color: roles.headingText }]}>Leave hair analysis?</Text>
+            <Text style={[styles.leaveAnalysisMessage, { color: roles.bodyText }]}>
+              Your answers and captured photos have not been saved. Continue the analysis to keep your progress.
+            </Text>
+
+            <View
+              style={[
+                styles.leaveAnalysisNotice,
+                {
+                  backgroundColor: roles.iconPrimarySurface,
+                  borderColor: roles.defaultCardBorder,
+                },
+              ]}
+            >
+              <View style={[styles.leaveAnalysisNoticeIcon, { backgroundColor: roles.defaultCardBackground }]}>
+                <MaterialCommunityIcons name="information-outline" size={18} color={roles.primaryActionBackground} />
+              </View>
+              <Text style={[styles.leaveAnalysisNoticeText, { color: roles.bodyText }]}>Leaving now will permanently discard this unfinished session.</Text>
+            </View>
+
+            <View style={styles.leaveAnalysisActions}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Continue hair analysis"
+                onPress={onStay}
+                style={({ pressed }) => [
+                  styles.leaveAnalysisButtonShell,
+                  pressed ? styles.leaveAnalysisButtonPressed : null,
+                ]}
+              >
+                <View
+                  pointerEvents="none"
+                  style={[
+                    styles.leaveAnalysisButtonSurface,
+                    { backgroundColor: roles.primaryActionBackground, borderColor: roles.primaryActionBackground },
+                  ]}
+                >
+                  <Text
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.88}
+                    style={[styles.leaveAnalysisStayText, { color: roles.primaryActionText }]}
+                  >
+                    Continue analysis
+                  </Text>
+                  <View style={styles.leaveAnalysisStayIcon}>
+                    <MaterialCommunityIcons name="arrow-right" size={19} color={roles.primaryActionText} />
+                  </View>
+                </View>
+              </Pressable>
+
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Leave without saving"
+                onPress={onLeave}
+                style={({ pressed }) => [
+                  styles.leaveAnalysisButtonShell,
+                  pressed ? styles.leaveAnalysisButtonPressed : null,
+                ]}
+              >
+                <View
+                  pointerEvents="none"
+                  style={[
+                    styles.leaveAnalysisButtonSurface,
+                    {
+                      backgroundColor: roles.iconPrimarySurface,
+                      borderColor: roles.primaryActionBackground,
+                    },
+                  ]}
+                >
+                  <MaterialCommunityIcons name="close-circle-outline" size={18} color={roles.primaryActionBackground} />
+                  <Text
+                    numberOfLines={1}
+                    adjustsFontSizeToFit
+                    minimumFontScale={0.84}
+                    style={[styles.leaveAnalysisExitText, { color: roles.primaryActionBackground }]}
+                  >
+                    Leave without saving
+                  </Text>
+                </View>
+              </Pressable>
+            </View>
+          </ScrollView>
+        </Animated.View>
+      </View>
+    </Modal>
+  );
+}
+
 function ReviewOptionChips({ value, options, onChange }) {
   return (
     <View style={styles.reviewChipGroup}>
@@ -956,12 +1117,100 @@ function ReviewOptionChips({ value, options, onChange }) {
   );
 }
 
+const FILIPINO_CAPTURE_VIEW_COPY = {
+  [hairSubmissionImageTypes.frontView]: {
+    title: 'Harapang kuha',
+    displayTip: 'Ilugay at suklayin paharap ang buhok; tiyaking kita ang mga dulo.',
+    tips: ['Humarap sa camera.', 'Ipakita ang buong buhok at mukha.', 'Huwag magsuot ng clip, cap, o salamin.'],
+  },
+  [hairSubmissionImageTypes.sideProfile]: {
+    title: 'Kaliwang bahagi',
+    displayTip: 'Humara sa kaliwa, ilagay ang buhok sa balikat, at isama ang mga dulo sa frame.',
+    tips: ['Iharap pakaliwa ang ulo.', 'Panatilihing kita ang haba ng buhok.', 'Huwag takpan ang buhok.'],
+  },
+  [hairSubmissionImageTypes.rightSideProfile]: {
+    title: 'Kanang bahagi',
+    displayTip: 'Humara sa kanan, ilagay ang buhok sa balikat, at isama ang mga dulo sa frame.',
+    tips: ['Iharap pakanan ang ulo.', 'Panatilihing kita ang haba ng buhok.', 'Huwag takpan ang buhok.'],
+  },
+  [hairSubmissionImageTypes.hairScalp]: {
+    title: 'Kuha ng anit',
+    displayTip: 'Dahan-dahang hatiin ang buhok upang makita ang tuktok ng ulo.',
+    tips: ['Ipakita ang tuktok ng ulo.', 'Dahan-dahang hatiin ang buhok.', 'Gumamit ng maliwanag na ilaw.'],
+  },
+  [hairSubmissionImageTypes.hairEndsCloseUp]: {
+    title: 'Mga dulo ng buhok',
+    displayTip: 'Pagsamahin ang mga dulo at ilapit ang mga ito sa camera.',
+    tips: ['Ilapit ang mga dulo.', 'Panatilihing malinaw ang kuha.', 'Ipakita ang pagkatuyo o split ends.'],
+  },
+  [hairSubmissionImageTypes.backHair]: {
+    title: 'Likod ng buhok',
+    displayTip: 'Humara palayo, ipagitna ang buhok, at sabihin ang “kuha.”',
+    tips: ['I-enable ang voice capture.', 'Humara palayo sa camera.', 'Ipakita mula leeg hanggang dulo ng buhok.'],
+  },
+};
+
+const getLocalizedCaptureView = (view, language = 'en') => {
+  if (language !== 'fil') return view || {};
+  const localized = FILIPINO_CAPTURE_VIEW_COPY[view?.key];
+  if (!localized) return view || {};
+  return {
+    ...view,
+    tutorialTitle: localized.title,
+    displayTip: localized.displayTip,
+    tutorialTips: localized.tips,
+  };
+};
+
+const FILIPINO_CAMERA_COPY = {
+  'Tap for hands-free capture': 'I-tap para sa hands-free na pagkuha',
+  'Microphone permission is needed': 'Kailangan ang pahintulot sa mikropono',
+  'Voice recognition is unavailable': 'Hindi available ang voice recognition',
+  'Tap the microphone to try again': 'I-tap ang mikropono upang subukan muli',
+  'Get ready': 'Humanda',
+  'Taking photo': 'Kinukunan ang larawan',
+  'Photo failed. Say "capture" to retry': 'Hindi nakuha ang larawan. Sabihin ang “kuha” upang subukan muli',
+  'Listening - say "capture"': 'Nakikinig — sabihin ang “kuha”',
+  'Voice capture requires the development build': 'Kailangan ng development build para sa voice capture',
+  'Requesting microphone access': 'Humihingi ng access sa mikropono',
+  'Microphone permission was not granted': 'Hindi pinayagan ang access sa mikropono',
+  'Voice capture could not be started': 'Hindi masimulan ang voice capture',
+  'Voice unavailable. Tap to retry': 'Hindi available ang voice. I-tap upang subukan muli',
+  'Photo ready': 'Handa na ang larawan',
+  'AI analyzing': 'Sinusuri ng AI',
+  'Capturing...': 'Kinukunan...',
+  'Auto ready': 'Handa ang auto capture',
+  'Scanning...': 'Ini-scan...',
+  'More light': 'Dagdagan ang ilaw',
+  'Photo captured': 'Nakuha na ang larawan',
+  'Capturing automatically...': 'Awtomatikong kinukunan...',
+  'Hold still. Auto capture will run now...': 'Huwag gumalaw. Magsisimula na ang auto capture...',
+  'Center your face and hair.': 'Ipagitna ang iyong mukha at buhok.',
+  'Move near bright, even lighting.': 'Lumipat sa maliwanag at pantay na ilaw.',
+  'Hold still...': 'Huwag gumalaw...',
+  'Multiple subjects detected. Only one person is allowed.': 'Maraming tao ang nakita. Isang tao lamang ang pinapayagan.',
+  'Keep your head steady and upright for a clearer hair analysis photo.': 'Panatilihing tuwid at hindi gumagalaw ang ulo para sa mas malinaw na larawan.',
+  'Side profile detected. Keep hair length and ends visible.': 'Nakita ang side profile. Panatilihing kita ang haba at mga dulo ng buhok.',
+  'Face the camera directly for the front view. Use the next view for your side profile.': 'Humarap nang diretso sa camera. Gamitin ang susunod na kuha para sa side profile.',
+  'Front view detected. Keep your face and hair centered.': 'Nakita ang harapang kuha. Panatilihing nakagitna ang mukha at buhok.',
+};
+
+const getLocalizedCameraCopy = (value, language = 'en') => {
+  if (language !== 'fil') return value;
+  const text = String(value || '');
+  const countdownMatch = text.match(/^Capturing in (\d+)$/);
+  if (countdownMatch) return `Kukunan sa loob ng ${countdownMatch[1]}`;
+  return FILIPINO_CAMERA_COPY[text] || text;
+};
+
 function HairCaptureTutorialModal({
   currentView,
   requiredViews = [],
   visible,
   onClose,
 }) {
+  const { language } = useLanguage();
+  const isFilipino = language === 'fil';
   const activeViewKey = currentView?.key || '';
 
   return (
@@ -978,20 +1227,20 @@ function HairCaptureTutorialModal({
           style={styles.captureTutorialBackdrop}
           onPress={onClose}
           accessibilityRole="button"
-          accessibilityLabel="Close capture tutorial"
+          accessibilityLabel={isFilipino ? 'Isara ang gabay sa pagkuha' : 'Close capture tutorial'}
         />
         <View style={styles.captureTutorialSheet}>
           <View style={styles.captureTutorialHeader}>
             <View style={styles.captureTutorialHeaderCopy}>
-              <Text style={styles.captureTutorialEyebrow}>6 scan photos</Text>
-              <Text style={styles.captureTutorialTitle}>How to show your hair</Text>
+              <Text style={styles.captureTutorialEyebrow}>{isFilipino ? '6 NA LARAWAN PARA SA SCAN' : '6 scan photos'}</Text>
+              <Text style={styles.captureTutorialTitle}>{isFilipino ? 'Paano ipakita ang iyong buhok' : 'How to show your hair'}</Text>
             </View>
             <Pressable
               onPress={onClose}
               hitSlop={10}
               style={({ pressed }) => [styles.captureTutorialClose, pressed ? styles.pressedMuted : null]}
               accessibilityRole="button"
-              accessibilityLabel="Close capture tutorial"
+              accessibilityLabel={isFilipino ? 'Isara ang gabay sa pagkuha' : 'Close capture tutorial'}
             >
               <AppIcon name="close" size="sm" state="inverse" />
             </Pressable>
@@ -1003,8 +1252,9 @@ function HairCaptureTutorialModal({
             showsVerticalScrollIndicator={false}
           >
             {requiredViews.map((view, index) => {
+              const localizedView = getLocalizedCaptureView(view, language);
               const isActive = view?.key === activeViewKey;
-              const tips = Array.isArray(view?.tutorialTips) ? view.tutorialTips : [];
+              const tips = Array.isArray(localizedView?.tutorialTips) ? localizedView.tutorialTips : [];
 
               return (
                 <View
@@ -1014,24 +1264,38 @@ function HairCaptureTutorialModal({
                     isActive ? styles.captureTutorialItemActive : null,
                   ]}
                 >
-                  <View style={styles.captureTutorialNumberWrap}>
-                    <Text style={styles.captureTutorialNumber}>{index + 1}</Text>
+                  <View style={styles.captureTutorialRail}>
+                    <View
+                      style={[
+                        styles.captureTutorialNumberWrap,
+                        !isActive ? styles.captureTutorialNumberWrapIdle : null,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.captureTutorialNumber,
+                          !isActive ? styles.captureTutorialNumberIdle : null,
+                        ]}
+                      >
+                        {index + 1}
+                      </Text>
+                    </View>
+                    {index < requiredViews.length - 1 ? <View style={styles.captureTutorialLine} /> : null}
                   </View>
                   <View style={styles.captureTutorialCopy}>
-                    <Text style={styles.captureTutorialItemTitle}>
-                      {view?.tutorialTitle || view?.label || `Photo ${index + 1}`}
-                    </Text>
+                    <View style={styles.captureTutorialItemHeading}>
+                      <Text style={styles.captureTutorialItemTitle}>
+                        {localizedView?.tutorialTitle || localizedView?.label || `${isFilipino ? 'Larawan' : 'Photo'} ${index + 1}`}
+                      </Text>
+                      {isActive ? <Text style={styles.captureTutorialCurrent}>{isFilipino ? 'Kasalukuyan' : 'Current'}</Text> : null}
+                    </View>
                     <Text style={styles.captureTutorialDisplayTip}>
-                      {view?.displayTip || view?.helperText || 'Keep hair clear and well lit.'}
+                      {localizedView?.displayTip || localizedView?.helperText || (isFilipino ? 'Tiyaking malinaw at maliwanag ang buhok.' : 'Keep hair clear and well lit.')}
                     </Text>
                     {tips.length ? (
-                      <View style={styles.captureTutorialTipRow}>
-                        {tips.slice(0, 3).map((tip) => (
-                          <Text key={tip} style={styles.captureTutorialTip}>
-                            {tip}
-                          </Text>
-                        ))}
-                      </View>
+                      <Text numberOfLines={2} style={styles.captureTutorialTip}>
+                        {tips.slice(0, 2).join('  •  ')}
+                      </Text>
                     ) : null}
                   </View>
                 </View>
@@ -1052,10 +1316,14 @@ function CaptureInstructionPopup({
   visible,
   onClose,
 }) {
+  const { language } = useLanguage();
+  const isFilipino = language === 'fil';
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const [shouldRender, setShouldRender] = useState(visible);
-  const viewTitle = currentView?.tutorialTitle || getViewCaptureLabel(currentView);
-  const displayTip = currentView?.displayTip || 'Keep hair loose, centered, and well lit.';
+  const localizedView = getLocalizedCaptureView(currentView, language);
+  const localizedTips = isFilipino ? localizedView?.tutorialTips || tips : tips;
+  const viewTitle = localizedView?.tutorialTitle || getViewCaptureLabel(localizedView);
+  const displayTip = localizedView?.displayTip || (isFilipino ? 'Ilugay, ipagitna, at tiyaking maliwanag ang buhok.' : 'Keep hair loose, centered, and well lit.');
   const activePhotoNumber = Math.min(completedPhotoCount + 1, requiredCount);
   const popupCardAnimatedStyle = {
     transform: [
@@ -1112,7 +1380,7 @@ function CaptureInstructionPopup({
           style={styles.captureInstructionPopupBackdrop}
           onPress={onClose}
           accessibilityRole="button"
-          accessibilityLabel="Close photo instruction"
+          accessibilityLabel={isFilipino ? 'Isara ang tagubilin sa larawan' : 'Close photo instruction'}
         />
         <Animated.View style={[styles.captureInstructionPopupCard, popupCardAnimatedStyle]}>
           <LinearGradient
@@ -1128,7 +1396,7 @@ function CaptureInstructionPopup({
               </View>
               <View style={styles.captureInstructionPopupCopy}>
                 <Text style={styles.captureInstructionPopupStep}>
-                  PHOTO {activePhotoNumber} OF {requiredCount}
+                  {isFilipino ? 'LARAWAN' : 'PHOTO'} {activePhotoNumber} {isFilipino ? 'SA' : 'OF'} {requiredCount}
                 </Text>
                 <Text style={styles.captureInstructionPopupTitle}>{viewTitle}</Text>
               </View>
@@ -1137,12 +1405,14 @@ function CaptureInstructionPopup({
                 hitSlop={10}
                 style={({ pressed }) => [styles.captureInstructionPopupClose, pressed ? styles.pressedMuted : null]}
                 accessibilityRole="button"
-                accessibilityLabel="Close photo instruction"
+                accessibilityLabel={isFilipino ? 'Isara ang tagubilin sa larawan' : 'Close photo instruction'}
               >
                 <MaterialCommunityIcons name="close" size={19} color="#FFFFFF" />
               </Pressable>
             </View>
-            <Text style={styles.captureInstructionPopupHeroText}>Set up this view before the camera starts.</Text>
+            <Text style={styles.captureInstructionPopupHeroText}>
+              {isFilipino ? 'Ayusin ang posisyong ito bago magsimula ang camera.' : 'Set up this view before the camera starts.'}
+            </Text>
           </LinearGradient>
 
           <View style={styles.captureInstructionPopupBody}>
@@ -1164,14 +1434,14 @@ function CaptureInstructionPopup({
                 <MaterialCommunityIcons name="account-box-outline" size={21} color={theme.colors.brandPrimary} />
               </View>
               <View style={styles.captureInstructionPopupFocusCopy}>
-                <Text style={styles.captureInstructionPopupFocusLabel}>How to position your hair</Text>
+                <Text style={styles.captureInstructionPopupFocusLabel}>{isFilipino ? 'Paano iposisyon ang iyong buhok' : 'How to position your hair'}</Text>
                 <Text style={styles.captureInstructionPopupTip}>{displayTip}</Text>
               </View>
             </View>
 
-            {tips.length ? (
+            {localizedTips.length ? (
               <View style={styles.captureInstructionPopupTips}>
-                {tips.slice(0, 2).map((tip) => (
+                {localizedTips.slice(0, 2).map((tip) => (
                   <View key={tip} style={styles.captureInstructionPopupTipRow}>
                     <View style={styles.captureInstructionPopupCheck}>
                       <MaterialCommunityIcons name="check" size={14} color="#FFFFFF" />
@@ -1184,7 +1454,7 @@ function CaptureInstructionPopup({
 
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Close instructions and start this photo"
+              accessibilityLabel={isFilipino ? 'Isara ang tagubilin at simulan ang larawan' : 'Close instructions and start this photo'}
               onPress={onClose}
               style={({ pressed }) => [styles.captureInstructionPopupAction, pressed ? styles.questionDockButtonPressed : null]}
             >
@@ -1196,7 +1466,7 @@ function CaptureInstructionPopup({
                 style={styles.captureInstructionPopupActionSurface}
               >
                 <MaterialCommunityIcons name="camera-outline" size={20} color="#FFFFFF" />
-                <Text style={styles.captureInstructionPopupActionText}>I&apos;m ready for this photo</Text>
+                <Text style={styles.captureInstructionPopupActionText}>{isFilipino ? 'Handa na ako sa larawang ito' : 'I\'m ready for this photo'}</Text>
                 <View style={styles.captureInstructionPopupActionArrow}>
                   <MaterialCommunityIcons name="arrow-right" size={17} color="#FFFFFF" />
                 </View>
@@ -1215,6 +1485,8 @@ function DonationRequirementsIntroModal({
   onContinue,
   onBack,
 }) {
+  const { language } = useLanguage();
+  const isFilipino = language === 'fil';
   const hasCurrentRequirement = Boolean(donationRequirement?.donation_requirement_id);
   const minimumLength = Number(donationRequirement?.minimum_hair_length_inches);
   const minimumDonorCount = Number(donationRequirement?.minimum_number_donor);
@@ -1222,21 +1494,25 @@ function DonationRequirementsIntroModal({
     ? new Date(donationRequirement.updated_at)
     : null;
   const requirementUpdatedLabel = requirementUpdatedAt && !Number.isNaN(requirementUpdatedAt.getTime())
-    ? `Updated ${requirementUpdatedAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
+    ? `${isFilipino ? 'In-update' : 'Updated'} ${requirementUpdatedAt.toLocaleDateString(isFilipino ? 'fil-PH' : 'en-US', { month: 'short', day: 'numeric' })}`
     : hasCurrentRequirement
-      ? 'Current guide'
-      : 'Guide unavailable';
+      ? (isFilipino ? 'Kasalukuyang gabay' : 'Current guide')
+      : (isFilipino ? 'Hindi available ang gabay' : 'Guide unavailable');
   const restrictedTreatments = [
-    donationRequirement?.chemical_treatment_status === false ? 'chemical treatments' : '',
-    donationRequirement?.colored_hair_status === false ? 'hair color' : '',
-    donationRequirement?.bleached_hair_status === false ? 'bleach' : '',
-    donationRequirement?.rebonded_hair_status === false ? 'rebonding' : '',
+    donationRequirement?.chemical_treatment_status === false ? (isFilipino ? 'chemical treatment' : 'chemical treatments') : '',
+    donationRequirement?.colored_hair_status === false ? (isFilipino ? 'pagkukulay ng buhok' : 'hair color') : '',
+    donationRequirement?.bleached_hair_status === false ? (isFilipino ? 'pag-bleach' : 'bleach') : '',
+    donationRequirement?.rebonded_hair_status === false ? (isFilipino ? 'pag-rebond' : 'rebonding') : '',
   ].filter(Boolean);
   const textureRequirement = String(donationRequirement?.hair_texture_status || '').trim();
   const organizationNotes = String(donationRequirement?.notes || '').trim();
   const treatmentCopy = restrictedTreatments.length
-    ? `Hair with ${restrictedTreatments.join(', ')} may need extra review or may not qualify.`
-    : 'Share any coloring or treatment history so the result can be reviewed correctly.';
+    ? (isFilipino
+      ? `Ang buhok na may ${restrictedTreatments.join(', ')} ay maaaring kailangan ng karagdagang pagsusuri o hindi maging kwalipikado.`
+      : `Hair with ${restrictedTreatments.join(', ')} may need extra review or may not qualify.`)
+    : (isFilipino
+      ? 'Ibahagi ang kasaysayan ng pagkulay o treatment upang masuri nang tama ang resulta.'
+      : 'Share any coloring or treatment history so the result can be reviewed correctly.');
 
   return (
     <Modal
@@ -1262,20 +1538,13 @@ function DonationRequirementsIntroModal({
               <View style={styles.requirementsIntroIconWrap}>
                 <MaterialCommunityIcons name="clipboard-check-outline" size={25} color="#FFFFFF" />
               </View>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Go back"
-                hitSlop={10}
-                onPress={onBack}
-                style={({ pressed }) => [styles.requirementsIntroClose, pressed ? styles.pressedMuted : null]}
-              >
-                <MaterialCommunityIcons name="close" size={20} color="#FFFFFF" />
-              </Pressable>
             </View>
-            <Text style={styles.requirementsIntroEyebrow}>BEFORE YOUR HAIR CHECK</Text>
-            <Text style={styles.requirementsIntroTitle}>Know the donation requirements</Text>
+            <Text style={styles.requirementsIntroEyebrow}>{isFilipino ? 'BAGO ANG PAGSUSURI NG BUHOK' : 'BEFORE YOUR HAIR CHECK'}</Text>
+            <Text style={styles.requirementsIntroTitle}>{isFilipino ? 'Alamin ang mga kailangan sa pagdo-donate' : 'Know the donation requirements'}</Text>
             <Text style={styles.requirementsIntroSubtitle}>
-              These details help the AI compare your photos with the organization&apos;s current guidelines.
+              {isFilipino
+                ? 'Tinutulungan ng mga detalyeng ito ang AI na ihambing ang iyong mga larawan sa kasalukuyang gabay ng organisasyon.'
+                : 'These details help the AI compare your photos with the organization\'s current guidelines.'}
             </Text>
           </LinearGradient>
 
@@ -1285,7 +1554,7 @@ function DonationRequirementsIntroModal({
             showsVerticalScrollIndicator={false}
           >
             <View style={styles.requirementsIntroSectionHeading}>
-              <Text style={styles.requirementsIntroSectionTitle}>What we will check</Text>
+              <Text style={styles.requirementsIntroSectionTitle}>{isFilipino ? 'Mga susuriin namin' : 'What we will check'}</Text>
               <View
                 style={[
                   styles.requirementsIntroCurrentChip,
@@ -1313,7 +1582,9 @@ function DonationRequirementsIntroModal({
               <View style={styles.requirementsIntroUnavailableNotice}>
                 <MaterialCommunityIcons name="cloud-alert-outline" size={20} color={theme.colors.brandPrimary} />
                 <Text style={styles.requirementsIntroUnavailableText}>
-                  The current donation guide could not be loaded. You may continue with a hair health check, but the organization must confirm donation eligibility.
+                  {isFilipino
+                    ? 'Hindi ma-load ang kasalukuyang gabay sa donasyon. Maaari mong ipagpatuloy ang pagsusuri, ngunit ang organisasyon ang magkukumpirma kung kwalipikado ang buhok.'
+                    : 'The current donation guide could not be loaded. You may continue with a hair health check, but the organization must confirm donation eligibility.'}
                 </Text>
               </View>
             ) : null}
@@ -1324,11 +1595,11 @@ function DonationRequirementsIntroModal({
                   <MaterialCommunityIcons name="ruler" size={20} color={theme.colors.brandPrimary} />
                 </View>
                 <View style={styles.requirementsIntroRequirementCopy}>
-                  <Text style={styles.requirementsIntroRequirementLabel}>Hair length</Text>
+                  <Text style={styles.requirementsIntroRequirementLabel}>{isFilipino ? 'Haba ng buhok' : 'Hair length'}</Text>
                   <Text style={styles.requirementsIntroRequirementValue}>
                     {Number.isFinite(minimumLength) && minimumLength > 0
-                      ? `At least ${minimumLength.toFixed(1)} inches`
-                      : 'The organization will confirm the minimum length.'}
+                      ? (isFilipino ? `Hindi bababa sa ${minimumLength.toFixed(1)} pulgada` : `At least ${minimumLength.toFixed(1)} inches`)
+                      : (isFilipino ? 'Kukumpirmahin ng organisasyon ang minimum na haba.' : 'The organization will confirm the minimum length.')}
                   </Text>
                 </View>
               </View>
@@ -1341,9 +1612,11 @@ function DonationRequirementsIntroModal({
                       <MaterialCommunityIcons name="account-group-outline" size={20} color={theme.colors.brandPrimary} />
                     </View>
                     <View style={styles.requirementsIntroRequirementCopy}>
-                      <Text style={styles.requirementsIntroRequirementLabel}>Donor contributions</Text>
+                      <Text style={styles.requirementsIntroRequirementLabel}>{isFilipino ? 'Kontribusyon ng mga donor' : 'Donor contributions'}</Text>
                       <Text style={styles.requirementsIntroRequirementValue}>
-                        A completed wig may need hair from at least {minimumDonorCount} {minimumDonorCount === 1 ? 'donor' : 'donors'}.
+                        {isFilipino
+                          ? `Maaaring kailanganin ng isang kumpletong peluka ang buhok mula sa hindi bababa sa ${minimumDonorCount} donor.`
+                          : `A completed wig may need hair from at least ${minimumDonorCount} ${minimumDonorCount === 1 ? 'donor' : 'donors'}.`}
                       </Text>
                     </View>
                   </View>
@@ -1357,7 +1630,7 @@ function DonationRequirementsIntroModal({
                   <MaterialCommunityIcons name="flask-outline" size={20} color={theme.colors.brandPrimary} />
                 </View>
                 <View style={styles.requirementsIntroRequirementCopy}>
-                  <Text style={styles.requirementsIntroRequirementLabel}>Color and treatments</Text>
+                  <Text style={styles.requirementsIntroRequirementLabel}>{isFilipino ? 'Kulay at mga treatment' : 'Color and treatments'}</Text>
                   <Text style={styles.requirementsIntroRequirementValue}>{treatmentCopy}</Text>
                 </View>
               </View>
@@ -1370,7 +1643,7 @@ function DonationRequirementsIntroModal({
                       <MaterialCommunityIcons name="waves" size={20} color={theme.colors.brandPrimary} />
                     </View>
                     <View style={styles.requirementsIntroRequirementCopy}>
-                      <Text style={styles.requirementsIntroRequirementLabel}>Hair texture</Text>
+                      <Text style={styles.requirementsIntroRequirementLabel}>{isFilipino ? 'Texture ng buhok' : 'Hair texture'}</Text>
                       <Text style={styles.requirementsIntroRequirementValue}>{textureRequirement}</Text>
                     </View>
                   </View>
@@ -1382,7 +1655,7 @@ function DonationRequirementsIntroModal({
               <View style={styles.requirementsIntroNote}>
                 <MaterialCommunityIcons name="information-outline" size={19} color={theme.colors.brandPrimary} />
                 <View style={styles.requirementsIntroNoteCopy}>
-                  <Text style={styles.requirementsIntroNoteTitle}>Organization note</Text>
+                  <Text style={styles.requirementsIntroNoteTitle}>{isFilipino ? 'Tala ng organisasyon' : 'Organization note'}</Text>
                   <Text style={styles.requirementsIntroNoteText}>{organizationNotes}</Text>
                 </View>
               </View>
@@ -1391,7 +1664,9 @@ function DonationRequirementsIntroModal({
             <View style={styles.requirementsIntroReminder}>
               <MaterialCommunityIcons name="shield-check-outline" size={20} color="#FFFFFF" />
               <Text style={styles.requirementsIntroReminderText}>
-                The AI result is a guide. The organization makes the final donation decision.
+                {isFilipino
+                  ? 'Gabay lamang ang resulta ng AI. Ang organisasyon ang gagawa ng huling desisyon tungkol sa donasyon.'
+                  : 'The AI result is a guide. The organization makes the final donation decision.'}
               </Text>
             </View>
           </ScrollView>
@@ -1399,7 +1674,7 @@ function DonationRequirementsIntroModal({
           <View style={styles.requirementsIntroActions}>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel="Continue to hair check questions"
+              accessibilityLabel={isFilipino ? 'Magpatuloy sa mga tanong tungkol sa buhok' : 'Continue to hair check questions'}
               onPress={onContinue}
               style={({ pressed }) => [styles.requirementsIntroContinue, pressed ? styles.questionDockButtonPressed : null]}
             >
@@ -1410,7 +1685,7 @@ function DonationRequirementsIntroModal({
                 end={{ x: 1, y: 1 }}
                 style={styles.requirementsIntroContinueSurface}
               >
-                <Text style={styles.requirementsIntroContinueText}>Continue to questions</Text>
+                <Text style={styles.requirementsIntroContinueText}>{isFilipino ? 'Magpatuloy sa mga tanong' : 'Continue to questions'}</Text>
                 <View style={styles.requirementsIntroContinueIcon}>
                   <MaterialCommunityIcons name="arrow-right" size={18} color="#FFFFFF" />
                 </View>
@@ -1449,12 +1724,25 @@ function LiveHairCameraPanel({
   onRequestPermission,
   onFacesChange,
   onCameraError,
+  onVoiceCaptureStateChange,
+  roles,
 }) {
+  const { language } = useLanguage();
+  const isFilipino = language === 'fil';
+  const speechLanguage = language === 'fil' ? 'fil-PH' : 'en-US';
   const [isCaptureTutorialOpen, setIsCaptureTutorialOpen] = useState(false);
   const [isInstructionPopupVisible, setIsInstructionPopupVisible] = useState(false);
-  const { width: windowWidth } = useWindowDimensions();
-  const cameraStageWidth = Math.min(Math.max(windowWidth - theme.spacing.sm * 2, 320), 520);
-  const cameraStageHeight = Math.min(Math.max(windowWidth * 1.28, 460), 620);
+  const [voiceCaptureEnabled, setVoiceCaptureEnabled] = useState(false);
+  const [isVoiceListening, setIsVoiceListening] = useState(false);
+  const [voiceCountdown, setVoiceCountdown] = useState(0);
+  const [voiceCaptureStatus, setVoiceCaptureStatus] = useState('Tap for hands-free capture');
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const cameraPreviewWidth = Math.min(Math.max(windowWidth - theme.spacing.lg * 2, 300), 520);
+  const cameraStageSpace = windowHeight - (currentPhoto?.uri ? 155 : 340);
+  const cameraStageHeight = Math.min(
+    640,
+    Math.max(cameraPreviewWidth * 1.18, 380, cameraStageSpace)
+  );
   const scanLineProgress = useRef(new Animated.Value(0)).current;
   const statusToneStyle = liveFaceStatus?.valid
     ? styles.liveStatusPillSuccess
@@ -1466,10 +1754,307 @@ function LiveHairCameraPanel({
     : liveFaceStatus?.tone === 'error' || !canUseNativeLiveCamera
       ? styles.liveStatusDotError
       : styles.liveStatusDotActive;
-  const shortViewHint = getViewCaptureLabel(currentView);
-  const hairDisplayTip = currentView?.displayTip || 'Keep hair loose, centered, and well lit.';
-  const currentTutorialTips = Array.isArray(currentView?.tutorialTips) ? currentView.tutorialTips.slice(0, 2) : [];
+  const localizedCurrentView = getLocalizedCaptureView(currentView, language);
+  const shortViewHint = getViewCaptureLabel(localizedCurrentView);
+  const hairDisplayTip = localizedCurrentView?.displayTip || (isFilipino ? 'Ilugay, ipagitna, at tiyaking maliwanag ang buhok.' : 'Keep hair loose, centered, and well lit.');
+  const currentTutorialTips = Array.isArray(localizedCurrentView?.tutorialTips) ? localizedCurrentView.tutorialTips.slice(0, 2) : [];
   const currentViewKey = currentView?.key || currentView?.label || '';
+  const activeCaptureCountdown = voiceCountdown || autoCaptureCountdown;
+  const voiceCaptureEnabledRef = useRef(false);
+  const voiceRecognitionActiveRef = useRef(false);
+  const voiceRecognitionStartingRef = useRef(false);
+  const voiceCountdownActiveRef = useRef(false);
+  const voiceCountdownSessionRef = useRef(0);
+  const voiceRestartTimeoutRef = useRef(null);
+  const currentPhotoUriRef = useRef(currentPhoto?.uri || '');
+  const voiceCaptureBlockedRef = useRef(false);
+  const autoCaptureCountdownRef = useRef(autoCaptureCountdown);
+
+  currentPhotoUriRef.current = currentPhoto?.uri || '';
+  voiceCaptureBlockedRef.current = Boolean(isCapturing || isUploading || isAnalyzing);
+  autoCaptureCountdownRef.current = autoCaptureCountdown;
+
+  const clearVoiceRestartTimer = React.useCallback(() => {
+    if (!voiceRestartTimeoutRef.current) return;
+    clearTimeout(voiceRestartTimeoutRef.current);
+    voiceRestartTimeoutRef.current = null;
+  }, []);
+
+  const startVoiceListening = React.useCallback(async () => {
+    clearVoiceRestartTimer();
+    if (!NativeSpeechRecognition || !voiceCaptureEnabledRef.current) return;
+    if (voiceCountdownActiveRef.current || currentPhotoUriRef.current || voiceCaptureBlockedRef.current) return;
+    if (voiceRecognitionActiveRef.current || voiceRecognitionStartingRef.current) return;
+
+    try {
+      voiceRecognitionStartingRef.current = true;
+      const permission = await NativeSpeechRecognition.getPermissionsAsync();
+      if (!permission?.granted) {
+        voiceRecognitionStartingRef.current = false;
+        setVoiceCaptureEnabled(false);
+        voiceCaptureEnabledRef.current = false;
+        setVoiceCaptureStatus('Microphone permission is needed');
+        return;
+      }
+      if (!NativeSpeechRecognition.isRecognitionAvailable()) {
+        voiceRecognitionStartingRef.current = false;
+        setVoiceCaptureEnabled(false);
+        voiceCaptureEnabledRef.current = false;
+        setVoiceCaptureStatus('Voice recognition is unavailable');
+        return;
+      }
+
+      NativeSpeechRecognition.start({
+        lang: speechLanguage,
+        interimResults: true,
+        continuous: false,
+        maxAlternatives: 3,
+        contextualStrings: language === 'fil'
+          ? ['capture', 'kuha', 'kumuha ng litrato', 'kunan mo']
+          : ['capture', 'take photo', 'take picture'],
+      });
+    } catch (_voiceStartError) {
+      voiceRecognitionStartingRef.current = false;
+      setIsVoiceListening(false);
+      setVoiceCaptureStatus('Tap the microphone to try again');
+    }
+  }, [clearVoiceRestartTimer, language, speechLanguage]);
+
+  const runVoiceCaptureCountdown = React.useCallback(async () => {
+    if (voiceCountdownActiveRef.current || currentPhotoUriRef.current || voiceCaptureBlockedRef.current) return;
+    if (autoCaptureCountdownRef.current > 0) return;
+
+    voiceCountdownActiveRef.current = true;
+    onVoiceCaptureStateChange?.(true);
+    const countdownSession = voiceCountdownSessionRef.current + 1;
+    voiceCountdownSessionRef.current = countdownSession;
+    clearVoiceRestartTimer();
+
+    try {
+      NativeSpeechRecognition?.abort();
+    } catch (_voiceAbortError) {
+      // The recognizer may already have stopped after returning the command.
+    }
+    voiceRecognitionActiveRef.current = false;
+    voiceRecognitionStartingRef.current = false;
+    setIsVoiceListening(false);
+    setVoiceCaptureStatus('Get ready');
+
+    const speakStep = (text) => new Promise((resolve) => {
+      let hasResolved = false;
+      const finish = () => {
+        if (hasResolved) return;
+        hasResolved = true;
+        resolve();
+      };
+      const fallbackTimer = setTimeout(finish, 1800);
+
+      Speech.speak(text, {
+        language: speechLanguage,
+        pitch: 1,
+        rate: 0.82,
+        onDone: () => {
+          clearTimeout(fallbackTimer);
+          finish();
+        },
+        onStopped: () => {
+          clearTimeout(fallbackTimer);
+          finish();
+        },
+        onError: () => {
+          clearTimeout(fallbackTimer);
+          finish();
+        },
+      });
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    for (const count of [3, 2, 1]) {
+      if (voiceCountdownSessionRef.current !== countdownSession || currentPhotoUriRef.current) {
+        voiceCountdownActiveRef.current = false;
+        onVoiceCaptureStateChange?.(false);
+        setVoiceCountdown(0);
+        return;
+      }
+      setVoiceCountdown(count);
+      setVoiceCaptureStatus(`Capturing in ${count}`);
+      await Promise.all([
+        speakStep(String(count)),
+        new Promise((resolve) => setTimeout(resolve, 950)),
+      ]);
+    }
+
+    if (voiceCountdownSessionRef.current !== countdownSession || currentPhotoUriRef.current) {
+      voiceCountdownActiveRef.current = false;
+      onVoiceCaptureStateChange?.(false);
+      setVoiceCountdown(0);
+      return;
+    }
+    setVoiceCountdown(0);
+    setVoiceCaptureStatus('Taking photo');
+    try {
+      await onCapture?.();
+    } catch (_voiceCaptureError) {
+      setVoiceCaptureStatus('Photo failed. Say "capture" to retry');
+    } finally {
+      voiceCountdownActiveRef.current = false;
+      onVoiceCaptureStateChange?.(false);
+    }
+
+    voiceRestartTimeoutRef.current = setTimeout(() => {
+      voiceRestartTimeoutRef.current = null;
+      if (voiceCaptureEnabledRef.current && !currentPhotoUriRef.current) {
+        setVoiceCaptureStatus('Listening - say "capture"');
+        startVoiceListening();
+      }
+    }, 900);
+  }, [clearVoiceRestartTimer, onCapture, onVoiceCaptureStateChange, speechLanguage, startVoiceListening]);
+
+  const handleToggleVoiceCapture = React.useCallback(async () => {
+    if (voiceCaptureEnabledRef.current) {
+      voiceCaptureEnabledRef.current = false;
+      voiceCountdownSessionRef.current += 1;
+      voiceCountdownActiveRef.current = false;
+      onVoiceCaptureStateChange?.(false);
+      clearVoiceRestartTimer();
+      setVoiceCaptureEnabled(false);
+      setIsVoiceListening(false);
+      setVoiceCountdown(0);
+      setVoiceCaptureStatus('Tap for hands-free capture');
+      try {
+        NativeSpeechRecognition?.abort();
+      } catch (_voiceAbortError) {
+        // Recognition is already stopped.
+      }
+      voiceRecognitionActiveRef.current = false;
+      voiceRecognitionStartingRef.current = false;
+      Speech.stop();
+      return;
+    }
+
+    if (!NativeSpeechRecognition) {
+      setVoiceCaptureStatus('Voice capture requires the development build');
+      return;
+    }
+
+    setVoiceCaptureStatus('Requesting microphone access');
+    try {
+      const permission = await NativeSpeechRecognition.requestPermissionsAsync();
+      if (!permission?.granted) {
+        setVoiceCaptureStatus('Microphone permission was not granted');
+        return;
+      }
+
+      voiceCaptureEnabledRef.current = true;
+      setVoiceCaptureEnabled(true);
+      setVoiceCaptureStatus('Listening - say "capture"');
+      startVoiceListening();
+    } catch (_voicePermissionError) {
+      setVoiceCaptureStatus('Voice capture could not be started');
+    }
+  }, [clearVoiceRestartTimer, onVoiceCaptureStateChange, startVoiceListening]);
+
+  useEffect(() => {
+    if (!NativeSpeechRecognition) return undefined;
+
+    const startSubscription = NativeSpeechRecognition.addListener('start', () => {
+      voiceRecognitionActiveRef.current = true;
+      voiceRecognitionStartingRef.current = false;
+      setIsVoiceListening(true);
+      if (!voiceCountdownActiveRef.current) setVoiceCaptureStatus('Listening - say "capture"');
+    });
+    const resultSubscription = NativeSpeechRecognition.addListener('result', (event) => {
+      const heardCaptureCommand = (event?.results || []).some((result) => (
+        /\b(capture|take (?:a |the )?(?:photo|picture)|kuha|kumuha(?: ng litrato)?|kunan mo)\b/i.test(String(result?.transcript || ''))
+      ));
+      if (heardCaptureCommand) runVoiceCaptureCountdown();
+    });
+    const errorSubscription = NativeSpeechRecognition.addListener('error', (event) => {
+      voiceRecognitionActiveRef.current = false;
+      voiceRecognitionStartingRef.current = false;
+      setIsVoiceListening(false);
+      if (event?.error === 'aborted' || voiceCountdownActiveRef.current) return;
+
+      if (event?.error === 'not-allowed') {
+        voiceCaptureEnabledRef.current = false;
+        setVoiceCaptureEnabled(false);
+        setVoiceCaptureStatus('Microphone permission is needed');
+        return;
+      }
+
+      if (['no-speech', 'speech-timeout', 'client'].includes(event?.error)) {
+        if (voiceCaptureEnabledRef.current && !currentPhotoUriRef.current) {
+          clearVoiceRestartTimer();
+          voiceRestartTimeoutRef.current = setTimeout(() => {
+            voiceRestartTimeoutRef.current = null;
+            startVoiceListening();
+          }, 700);
+        }
+        return;
+      }
+
+      voiceCaptureEnabledRef.current = false;
+      setVoiceCaptureEnabled(false);
+      setVoiceCaptureStatus('Voice unavailable. Tap to retry');
+    });
+    const endSubscription = NativeSpeechRecognition.addListener('end', () => {
+      voiceRecognitionActiveRef.current = false;
+      voiceRecognitionStartingRef.current = false;
+      setIsVoiceListening(false);
+      if (!voiceCaptureEnabledRef.current || voiceCountdownActiveRef.current || currentPhotoUriRef.current) return;
+      clearVoiceRestartTimer();
+      voiceRestartTimeoutRef.current = setTimeout(() => {
+        voiceRestartTimeoutRef.current = null;
+        startVoiceListening();
+      }, 550);
+    });
+
+    return () => {
+      startSubscription.remove();
+      resultSubscription.remove();
+      errorSubscription.remove();
+      endSubscription.remove();
+    };
+  }, [clearVoiceRestartTimer, runVoiceCaptureCountdown, startVoiceListening]);
+
+  useEffect(() => {
+    if (currentPhoto?.uri) {
+      onVoiceCaptureStateChange?.(false);
+      clearVoiceRestartTimer();
+      setIsVoiceListening(false);
+      setVoiceCountdown(0);
+      setVoiceCaptureStatus('Photo ready');
+      try {
+        NativeSpeechRecognition?.abort();
+      } catch (_voiceAbortError) {
+        // Recognition has already ended.
+      }
+      voiceRecognitionActiveRef.current = false;
+      voiceRecognitionStartingRef.current = false;
+      return undefined;
+    }
+
+    if (voiceCaptureEnabledRef.current && !voiceCountdownActiveRef.current) {
+      setVoiceCaptureStatus('Listening - say "capture"');
+      startVoiceListening();
+    }
+    return undefined;
+  }, [clearVoiceRestartTimer, currentPhoto?.uri, onVoiceCaptureStateChange, startVoiceListening]);
+
+  useEffect(() => () => {
+    voiceCaptureEnabledRef.current = false;
+    voiceCountdownSessionRef.current += 1;
+    onVoiceCaptureStateChange?.(false);
+    clearVoiceRestartTimer();
+    try {
+      NativeSpeechRecognition?.abort();
+    } catch (_voiceAbortError) {
+      // Recognition has already ended.
+    }
+    voiceRecognitionActiveRef.current = false;
+    voiceRecognitionStartingRef.current = false;
+    Speech.stop();
+  }, [clearVoiceRestartTimer, onVoiceCaptureStateChange]);
 
   useEffect(() => {
     if (currentPhoto?.uri) return undefined;
@@ -1515,7 +2100,12 @@ function LiveHairCameraPanel({
   };
 
   return (
-    <View style={styles.liveCameraPanel}>
+    <View
+      style={[
+        styles.liveCameraPanel,
+        { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder },
+      ]}
+    >
       <HairCaptureTutorialModal
         currentView={currentView}
         requiredViews={requiredViews}
@@ -1530,9 +2120,22 @@ function LiveHairCameraPanel({
         visible={isInstructionPopupVisible}
         onClose={() => setIsInstructionPopupVisible(false)}
       />
-      <View style={[styles.liveCameraStage, { width: cameraStageWidth, height: cameraStageHeight }]}>
+      <View style={[styles.liveCameraStage, { width: '100%', height: cameraStageHeight }]}>
         {currentPhoto?.uri ? (
-          <Image source={{ uri: currentPhoto.uri }} style={styles.liveCameraPreview} resizeMode="cover" />
+          <View style={styles.liveCapturedPreview}>
+            <Image
+              source={{ uri: currentPhoto.uri }}
+              style={styles.liveCapturedPreviewBackdrop}
+              resizeMode="cover"
+              blurRadius={14}
+            />
+            <View pointerEvents="none" style={styles.liveCapturedPreviewScrim} />
+            <Image
+              source={{ uri: currentPhoto.uri }}
+              style={styles.liveCapturedPreviewImage}
+              resizeMode="contain"
+            />
+          </View>
         ) : hasCameraPermission ? (
           canUseNativeLiveCamera ? (
             <NativeLiveFaceCamera
@@ -1572,7 +2175,7 @@ function LiveHairCameraPanel({
 
         <View style={styles.liveCameraTopBar}>
           <Pressable
-            onPress={currentPhoto ? onRemove : onClose}
+            onPress={onClose}
             disabled={isCapturing || isUploading || isAnalyzing}
             style={styles.liveCameraOverlayIcon}
           >
@@ -1582,81 +2185,92 @@ function LiveHairCameraPanel({
             <View style={[styles.liveStatusDot, liveStatusDotStyle, isAnalyzing ? styles.liveStatusDotActive : null]} />
             <Text style={styles.liveStatusText}>
               {isAnalyzing
-                ? 'AI analyzing'
-                : autoCaptureCountdown > 0
-                  ? `Capturing in ${autoCaptureCountdown}`
-                  : liveScanStatus.statusLabel}
+                ? getLocalizedCameraCopy('AI analyzing', language)
+                : activeCaptureCountdown > 0
+                  ? getLocalizedCameraCopy(`Capturing in ${activeCaptureCountdown}`, language)
+                  : getLocalizedCameraCopy(liveScanStatus.statusLabel, language)}
             </Text>
           </View>
           <View style={styles.liveCameraTopActions}>
-            <Pressable
-              onPress={() => setIsCaptureTutorialOpen(true)}
-              disabled={Boolean(isCapturing || isUploading || isAnalyzing)}
-              style={styles.liveCameraOverlayIcon}
-              accessibilityRole="button"
-              accessibilityLabel="Open photo capture tutorial"
-            >
-              <AppIcon name="help-circle-outline" size="sm" state="inverse" />
-            </Pressable>
             <Pressable
               onPress={onToggleFlash}
               disabled={Boolean(isCapturing || isUploading || isAnalyzing || currentPhoto?.uri)}
               style={styles.liveCameraOverlayIcon}
               accessibilityRole="button"
-              accessibilityLabel={flashMode === 'on' ? 'Turn flash off' : 'Turn flash on'}
+              accessibilityLabel={flashMode === 'on'
+                ? (isFilipino ? 'I-off ang flash' : 'Turn flash off')
+                : (isFilipino ? 'I-on ang flash' : 'Turn flash on')}
             >
               <AppIcon name={flashMode === 'on' ? 'flash' : 'flash-off'} size="sm" state="inverse" />
             </Pressable>
           </View>
         </View>
 
-        <View style={styles.liveFrameGuide} pointerEvents="none">
-          {!currentPhoto ? (
+        {!currentPhoto ? (
+          <View style={styles.liveFrameGuide} pointerEvents="none">
             <Animated.View style={[styles.liveScanLine, scanLineStyle]} />
-          ) : null}
-          {!currentPhoto && autoCaptureCountdown > 0 ? (
-            <View style={styles.liveCountdownOverlay}>
-              <Text style={styles.liveCountdownNumber}>{autoCaptureCountdown}</Text>
-            </View>
-          ) : null}
-          <View style={styles.liveFrameCornerTopLeft} />
-          <View style={styles.liveFrameCornerTopRight} />
-          <View style={styles.liveFrameCornerBottomLeft} />
-          <View style={styles.liveFrameCornerBottomRight} />
-        </View>
+            {activeCaptureCountdown > 0 ? (
+              <View style={styles.liveCountdownOverlay}>
+                <Text style={styles.liveCountdownNumber}>{activeCaptureCountdown}</Text>
+              </View>
+            ) : null}
+            <View style={styles.liveFrameCornerTopLeft} />
+            <View style={styles.liveFrameCornerTopRight} />
+            <View style={styles.liveFrameCornerBottomLeft} />
+            <View style={styles.liveFrameCornerBottomRight} />
+          </View>
+        ) : null}
 
       </View>
 
-      <View style={styles.liveCameraBottomSheet}>
-        <View style={styles.liveCaptureInstructionCard}>
+      <View
+        style={[
+          styles.liveCameraBottomSheet,
+          currentPhoto?.uri ? styles.liveCameraPreviewBottomSheet : null,
+          { backgroundColor: roles.defaultCardBackground },
+        ]}
+      >
+        <View
+          style={[
+            styles.liveCaptureInstructionCard,
+            currentPhoto?.uri ? styles.liveCaptureInstructionPreview : null,
+            { backgroundColor: roles.iconPrimarySurface, borderColor: roles.defaultCardBorder },
+            currentPhoto?.uri ? { backgroundColor: 'transparent', borderColor: 'transparent' } : null,
+          ]}
+        >
           <View style={styles.liveCaptureInstructionHeader}>
             <View style={styles.liveCaptureInstructionCopy}>
-              <Text style={styles.liveCaptureInstructionStep}>
-                Photo {Math.min(completedPhotoCount + 1, requiredViews.length)} of {requiredViews.length}
+              <Text style={[styles.liveCaptureInstructionStep, { color: roles.primaryActionBackground }]}>
+                {isFilipino ? 'Larawan' : 'Photo'} {Math.min(completedPhotoCount + 1, requiredViews.length)} {isFilipino ? 'sa' : 'of'} {requiredViews.length}
               </Text>
-              <Text style={styles.liveCaptureInstructionTitle}>
-                {currentView?.tutorialTitle || shortViewHint}
+              <Text style={[styles.liveCaptureInstructionTitle, { color: roles.headingText }]}>
+                {localizedCurrentView?.tutorialTitle || shortViewHint}
               </Text>
             </View>
             <Pressable
               onPress={() => setIsCaptureTutorialOpen(true)}
               disabled={Boolean(isCapturing || isUploading || isAnalyzing)}
-              style={styles.liveCaptureInstructionIcon}
+              style={({ pressed }) => [
+                styles.liveCaptureGuideButton,
+                { borderColor: roles.primaryActionBackground },
+                pressed ? styles.livePreviewActionPressed : null,
+              ]}
               accessibilityRole="button"
-              accessibilityLabel="Open photo capture tutorial"
+              accessibilityLabel={isFilipino ? 'Buksan ang gabay sa pagkuha ng larawan' : 'Open photo capture tutorial'}
             >
-              <AppIcon name="tutorial" size="sm" state="inverse" />
+              <AppIcon name="tutorial" size="sm" color={roles.primaryActionBackground} />
+              <Text style={[styles.liveCaptureGuideText, { color: roles.primaryActionBackground }]}>{isFilipino ? 'Gabay' : 'Guide'}</Text>
             </Pressable>
           </View>
-          <Text style={styles.liveCaptureInstructionTip} numberOfLines={2}>
+          <Text style={[styles.liveCaptureInstructionTip, { color: roles.bodyText }]} numberOfLines={2}>
             {hairDisplayTip}
           </Text>
-          {currentTutorialTips.length ? (
+          {!currentPhoto?.uri && currentTutorialTips.length ? (
             <View style={styles.liveCaptureInstructionBullets}>
               {currentTutorialTips.map((tip) => (
                 <View key={tip} style={styles.liveCaptureInstructionBullet}>
-                  <View style={styles.liveCaptureInstructionDot} />
-                  <Text style={styles.liveCaptureInstructionBulletText} numberOfLines={1}>
+                  <View style={[styles.liveCaptureInstructionDot, { backgroundColor: roles.primaryActionBackground }]} />
+                  <Text style={[styles.liveCaptureInstructionBulletText, { color: roles.bodyText }]} numberOfLines={2}>
                     {tip}
                   </Text>
                 </View>
@@ -1664,39 +2278,133 @@ function LiveHairCameraPanel({
             </View>
           ) : null}
         </View>
-        <View style={styles.liveBottomStatusRow}>
-          <Text style={styles.liveHoldStillText}>
-            {currentPhoto
-              ? 'Preview ready. Confirm to continue.'
-              : autoCaptureCountdown > 0
-                ? `Hold still. Taking photo in ${autoCaptureCountdown}...`
-                : liveScanStatus.instruction}
-          </Text>
-          <Text style={styles.liveViewHintDark}>{liveScanStatus.typeLabel || shortViewHint}</Text>
-        </View>
-        <View style={styles.liveCaptureControls}>
-          <View style={styles.liveRoundControlPlaceholder} />
+        {!currentPhoto ? (
+          <>
+            <Pressable
+              accessibilityRole="switch"
+              accessibilityState={{ checked: voiceCaptureEnabled }}
+              accessibilityLabel={isFilipino ? 'Hands-free na voice capture' : 'Hands-free voice capture'}
+              accessibilityHint={isFilipino
+                ? 'I-enable ito at sabihin ang kuha upang simulan ang naririnig na tatlong segundong countdown.'
+                : 'Enable this, then say capture to start an audible three second countdown.'}
+              onPress={handleToggleVoiceCapture}
+              disabled={isCapturing || isUploading || isAnalyzing}
+              style={({ pressed }) => [
+                styles.liveVoiceCommand,
+                {
+                  backgroundColor: voiceCaptureEnabled ? roles.iconPrimarySurface : roles.defaultCardBackground,
+                  borderColor: voiceCaptureEnabled ? roles.primaryActionBackground : roles.defaultCardBorder,
+                },
+                pressed ? styles.livePreviewActionPressed : null,
+              ]}
+            >
+              <View
+                style={[
+                  styles.liveVoiceCommandIcon,
+                  { backgroundColor: voiceCaptureEnabled ? roles.primaryActionBackground : roles.iconPrimarySurface },
+                ]}
+              >
+                <MaterialCommunityIcons
+                  name={voiceCaptureEnabled ? 'microphone' : 'microphone-outline'}
+                  size={18}
+                  color={voiceCaptureEnabled ? roles.primaryActionText : roles.iconPrimaryColor}
+                />
+              </View>
+              <Text numberOfLines={1} style={[styles.liveVoiceCommandText, { color: roles.headingText }]}>
+                {getLocalizedCameraCopy(voiceCaptureStatus, language)}
+              </Text>
+              <View
+                style={[
+                  styles.liveVoiceCommandState,
+                  { backgroundColor: isVoiceListening ? theme.colors.textSuccess : roles.defaultCardBorder },
+                ]}
+              />
+            </Pressable>
+
+            <Text numberOfLines={2} style={[styles.liveHoldStillText, { color: roles.bodyText }]}>
+              {activeCaptureCountdown > 0
+                ? (isFilipino ? `Huwag gumalaw — ${activeCaptureCountdown}` : `Hold still - ${activeCaptureCountdown}`)
+                : getLocalizedCameraCopy(liveScanStatus.instruction, language)}
+            </Text>
+          </>
+        ) : null}
+        {!currentPhoto ? (
+          <View style={styles.liveCaptureControls}>
+            <View style={styles.liveRoundControlPlaceholder} />
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={isFilipino ? 'Kumuha ng larawan' : 'Capture photo'}
+              onPress={hasCameraPermission ? onCapture : onRequestPermission}
+              disabled={isCapturing || isUploading || isAnalyzing || activeCaptureCountdown > 0}
+              style={[
+                styles.liveCaptureButton,
+                { borderColor: roles.primaryActionBackground, backgroundColor: roles.defaultCardBackground },
+                autoCaptureEnabled ? styles.liveCaptureButtonReady : null,
+                (isCapturing || isAnalyzing) ? styles.liveCaptureButtonDisabled : null,
+              ]}
+            >
+              {isCapturing ? <ActivityIndicator color={roles.primaryActionBackground} /> : null}
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={isFilipino ? 'Palitan ang camera' : 'Switch camera'}
+              onPress={onToggleCamera}
+              disabled={isCapturing || isUploading || isAnalyzing || activeCaptureCountdown > 0}
+              style={[styles.liveRoundControl, { backgroundColor: roles.iconPrimarySurface }]}
+            >
+              <AppIcon name="camera-retake-outline" size="md" color={roles.iconPrimaryColor} />
+            </Pressable>
+          </View>
+        ) : null}
+      </View>
+
+      {currentPhoto ? (
+        <View style={styles.livePreviewActions}>
           <Pressable
-            onPress={currentPhoto ? onConfirmPhoto : hasCameraPermission ? onCapture : onRequestPermission}
+            accessibilityRole="button"
+            accessibilityLabel={isFilipino ? 'Kunan muli ang larawang ito' : 'Retake this photo'}
+            onPress={onRemove}
             disabled={isCapturing || isUploading || isAnalyzing}
-            style={[
-              styles.liveCaptureButton,
-              autoCaptureEnabled ? styles.liveCaptureButtonReady : null,
-              (isCapturing || isAnalyzing) ? styles.liveCaptureButtonDisabled : null,
+            style={({ pressed }) => [
+              styles.livePreviewActionShell,
+              pressed ? styles.livePreviewActionPressed : null,
             ]}
           >
-            {isCapturing ? <ActivityIndicator color={theme.colors.brandPrimary} /> : null}
-            {currentPhoto && !isCapturing ? <AppIcon name="check" size="lg" state="success" /> : null}
+            <View
+              pointerEvents="none"
+              style={[
+                styles.livePreviewActionSurface,
+                { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder },
+              ]}
+            >
+              <AppIcon name="refresh" size="sm" color={roles.iconPrimaryColor} />
+              <Text numberOfLines={1} style={[styles.livePreviewSecondaryText, { color: roles.headingText }]}>{isFilipino ? 'Kunan muli' : 'Retake'}</Text>
+            </View>
           </Pressable>
           <Pressable
-            onPress={currentPhoto ? onRemove : onToggleCamera}
+            accessibilityRole="button"
+            accessibilityLabel={isFilipino ? 'Gamitin ang larawang ito' : 'Use this photo'}
+            onPress={onConfirmPhoto}
             disabled={isCapturing || isUploading || isAnalyzing}
-            style={styles.liveRoundControl}
+            style={({ pressed }) => [
+              styles.livePreviewActionShell,
+              styles.livePreviewPrimaryShell,
+              pressed ? styles.livePreviewActionPressed : null,
+            ]}
           >
-            <AppIcon name={currentPhoto ? 'refresh' : 'camera-retake-outline'} size="md" state="inverse" />
+            <View
+              pointerEvents="none"
+              style={[
+                styles.livePreviewActionSurface,
+                { backgroundColor: roles.primaryActionBackground, borderColor: roles.primaryActionBackground },
+              ]}
+            >
+              <Text numberOfLines={1} style={[styles.livePreviewPrimaryText, { color: roles.primaryActionText }]}>{isFilipino ? 'Gamitin' : 'Use photo'}</Text>
+              <AppIcon name="check" size="sm" color={roles.primaryActionText} />
+            </View>
           </Pressable>
         </View>
-      </View>
+      ) : null}
     </View>
   );
 }
@@ -2135,6 +2843,91 @@ const RETURNING_QUESTION_STEPS = [
   },
 ];
 
+const FILIPINO_QUESTION_TITLES = {
+  hairTexture: 'Ano ang natural na pattern ng iyong buhok?',
+  washFrequency: 'Gaano kadalas mong hinuhugasan ang iyong buhok?',
+  scalpItch: 'Makati ba ang iyong anit?',
+  dandruffOrFlakes: 'Napapansin mo ba ang balakubak o mga flakes?',
+  oilyAfterWash: 'Mabilis bang maging mamantika ang iyong anit pagkatapos maghugas?',
+  dryOrRough: 'Alin ang pinakamahusay na naglalarawan sa kondisyon ng iyong buhok?',
+  hairFall: 'Napansin mo ba kamakailan ang pagdami ng pagkaputol o paglagas ng buhok?',
+  chemicalProcessHistory: 'Gumamit ka na ba ng bleach, hair color, rebond, relax, o perm?',
+  heatUse: 'Madalas ka bang gumamit ng init sa iyong buhok?',
+  followedPreviousAdvice: 'Mula noong huli mong pagsusuri, sinunod mo ba ang inirekomendang pangangalaga sa buhok?',
+  hairConditionProgress: 'Mula noong huli mong pagsusuri, paano mo ilalarawan ang iyong buhok ngayon?',
+  noticedChanges: 'Anong mga pagbabago ang napansin mo mula noong huli mong pagsusuri?',
+  heatUseSinceLastCheck: 'Gumamit ka ba ng heat styling mula noong huli mong pagsusuri?',
+  chemicalTreatmentSinceLastCheck: 'Gumamit ka ba ng bleach, color, rebond, relax, o perm mula noong huli mong pagsusuri?',
+  routineChangedSinceLastCheck: 'Binago mo ba ang iyong hair-care routine mula noong huli mong pagsusuri?',
+  routineChangeFocus: 'Kung oo, ano ang pinakamalaking binago mo?',
+  healthierNow: 'Sa tingin mo ba ay mas malusog na ang iyong buhok ngayon?',
+};
+
+const FILIPINO_OPTION_LABELS = {
+  hairTexture: {
+    Straight: 'Tuwid', Wavy: 'Alon-alon', Curly: 'Kulot', Coily: 'Mahigpit na kulot',
+  },
+  washFrequency: {
+    daily: 'Araw-araw', every_2_3_days: 'Tuwing 2–3 araw', '1_2_times_weekly': '1–2 beses kada linggo', less_often: 'Mas madalang',
+  },
+  itchFrequency: { never: 'Hindi kailanman', sometimes: 'Paminsan-minsan', often: 'Madalas' },
+  dandruffLevel: { no: 'Wala', a_little: 'Kaunti', a_lot: 'Marami' },
+  quickOiliness: { no: 'Hindi', sometimes: 'Paminsan-minsan', yes: 'Oo' },
+  drynessLevel: {
+    normal_balanced: 'Normal/Balansyado', dry: 'Tuyo', rough: 'Magaspang', oily: 'Mamantika', damaged: 'May pinsala', brittle: 'Marupok', frizzy: 'Buhaghag',
+  },
+  hairFallLevel: { no: 'Hindi', not_sure: 'Hindi sigurado', yes: 'Oo' },
+  chemicalProcessHistory: { no: 'Hindi', yes: 'Oo' },
+  heatUseFrequency: { never: 'Hindi kailanman', sometimes: 'Paminsan-minsan', often: 'Madalas' },
+  recommendationFollowThrough: { yes_consistently: 'Oo, palagi', sometimes: 'Paminsan-minsan', not_yet: 'Hindi pa' },
+  hairProgress: { better: 'Mas mabuti', same: 'Halos pareho', worse: 'Mas malala', not_sure: 'Hindi sigurado' },
+  followUpChanges: {
+    less_dryness: 'Mas hindi na tuyo', less_oiliness: 'Mas hindi na mamantika', less_hair_fall: 'Mas kaunti ang paglagas', less_dandruff: 'Mas kaunti ang balakubak', softer_hair: 'Mas malambot ang buhok', no_major_change: 'Walang malaking pagbabago', got_worse: 'Mas lumala',
+  },
+  yesNo: { yes: 'Oo', no: 'Hindi' },
+  routineChangeFocus: {
+    washing_routine: 'Paraan ng paghuhugas', hair_products: 'Mga produkto sa buhok', reduced_heat_styling: 'Binawasan ang heat styling', stopped_chemical_treatment: 'Itinigil ang chemical treatment', started_scalp_care: 'Nagsimula ng pangangalaga sa anit', other: 'Iba pa',
+  },
+  healthyNow: { yes: 'Oo', no: 'Hindi', not_sure: 'Hindi sigurado' },
+};
+
+const FILIPINO_QUESTION_HELPERS = {
+  followedPreviousAdvice: 'Tinutulungan nitong ihambing ang kasalukuyang resulta sa huli mong naka-save na rekomendasyon.',
+  noticedChanges: 'Piliin ang lahat ng naaangkop.',
+  scalpItch: 'Ang kalagayan ng iyong anit ay mahalaga sa pagsusuri ng kalidad ng buhok.',
+};
+
+const FILIPINO_QUESTION_MATTER_COPY = {
+  hairTexture: 'Tinutulungan ng pattern ng buhok ang AI na maunawaan ang hugis, pag-urong, at nakikitang haba nito sa mga larawan.',
+  washFrequency: 'Nakaaapekto ang dalas ng paghuhugas sa langis, pagkatuyo, buildup, at kinang na nakikita sa iyong buhok.',
+  scalpItch: 'Nakakatulong ang pangangati upang matukoy kung may pagkatuyo, pamumula, flakes, o iritasyon sa anit.',
+  dandruffOrFlakes: 'Tinutulungan ng impormasyong ito ang AI na ihiwalay ang balakubak at buildup mula sa natural na texture ng buhok.',
+  oilyAfterWash: 'Nakakatulong ito upang malaman kung normal na kinang o sobrang langis sa anit ang nakikita sa larawan.',
+  dryOrRough: 'Ang kondisyon ng buhok ay nagbibigay ng konteksto sa pagkatuyo, gaspang, langis, pinsala, at pagkabuhaghag.',
+  hairFall: 'Nakakatulong ang impormasyon tungkol sa paglagas o pagkaputol sa pagsusuri ng density at nakikitang pagnipis.',
+  chemicalProcessHistory: 'Maaaring makaapekto ang chemical treatment sa tibay ng buhok at sa pagtanggap nito para sa donasyon.',
+  heatUse: 'Nakakatulong ang paggamit ng init upang matukoy kung ang pagkatuyo, frizz, o split ends ay dulot ng styling.',
+  followedPreviousAdvice: 'Tinutulungan nito ang AI na ihambing ang kasalukuyang scan sa care plan mula sa huli mong resulta.',
+  hairConditionProgress: 'Ang sarili mong pagtataya ay nagbibigay ng konteksto bago ihambing ang mga larawan ngayon sa nakaraang scan.',
+  noticedChanges: 'Ginagabayan ng mga napansin mong pagbabago ang paghahambing ng AI sa dati at kasalukuyang mga larawan.',
+  heatUseSinceLastCheck: 'Maaaring ipaliwanag ng kamakailang heat styling ang bagong pagkatuyo, frizz, o pinsala sa dulo ng buhok.',
+  chemicalTreatmentSinceLastCheck: 'Mahalaga ang bagong chemical treatment dahil maaari nitong baguhin ang pagiging kwalipikado sa donasyon.',
+  routineChangedSinceLastCheck: 'Nakakatulong ang pagbabago sa routine upang maipaliwanag kung bakit naiiba ang resulta ngayon.',
+  routineChangeFocus: 'Ipinapakita ng uri ng pagbabago kung aling kondisyon ng buhok ang inaasahang unang bubuti.',
+  healthierNow: 'Tinutulungan nito ang AI na ihambing ang iyong pakiramdam sa mga nakikitang pagbabago sa larawan.',
+};
+
+const getLocalizedQuestionTitle = (question, language = 'en') => (
+  language === 'fil' ? FILIPINO_QUESTION_TITLES[question?.key] || question?.title : question?.title
+);
+
+const getLocalizedQuestionOptions = (optionsKey, language = 'en') => (
+  (hairAnalyzerQuestionChoices[optionsKey] || []).map((option) => ({
+    ...option,
+    label: language === 'fil' ? FILIPINO_OPTION_LABELS[optionsKey]?.[option.value] || option.label : option.label,
+  }))
+);
+
 const getQuestionStepsForMode = (questionnaireMode = 'first_time') => (
   questionnaireMode === 'returning_follow_up'
     ? RETURNING_QUESTION_STEPS
@@ -2282,17 +3075,35 @@ const QUESTION_CHOICE_COPY = {
   },
 };
 
-const getQuestionHelperText = (question) => (
-  QUESTION_HELPER_COPY[question?.key]
-  || question?.helperText
-  || 'Answering this helps us personalize the next step.'
-);
+const getQuestionHelperText = (question, language = 'en') => {
+  if (language === 'fil') {
+    return FILIPINO_QUESTION_HELPERS[question?.key]
+      || 'Nakakatulong ang sagot mo upang maiangkop ang susunod na hakbang.';
+  }
 
-const getChoiceDetailText = (questionKey, value) => (
-  QUESTION_CHOICE_COPY[questionKey]?.[value] || ''
-);
+  return QUESTION_HELPER_COPY[question?.key]
+    || question?.helperText
+    || 'Answering this helps us personalize the next step.';
+};
 
-const getQuestionMatterText = (question, answers = {}) => {
+const getChoiceDetailText = (questionKey, value, language = 'en') => {
+  if (language === 'fil' && questionKey === 'scalpItch') {
+    return {
+      never: 'Araw-araw na maayos at walang iritasyon ang aking anit.',
+      sometimes: 'Paminsan-minsang pagkatuyo o bahagyang iritasyon.',
+      often: 'Madalas na pangangati o nakikitang pamumula.',
+    }[value] || '';
+  }
+
+  return QUESTION_CHOICE_COPY[questionKey]?.[value] || '';
+};
+
+const getQuestionMatterText = (question, answers = {}, language = 'en') => {
+  if (language === 'fil') {
+    return FILIPINO_QUESTION_MATTER_COPY[question?.key]
+      || 'Nagbibigay ang sagot mo ng konteksto sa pagsusuri ng haba, texture, pagkatuyo, anit, at nakikitang pinsala.';
+  }
+
   if (!question?.key) {
     return 'Your answers help the AI compare your photos with donation readiness rules before it checks length, texture, dryness, and visible damage.';
   }
@@ -2910,10 +3721,16 @@ function HairConditionLogCard({
 
 export function DonorHairSubmissionScreen() {
   const router = useRouter();
+  const navigation = useNavigation();
+  const { language } = useLanguage();
+  const isFilipino = language === 'fil';
   const cameraRef = useRef(null);
+  const pendingExitNavigationActionRef = useRef(null);
+  const allowAnalyzerExitRef = useRef(false);
   const lastTransientErrorKeyRef = useRef('');
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [isAnalyzerActive, setIsAnalyzerActive] = useState(true);
+  const [isLeaveAnalysisModalVisible, setIsLeaveAnalysisModalVisible] = useState(false);
   const [hasAcknowledgedRequirementIntro, setHasAcknowledgedRequirementIntro] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
   const [questionIndex, setQuestionIndex] = useState(0);
@@ -2940,9 +3757,11 @@ export function DonorHairSubmissionScreen() {
   const readinessEntrance = useRef(new Animated.Value(0)).current;
   const readinessPulse = useRef(new Animated.Value(0)).current;
   const [autoCaptureCountdown, setAutoCaptureCountdown] = useState(0);
+  const [isVoiceCaptureActive, setIsVoiceCaptureActive] = useState(false);
   const [analysisHistory, setAnalysisHistory] = useState([]);
   const [registeredEventDrives, setRegisteredEventDrives] = useState([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
+  const [isRefreshingAnalysis, setIsRefreshingAnalysis] = useState(false);
   const [historyError, setHistoryError] = useState('');
   const [selectedHistoryDate, setSelectedHistoryDate] = useState('');
   const [selectedHistoryEntries, setSelectedHistoryEntries] = useState([]);
@@ -2987,6 +3806,7 @@ export function DonorHairSubmissionScreen() {
     submitSubmission,
     resetFlow,
     clearAnalysisError,
+    refreshContext,
   } = useDonorHairSubmission({ userId: user?.id, databaseUserId: profile?.user_id });
 
   const questionForm = useForm({
@@ -3133,7 +3953,7 @@ export function DonorHairSubmissionScreen() {
     [effectiveQuestionnaireValues, questionnaireMode]
   );
   const currentQuestion = visibleQuestions[questionIndex] || visibleQuestions[0];
-  const currentQuestionMatterText = getQuestionMatterText(currentQuestion, effectiveQuestionnaireValues);
+  const currentQuestionMatterText = getQuestionMatterText(currentQuestion, effectiveQuestionnaireValues, language);
   const questionContentAnimatedStyle = {
     opacity: questionContentOpacity,
   };
@@ -3306,34 +4126,49 @@ export function DonorHairSubmissionScreen() {
     weeklyScanLimit.nextScanDate,
   ]);
 
-  const loadAnalysisHistory = React.useCallback(async () => {
+  const loadAnalysisHistory = React.useCallback(async ({ silent = false } = {}) => {
     if (!user?.id) return;
 
-    setIsLoadingHistory(true);
+    if (!silent) setIsLoadingHistory(true);
     setHistoryError('');
 
-    const [submissionsResult, registeredDrivesResult] = await Promise.all([
-      fetchHairSubmissionsByUserId(user.id, 12),
-      fetchRegisteredDonationDrivesByUserId({
-        databaseUserId: profile?.user_id || null,
-        limit: 24,
-      }),
-    ]);
-    const submissions = submissionsResult.data || [];
-    const registeredDrives = registeredDrivesResult.data || [];
-    setAnalysisHistory(submissions);
-    setRegisteredEventDrives(registeredDrives);
+    try {
+      const [submissionsResult, registeredDrivesResult] = await Promise.all([
+        fetchHairSubmissionsByUserId(user.id, 12),
+        fetchRegisteredDonationDrivesByUserId({
+          databaseUserId: profile?.user_id || null,
+          limit: 24,
+        }),
+      ]);
+      const submissions = submissionsResult.data || [];
+      const registeredDrives = registeredDrivesResult.data || [];
+      setAnalysisHistory(submissions);
+      setRegisteredEventDrives(registeredDrives);
 
-    if (submissionsResult.error || registeredDrivesResult.error) {
-      setHistoryError(
-        registeredDrivesResult.error?.isTransient
-          ? registeredDrivesResult.error.message
-          : 'Calendar history could not be loaded right now. Pull down to try again.',
-      );
+      if (submissionsResult.error || registeredDrivesResult.error) {
+        setHistoryError(
+          registeredDrivesResult.error?.isTransient
+            ? registeredDrivesResult.error.message
+            : 'Calendar history could not be loaded right now. Pull down to try again.',
+        );
+      }
+    } finally {
+      if (!silent) setIsLoadingHistory(false);
     }
-
-    setIsLoadingHistory(false);
   }, [profile?.user_id, user?.id]);
+
+  const handleRefreshAnalysis = React.useCallback(async () => {
+    if (!user?.id || isRefreshingAnalysis) return;
+    setIsRefreshingAnalysis(true);
+    try {
+      await Promise.all([
+        loadAnalysisHistory({ silent: true }),
+        refreshContext({ silent: true }),
+      ]);
+    } finally {
+      setIsRefreshingAnalysis(false);
+    }
+  }, [isRefreshingAnalysis, loadAnalysisHistory, refreshContext, user?.id]);
 
   useEffect(() => {
     loadAnalysisHistory();
@@ -3433,12 +4268,77 @@ export function DonorHairSubmissionScreen() {
     setSelectedHistoryEvents(events || []);
   }, []);
 
-  const closeAnalyzerToHome = React.useCallback(() => {
+  const discardAnalyzerDraft = React.useCallback(() => {
+    resetFlow();
+    questionForm.reset({
+      ...hairAnalyzerQuestionDefaultValues,
+      questionnaireMode,
+    });
+    complianceForm.reset(hairAnalyzerComplianceDefaultValues);
+    setQuestionnaireDraftAnswers({
+      ...hairAnalyzerQuestionDefaultValues,
+      questionnaireMode,
+    });
+    setHasAcknowledgedRequirementIntro(false);
+    setQuestionIndex(0);
+    setPhotoIndex(0);
+    setStepIndex(0);
+    setPreviewImageUri('');
+    setPreviewImageUris([]);
+    setPreviewImageIndex(0);
+    setPhotoPreflightState(null);
+    setAnalysisReviewValues(buildHairReviewDefaultValues(null));
+    setIsEditingAnalysisReview(false);
+    setResultConfirmationMode('pending');
+  }, [complianceForm, questionForm, questionnaireMode, resetFlow]);
+
+  const requestAnalyzerExit = React.useCallback(() => {
+    pendingExitNavigationActionRef.current = null;
+    setIsLeaveAnalysisModalVisible(true);
+  }, []);
+
+  const stayInAnalyzer = React.useCallback(() => {
+    pendingExitNavigationActionRef.current = null;
+    setIsLeaveAnalysisModalVisible(false);
+  }, []);
+
+  const confirmAnalyzerExit = React.useCallback(() => {
+    const pendingAction = pendingExitNavigationActionRef.current;
+    pendingExitNavigationActionRef.current = null;
+    allowAnalyzerExitRef.current = true;
+    setIsLeaveAnalysisModalVisible(false);
+    discardAnalyzerDraft();
     setIsAnalyzerActive(false);
+
+    if (pendingAction) {
+      navigation.dispatch(pendingAction);
+      return;
+    }
+
     router.replace('/donor/donations');
-  }, [router]);
+  }, [discardAnalyzerDraft, navigation, router]);
+
+  useFocusEffect(React.useCallback(() => {
+    const hardwareBackSubscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (!isAnalyzerActive || allowAnalyzerExitRef.current) return false;
+      requestAnalyzerExit();
+      return true;
+    });
+
+    return () => hardwareBackSubscription.remove();
+  }, [isAnalyzerActive, requestAnalyzerExit]));
+
+  useEffect(() => navigation.addListener('beforeRemove', (event) => {
+    if (!isAnalyzerActive || allowAnalyzerExitRef.current) return;
+    event.preventDefault();
+    pendingExitNavigationActionRef.current = event.data.action;
+    setIsLeaveAnalysisModalVisible(true);
+  }), [isAnalyzerActive, navigation]);
 
   const openAnalyzerWithRequirements = React.useCallback(() => {
+    allowAnalyzerExitRef.current = false;
+    pendingExitNavigationActionRef.current = null;
+    setIsLeaveAnalysisModalVisible(false);
     setHasAcknowledgedRequirementIntro(false);
     setQuestionIndex(0);
     setStepIndex(0);
@@ -3491,11 +4391,17 @@ export function DonorHairSubmissionScreen() {
   );
 
   const nextButtonTitle = useMemo(() => {
-    if (stepIndex === 0) return questionIndex === visibleQuestions.length - 1 ? 'Continue' : 'Next';
-    if (stepIndex === 1) return 'Start Camera Scan';
-    if (stepIndex === 2) return photoIndex === requiredViews.length - 1 ? 'Analyze' : 'Next';
-    return analysis ? (isSaving ? 'Saving...' : 'Save to hair log') : 'Retry analysis';
-  }, [analysis, isSaving, photoIndex, questionIndex, requiredViews.length, stepIndex, visibleQuestions.length]);
+    if (stepIndex === 0) return questionIndex === visibleQuestions.length - 1
+      ? (isFilipino ? 'Magpatuloy' : 'Continue')
+      : (isFilipino ? 'Susunod' : 'Next');
+    if (stepIndex === 1) return isFilipino ? 'Simulan ang Camera Scan' : 'Start Camera Scan';
+    if (stepIndex === 2) return photoIndex === requiredViews.length - 1
+      ? (isFilipino ? 'Suriin' : 'Analyze')
+      : (isFilipino ? 'Susunod' : 'Next');
+    return analysis
+      ? (isSaving ? (isFilipino ? 'Sine-save...' : 'Saving...') : (isFilipino ? 'I-save sa hair log' : 'Save to hair log'))
+      : (isFilipino ? 'Ulitin ang pagsusuri' : 'Retry analysis');
+  }, [analysis, isFilipino, isSaving, photoIndex, questionIndex, requiredViews.length, stepIndex, visibleQuestions.length]);
 
   const runQuestionTransition = React.useCallback((applyQuestionChange) => {
     Animated.timing(questionContentOpacity, {
@@ -3567,6 +4473,7 @@ export function DonorHairSubmissionScreen() {
       setPhotoIndex(0);
       setStepIndex(0);
       setResultConfirmationMode('pending');
+      allowAnalyzerExitRef.current = true;
       setIsAnalyzerActive(false);
       router.replace('/donor/donations');
     }
@@ -3643,13 +4550,8 @@ export function DonorHairSubmissionScreen() {
   }, [photoIndex, questionIndex, runQuestionTransition, stepIndex]);
 
   const handleHeaderBack = React.useCallback(() => {
-    if (stepIndex === 0) {
-      closeAnalyzerToHome();
-      return;
-    }
-
-    goPrevious();
-  }, [closeAnalyzerToHome, goPrevious, stepIndex]);
+    requestAnalyzerExit();
+  }, [requestAnalyzerExit]);
 
   const requestLiveCameraPermission = React.useCallback(async () => {
     if (canUseNativeLiveCamera && NativeVisionCamera?.requestCameraPermission) {
@@ -3772,7 +4674,7 @@ export function DonorHairSubmissionScreen() {
       );
     }
 
-    const questionSubtitle = getQuestionHelperText(currentQuestion);
+    const questionSubtitle = getQuestionHelperText(currentQuestion, language);
 
     return (
       <View style={styles.questionContentCard}>
@@ -3790,14 +4692,18 @@ export function DonorHairSubmissionScreen() {
                 <MaterialCommunityIcons name="head-heart-outline" size={21} color="#FFFFFF" />
               </View>
               <Text style={styles.questionHeroEyebrow}>
-                {questionnaireMode === 'returning_follow_up' ? 'YOUR HAIR FOLLOW-UP' : 'YOUR HAIR PROFILE'}
+                {questionnaireMode === 'returning_follow_up'
+                  ? (isFilipino ? 'FOLLOW-UP SA IYONG BUHOK' : 'YOUR HAIR FOLLOW-UP')
+                  : (isFilipino ? 'PROFILE NG IYONG BUHOK' : 'YOUR HAIR PROFILE')}
               </Text>
             </View>
-            <View style={styles.questionHeroStepChip}>
-              <Text style={styles.questionHeroStepText}>{currentQuestion.multi ? 'SELECT ALL' : 'SELECT ONE'}</Text>
-            </View>
+            {currentQuestion.multi ? (
+              <View style={styles.questionHeroStepChip}>
+                <Text style={styles.questionHeroStepText}>{isFilipino ? 'PILIIN LAHAT' : 'SELECT ALL'}</Text>
+              </View>
+            ) : null}
           </View>
-          <Text style={styles.questionHeroTitle}>{currentQuestion.title}</Text>
+          <Text style={styles.questionHeroTitle}>{getLocalizedQuestionTitle(currentQuestion, language)}</Text>
           {questionSubtitle ? <Text style={styles.questionHeroHelper}>{questionSubtitle}</Text> : null}
           <View style={styles.questionHeroProgressRow}>
             {visibleQuestions.map((question, index) => (
@@ -3818,8 +4724,9 @@ export function DonorHairSubmissionScreen() {
           render={({ field }) => (
             <ChoiceList
               questionKey={currentQuestion.key}
+              language={language}
               value={effectiveQuestionnaireValues?.[fieldName] ?? field.value}
-              options={hairAnalyzerQuestionChoices[currentQuestion.optionsKey]}
+              options={getLocalizedQuestionOptions(currentQuestion.optionsKey, language)}
               onChange={(nextValue) => {
                 if (currentQuestion.type === 'choice') {
                   handleQuestionChoiceChange({
@@ -3970,6 +4877,7 @@ export function DonorHairSubmissionScreen() {
     if (stepIndex !== 2) return false;
     if (!hasCameraPermission) return false;
     if (Boolean(currentPhoto)) return false;
+    if (isVoiceCaptureActive) return false;
     if (isCapturingPhoto || isCapturingImages || isPickingImages || isAnalyzing) return false;
     if (!canUseNativeLiveCamera || !requiresFaceVerification(currentView)) return false;
 
@@ -3984,6 +4892,7 @@ export function DonorHairSubmissionScreen() {
     isCapturingImages,
     isCapturingPhoto,
     isPickingImages,
+    isVoiceCaptureActive,
     liveFaceStatus?.valid,
     liveFrameBrightness,
     stepIndex,
@@ -4255,7 +5164,7 @@ export function DonorHairSubmissionScreen() {
             <View style={styles.questionPreviousButtonWrap}>
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="Go to previous question"
+                accessibilityLabel={isFilipino ? 'Bumalik sa nakaraang tanong' : 'Go to previous question'}
                 onPress={goPrevious}
                 style={({ pressed }) => [
                   styles.questionDockButton,
@@ -4267,7 +5176,7 @@ export function DonorHairSubmissionScreen() {
                   <View style={styles.questionPreviousIconWrap}>
                     <MaterialCommunityIcons name="arrow-left" size={18} color={theme.colors.brandPrimary} />
                   </View>
-                  <Text numberOfLines={1} style={styles.questionPreviousButtonText}>Previous</Text>
+                  <Text numberOfLines={1} style={styles.questionPreviousButtonText}>{isFilipino ? 'Nakaraan' : 'Previous'}</Text>
                 </View>
               </Pressable>
             </View>
@@ -4275,7 +5184,9 @@ export function DonorHairSubmissionScreen() {
           <View style={styles.questionNextButtonWrap}>
             <Pressable
               accessibilityRole="button"
-              accessibilityLabel={isNextDisabled ? 'Choose an option to continue' : nextButtonTitle}
+              accessibilityLabel={isNextDisabled
+                ? (isFilipino ? 'Pumili ng sagot upang magpatuloy' : 'Choose an option to continue')
+                : nextButtonTitle}
               accessibilityState={{ disabled: isNextDisabled }}
               onPress={handleNext}
               disabled={isNextDisabled}
@@ -4297,7 +5208,7 @@ export function DonorHairSubmissionScreen() {
                 ]}
               >
                 <Text style={isNextDisabled ? styles.questionNextButtonTextDisabled : styles.questionNextButtonText}>
-                  {isNextDisabled ? 'Choose an option' : nextButtonTitle}
+                  {isNextDisabled ? (isFilipino ? 'Pumili ng sagot' : 'Choose an option') : nextButtonTitle}
                 </Text>
                 <View style={[styles.questionNextArrow, isNextDisabled ? styles.questionNextArrowDisabled : null]}>
                   <MaterialCommunityIcons
@@ -4359,7 +5270,7 @@ export function DonorHairSubmissionScreen() {
           return (
             <View style={styles.inlineLoadingState}>
               <ActivityIndicator size="small" color={resolvedTheme?.primaryColor || theme.colors.brandPrimary} />
-              <Text style={styles.inlineLoadingText}>Preparing your hair check...</Text>
+              <Text style={styles.inlineLoadingText}>{isFilipino ? 'Inihahanda ang pagsusuri ng buhok...' : 'Preparing your hair check...'}</Text>
             </View>
           );
         }
@@ -4384,7 +5295,7 @@ export function DonorHairSubmissionScreen() {
                     <MaterialCommunityIcons name="lightbulb-on-outline" size={19} color={theme.colors.brandPrimary} />
                   </View>
                   <View style={styles.questionInfoCopy}>
-                    <Text style={styles.questionInfoTitle}>Why does this matter?</Text>
+                    <Text style={styles.questionInfoTitle}>{isFilipino ? 'Bakit ito mahalaga?' : 'Why does this matter?'}</Text>
                     <Text style={styles.questionInfoBody}>{currentQuestionMatterText}</Text>
                   </View>
                 </LinearGradient>
@@ -4392,7 +5303,9 @@ export function DonorHairSubmissionScreen() {
               <View style={styles.questionDisclaimerRow}>
                 <MaterialCommunityIcons name="shield-check-outline" size={15} color={theme.colors.textMuted} />
                 <Text style={styles.questionDisclaimer}>
-                  General hair-care guidance only. This is not a medical diagnosis.
+                  {isFilipino
+                    ? 'Pangkalahatang gabay lamang sa pangangalaga ng buhok. Hindi ito medikal na diagnosis.'
+                    : 'General hair-care guidance only. This is not a medical diagnosis.'}
                 </Text>
               </View>
             </View>
@@ -4619,14 +5532,16 @@ export function DonorHairSubmissionScreen() {
             isCapturing={isCapturingPhoto || isCapturingImages}
             isUploading={isPickingImages}
             isAnalyzing={isAnalyzing}
-            onCapture={() => handleCapturePhoto(photoIndex)}
+            onCapture={() => handleCapturePhoto(photoIndex, isVoiceCaptureActive ? 'voice' : 'manual')}
             onToggleCamera={toggleCameraFacing}
             onToggleFlash={toggleFlashMode}
             onRemove={handleRemoveCurrentPhoto}
             onConfirmPhoto={handleConfirmCurrentPhoto}
-            onClose={closeAnalyzerToHome}
+            onClose={requestAnalyzerExit}
             onFacesChange={handleLiveFacesChange}
             onCameraError={handleNativeCameraError}
+            onVoiceCaptureStateChange={setIsVoiceCaptureActive}
+            roles={roles}
             onRequestPermission={async () => {
               const granted = await requestLiveCameraPermission();
               if (!granted) {
@@ -5145,7 +6060,15 @@ export function DonorHairSubmissionScreen() {
       donationRequirement={donationRequirement}
       visible={shouldShowRequirementIntro}
       onContinue={() => setHasAcknowledgedRequirementIntro(true)}
-      onBack={closeAnalyzerToHome}
+      onBack={requestAnalyzerExit}
+    />
+  );
+  const leaveAnalysisModal = (
+    <LeaveHairAnalysisModal
+      visible={isLeaveAnalysisModalVisible}
+      onStay={stayInAnalyzer}
+      onLeave={confirmAnalyzerExit}
+      roles={roles}
     />
   );
   const previewImageModal = (
@@ -5240,7 +6163,7 @@ export function DonorHairSubmissionScreen() {
         <View style={[styles.analyzerStandalone, { backgroundColor: roles.pageBackground }]}>
           {stepIndex === 2 ? null : (
             <HairAnalysisTopBar
-              title="Check Hair"
+              title={isFilipino ? 'Suriin ang Buhok' : 'Check Hair'}
               onBack={handleHeaderBack}
               iconColor={theme.colors.backgroundPrimary}
               textColor={theme.colors.backgroundPrimary}
@@ -5261,6 +6184,7 @@ export function DonorHairSubmissionScreen() {
         </View>
         {donationRequirementsIntroModal}
         {previewImageModal}
+        {leaveAnalysisModal}
       </>
     );
   }
@@ -5272,6 +6196,8 @@ export function DonorHairSubmissionScreen() {
       activeNavKey="checkhair"
       navVariant="donor"
       screenVariant="default"
+      refreshing={isRefreshingAnalysis}
+      onRefresh={handleRefreshAnalysis}
       onNavPress={(item) => {
         if (!item.route || item.route === '/donor/donations') return;
         router.navigate(item.route);
@@ -5378,7 +6304,7 @@ export function DonorHairSubmissionScreen() {
         >
           {stepIndex === 2 ? null : (
             <View style={styles.closeOnlyHeader}>
-              <Pressable onPress={closeAnalyzerToHome} style={styles.iconNavButton}>
+              <Pressable onPress={requestAnalyzerExit} style={styles.iconNavButton}>
                 <AppIcon name="close" size="md" state="muted" />
               </Pressable>
             </View>
@@ -6932,7 +7858,7 @@ const styles = StyleSheet.create({
   requirementsIntroHeroTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-start',
     marginBottom: theme.spacing.xs,
   },
   requirementsIntroIconWrap: {
@@ -6944,16 +7870,6 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255,255,255,0.14)',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.24)',
-  },
-  requirementsIntroClose: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.12)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.2)',
   },
   requirementsIntroEyebrow: {
     fontFamily: theme.typography.fontFamily,
@@ -7218,7 +8134,7 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.brandPrimary,
   },
   captureTutorialList: {
-    gap: theme.spacing.sm,
+    gap: 0,
     paddingBottom: theme.spacing.xs,
   },
   captureTutorialScroll: {
@@ -7226,17 +8142,19 @@ const styles = StyleSheet.create({
   },
   captureTutorialItem: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'stretch',
     gap: theme.spacing.sm,
-    padding: theme.spacing.sm,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: theme.colors.borderSubtle,
-    backgroundColor: theme.colors.surfaceSoft,
+    minHeight: 82,
+    paddingHorizontal: theme.spacing.xs,
+    paddingVertical: 7,
+    borderRadius: 16,
   },
   captureTutorialItemActive: {
-    borderColor: theme.colors.brandPrimary,
     backgroundColor: theme.colors.brandPrimaryMuted,
+  },
+  captureTutorialRail: {
+    width: 32,
+    alignItems: 'center',
   },
   captureTutorialNumberWrap: {
     width: 30,
@@ -7246,22 +8164,59 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: theme.colors.brandPrimary,
   },
+  captureTutorialNumberWrapIdle: {
+    borderWidth: 1,
+    borderColor: theme.colors.borderSubtle,
+    backgroundColor: theme.colors.backgroundPrimary,
+  },
   captureTutorialNumber: {
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.caption,
     fontWeight: theme.typography.weights.bold,
     color: theme.colors.textOnBrand,
   },
+  captureTutorialNumberIdle: {
+    color: theme.colors.brandPrimary,
+  },
+  captureTutorialLine: {
+    flex: 1,
+    width: 2,
+    minHeight: 20,
+    marginTop: 4,
+    marginBottom: -11,
+    borderRadius: theme.radius.full,
+    backgroundColor: theme.colors.borderSubtle,
+  },
   captureTutorialCopy: {
     flex: 1,
     minWidth: 0,
     gap: 4,
+    paddingTop: 3,
+    paddingBottom: theme.spacing.xs,
+  },
+  captureTutorialItemHeading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.xs,
   },
   captureTutorialItemTitle: {
+    flexShrink: 1,
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.body,
     fontWeight: theme.typography.weights.bold,
     color: theme.colors.textPrimary,
+  },
+  captureTutorialCurrent: {
+    overflow: 'hidden',
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    backgroundColor: theme.colors.brandPrimary,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.textOnBrand,
+    textTransform: 'uppercase',
   },
   captureTutorialDisplayTip: {
     fontFamily: theme.typography.fontFamily,
@@ -7269,19 +8224,10 @@ const styles = StyleSheet.create({
     lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.normal,
     color: theme.colors.textSecondary,
   },
-  captureTutorialTipRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-  },
   captureTutorialTip: {
-    overflow: 'hidden',
-    borderRadius: theme.radius.pill,
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: 4,
-    backgroundColor: theme.colors.backgroundPrimary,
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.caption,
+    lineHeight: theme.typography.compact.caption * theme.typography.lineHeights.normal,
     color: theme.colors.textSecondary,
   },
   captureInstructionPopupOverlay: {
@@ -7610,12 +8556,16 @@ const styles = StyleSheet.create({
     fontWeight: theme.typography.weights.semibold,
   },
   liveCameraPanel: {
-    gap: theme.spacing.sm,
+    width: '100%',
+    gap: 0,
     paddingBottom: 0,
     alignItems: 'center',
+    position: 'relative',
     borderRadius: 28,
+    borderWidth: 1,
     backgroundColor: '#111111',
     overflow: 'hidden',
+    ...theme.shadows.card,
   },
   liveCameraStage: {
     alignSelf: 'center',
@@ -7625,6 +8575,30 @@ const styles = StyleSheet.create({
     position: 'relative',
   },
   liveCameraPreview: {
+    width: '100%',
+    height: '100%',
+  },
+  liveCapturedPreview: {
+    width: '100%',
+    height: '100%',
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    backgroundColor: theme.colors.backgroundDark,
+  },
+  liveCapturedPreviewBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    width: '100%',
+    height: '100%',
+    opacity: 0.46,
+    transform: [{ scale: 1.08 }],
+  },
+  liveCapturedPreviewScrim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(14, 5, 8, 0.24)',
+  },
+  liveCapturedPreviewImage: {
     width: '100%',
     height: '100%',
   },
@@ -7854,18 +8828,31 @@ const styles = StyleSheet.create({
   liveCameraBottomSheet: {
     width: '100%',
     paddingHorizontal: theme.spacing.md,
-    paddingTop: theme.spacing.sm,
-    paddingBottom: theme.spacing.md,
+    paddingTop: theme.spacing.md,
+    paddingBottom: theme.spacing.lg,
     borderRadius: 0,
     backgroundColor: '#111111',
+    gap: theme.spacing.sm,
+  },
+  liveCameraPreviewBottomSheet: {
+    paddingTop: theme.spacing.sm,
+    paddingBottom: 78,
     gap: theme.spacing.xs,
   },
   liveCaptureInstructionCard: {
     gap: 6,
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: 8,
-    borderRadius: 14,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.md,
+    borderRadius: 18,
+    borderWidth: 1,
     backgroundColor: 'rgba(255,255,255,0.12)',
+  },
+  liveCaptureInstructionPreview: {
+    gap: 4,
+    paddingHorizontal: theme.spacing.xs,
+    paddingVertical: 0,
+    borderWidth: 0,
+    borderRadius: 0,
   },
   liveCaptureInstructionHeader: {
     flexDirection: 'row',
@@ -7890,13 +8877,22 @@ const styles = StyleSheet.create({
     fontWeight: theme.typography.weights.bold,
     color: theme.colors.textInverse,
   },
-  liveCaptureInstructionIcon: {
-    width: 34,
+  liveCaptureGuideButton: {
+    minWidth: 76,
     height: 34,
-    borderRadius: theme.radius.full,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1,
+    paddingHorizontal: theme.spacing.sm,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.16)',
+    gap: 6,
+    backgroundColor: 'transparent',
+  },
+  liveCaptureGuideText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    fontWeight: theme.typography.weights.bold,
   },
   liveCaptureInstructionTip: {
     fontFamily: theme.typography.fontFamily,
@@ -7908,13 +8904,15 @@ const styles = StyleSheet.create({
   liveCaptureInstructionBullets: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 6,
+    columnGap: theme.spacing.sm,
+    rowGap: 6,
   },
   liveCaptureInstructionBullet: {
+    flexBasis: '47%',
+    maxWidth: '47%',
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: 5,
-    maxWidth: '48%',
   },
   liveCaptureInstructionDot: {
     width: 5,
@@ -7947,33 +8945,99 @@ const styles = StyleSheet.create({
     fontWeight: theme.typography.weights.semibold,
     color: theme.colors.textInverse,
   },
-  liveBottomStatusRow: {
+  liveVoiceCommand: {
+    width: '100%',
+    minHeight: 46,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
     gap: theme.spacing.sm,
-    width: '100%',
-  },
-  liveViewHintDark: {
-    overflow: 'hidden',
-    maxWidth: 92,
-    borderRadius: theme.radius.pill,
     paddingHorizontal: theme.spacing.sm,
-    paddingVertical: 4,
-    backgroundColor: 'rgba(255,255,255,0.12)',
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.caption,
-    fontWeight: theme.typography.weights.semibold,
-    color: theme.colors.textInverse,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderRadius: 16,
   },
-  liveHoldStillText: {
+  liveVoiceCommandIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: theme.radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  liveVoiceCommandText: {
     flex: 1,
     minWidth: 0,
-    textAlign: 'center',
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.bodySm,
-    lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.normal,
+    fontWeight: theme.typography.weights.semibold,
+  },
+  liveVoiceCommandState: {
+    width: 8,
+    height: 8,
+    borderRadius: theme.radius.full,
+    marginRight: 3,
+  },
+  liveHoldStillText: {
+    width: '100%',
+    textAlign: 'center',
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: theme.typography.compact.caption * theme.typography.lineHeights.normal,
     color: theme.colors.textInverse,
+  },
+  livePreviewActions: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: theme.spacing.md,
+    minHeight: 54,
+    paddingHorizontal: theme.spacing.md,
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
+    zIndex: 8,
+  },
+  livePreviewActionShell: {
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: 118,
+    maxWidth: 145,
+    minWidth: 0,
+    minHeight: 54,
+    borderRadius: theme.radius.pill,
+    overflow: 'hidden',
+    ...theme.shadows.soft,
+  },
+  livePreviewPrimaryShell: {
+    flexBasis: 138,
+    maxWidth: 168,
+  },
+  livePreviewActionSurface: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 54,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1,
+    paddingHorizontal: theme.spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  livePreviewActionPressed: {
+    opacity: 0.86,
+    transform: [{ scale: 0.985 }],
+  },
+  livePreviewSecondaryText: {
+    marginLeft: 7,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.bodySm,
+    fontWeight: theme.typography.weights.semibold,
+  },
+  livePreviewPrimaryText: {
+    marginRight: 7,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.bodySm,
+    fontWeight: theme.typography.weights.bold,
   },
   liveCaptureControls: {
     flexDirection: 'row',
@@ -9496,5 +10560,139 @@ const styles = StyleSheet.create({
   },
   questionNextArrowDisabled: {
     backgroundColor: 'rgba(122, 38, 62, 0.08)',
+  },
+  leaveAnalysisOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.lg,
+    backgroundColor: 'rgba(28, 5, 10, 0.66)',
+  },
+  leaveAnalysisBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  leaveAnalysisCard: {
+    width: '100%',
+    maxWidth: 390,
+    maxHeight: '88%',
+    alignSelf: 'center',
+    borderWidth: 1,
+    borderRadius: 28,
+    overflow: 'hidden',
+    ...theme.shadows.card,
+  },
+  leaveAnalysisAccent: {
+    width: '100%',
+    height: 5,
+  },
+  leaveAnalysisScroll: {
+    width: '100%',
+  },
+  leaveAnalysisContent: {
+    width: '100%',
+    paddingHorizontal: theme.spacing.xl,
+    paddingTop: theme.spacing.lg,
+    paddingBottom: theme.spacing.xl,
+    alignItems: 'center',
+  },
+  leaveAnalysisIcon: {
+    width: 62,
+    height: 62,
+    borderRadius: 31,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: theme.spacing.md,
+  },
+  leaveAnalysisEyebrow: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 1.35,
+    marginBottom: 5,
+    textAlign: 'center',
+  },
+  leaveAnalysisTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.titleSm,
+    fontWeight: theme.typography.weights.bold,
+    textAlign: 'center',
+  },
+  leaveAnalysisMessage: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+    lineHeight: 21,
+    textAlign: 'center',
+    marginTop: theme.spacing.sm,
+  },
+  leaveAnalysisNotice: {
+    width: '100%',
+    minHeight: 46,
+    borderRadius: theme.radius.lg,
+    borderWidth: 1,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    marginTop: theme.spacing.lg,
+    marginBottom: theme.spacing.lg,
+  },
+  leaveAnalysisNoticeIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  leaveAnalysisNoticeText: {
+    flex: 1,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 17,
+  },
+  leaveAnalysisActions: {
+    width: '100%',
+    gap: theme.spacing.sm,
+  },
+  leaveAnalysisButtonShell: {
+    width: '100%',
+    minHeight: 54,
+    borderRadius: theme.radius.pill,
+    overflow: 'hidden',
+    ...theme.shadows.soft,
+  },
+  leaveAnalysisButtonSurface: {
+    width: '100%',
+    minHeight: 54,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.lg,
+  },
+  leaveAnalysisButtonPressed: {
+    opacity: 0.86,
+    transform: [{ scale: 0.985 }],
+  },
+  leaveAnalysisStayText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.body,
+    fontWeight: theme.typography.weights.bold,
+  },
+  leaveAnalysisStayIcon: {
+    width: 28,
+    height: 28,
+    marginLeft: theme.spacing.sm,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.14)',
+  },
+  leaveAnalysisExitText: {
+    marginLeft: theme.spacing.sm,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+    fontWeight: theme.typography.weights.semibold,
   },
 });

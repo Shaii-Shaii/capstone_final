@@ -30,11 +30,15 @@ const buildResizeAction = ({ width, height, maxSize }) => {
   const scale = Math.min(1, maxSize / Math.max(resolvedWidth, resolvedHeight));
   if (scale >= 1) return [];
 
+  // Constrain one edge only. Camera libraries can report dimensions before
+  // EXIF orientation is applied; forcing both values can deform portrait
+  // captures after the image manipulator decodes that orientation.
+  const resizedLongestEdge = Math.max(1, Math.round(Math.max(resolvedWidth, resolvedHeight) * scale));
+
   return [{
-    resize: {
-      width: Math.max(1, Math.round(resolvedWidth * scale)),
-      height: Math.max(1, Math.round(resolvedHeight * scale)),
-    },
+    resize: resolvedWidth >= resolvedHeight
+      ? { width: resizedLongestEdge }
+      : { height: resizedLongestEdge },
   }];
 };
 
@@ -488,14 +492,13 @@ export const useDonorHairSubmission = ({ userId, databaseUserId = null }) => {
     return 'Begin photo capture';
   }, [analysis, completedPhotoCount, hasCompletePhotoSet, isAnalyzing, isSaving]);
 
-  useEffect(() => {
+  const refreshContext = useCallback(async ({ silent = false } = {}) => {
     const contextUserId = databaseUserId || userId;
-    if (!contextUserId) return;
+    if (!contextUserId) return null;
 
-    const loadContext = async () => {
-      setIsLoadingContext(true);
+    if (!silent) setIsLoadingContext(true);
+    try {
       const result = await getHairDonationModuleContext(contextUserId);
-      setIsLoadingContext(false);
 
       setAnalyzerContext({
         donationRequirement: result.donationRequirement,
@@ -517,10 +520,15 @@ export const useDonorHairSubmission = ({ userId, databaseUserId = null }) => {
         latestSubmissionDetailId: result.latestSubmissionDetail?.submission_detail_id || null,
         hasError: Boolean(result.error),
       });
-    };
-
-    loadContext();
+      return result;
+    } finally {
+      if (!silent) setIsLoadingContext(false);
+    }
   }, [databaseUserId, userId]);
+
+  useEffect(() => {
+    void refreshContext();
+  }, [refreshContext]);
 
   const setPhotoAtSlot = (slotIndex, photo) => {
     const invalidatedRequestId = activeAnalysisRequestRef.current;
@@ -1026,5 +1034,6 @@ export const useDonorHairSubmission = ({ userId, databaseUserId = null }) => {
     submitSubmission,
     resetFlow,
     clearAnalysisError,
+    refreshContext,
   };
 };

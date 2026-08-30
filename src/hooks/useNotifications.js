@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { AppState } from 'react-native';
+import * as Notifications from 'expo-notifications';
 import { supabase } from '../api/supabase/client';
 import {
   loadNotificationSummary,
@@ -7,6 +9,10 @@ import {
   markNotificationRead,
 } from '../features/notification.service';
 import { resolveDatabaseUserId } from '../features/profile/api/profile.api';
+import {
+  publishNotificationChange,
+  subscribeToNotificationChanges,
+} from '../features/notification.events';
 
 const NOTIFICATION_CACHE_TTL_MS = 30 * 1000;
 const notificationCache = new Map();
@@ -19,6 +25,28 @@ const getNotificationCacheKey = ({ role, userId, mode }) => (
 const isCacheFresh = (cacheEntry) => (
   Boolean(cacheEntry?.fetchedAt && Date.now() - cacheEntry.fetchedAt < NOTIFICATION_CACHE_TTL_MS)
 );
+
+const updateUserNotificationCaches = ({ role, userId, result }) => {
+  const cachePrefix = `${role || 'unknown'}:${userId || 'anonymous'}:`;
+  notificationCache.forEach((entry, key) => {
+    if (!key.startsWith(cachePrefix)) return;
+    notificationCache.set(key, {
+      fetchedAt: Date.now(),
+      result: {
+        ...entry.result,
+        ...result,
+      },
+    });
+  });
+};
+
+const invalidateUserNotificationCaches = ({ role, userId }) => {
+  const cachePrefix = `${role || 'unknown'}:${userId || 'anonymous'}:`;
+  notificationCache.forEach((entry, key) => {
+    if (!key.startsWith(cachePrefix)) return;
+    notificationCache.set(key, { ...entry, fetchedAt: 0 });
+  });
+};
 
 export const useNotifications = ({
   role,
@@ -35,6 +63,7 @@ export const useNotifications = ({
   const [isRefreshingNotifications, setIsRefreshingNotifications] = useState(false);
   const [notificationError, setNotificationError] = useState(null);
   const [databaseUserId, setDatabaseUserId] = useState(preferredDatabaseUserId || null);
+  const appStateRef = useRef(AppState.currentState);
   const cacheKey = getNotificationCacheKey({ role, userId, mode });
   const loader = mode === 'full' ? loadNotifications : loadNotificationSummary;
 
@@ -93,16 +122,29 @@ export const useNotifications = ({
 
     notificationInflightRequests.set(cacheKey, request);
 
-    const result = await request;
-
-    if (silent) {
-      setIsRefreshingNotifications(false);
-    } else {
-      setIsLoadingNotifications(false);
+    try {
+      const result = await request;
+      applyNotificationResult(result);
+      return result;
+    } catch (error) {
+      const fallbackResult = cached?.result || {
+        notifications: [],
+        unreadCount: 0,
+        databaseUserId: preferredDatabaseUserId || databaseUserId || null,
+      };
+      const errorResult = {
+        ...fallbackResult,
+        error: error?.message || 'Unable to refresh notifications right now.',
+      };
+      applyNotificationResult(errorResult);
+      return errorResult;
+    } finally {
+      if (silent) {
+        setIsRefreshingNotifications(false);
+      } else {
+        setIsLoadingNotifications(false);
+      }
     }
-
-    applyNotificationResult(result);
-    return result;
   }, [applyNotificationResult, cacheKey, databaseUserId, loader, preferredDatabaseUserId, role, userEmail, userId]);
 
   useEffect(() => {
@@ -136,7 +178,15 @@ export const useNotifications = ({
       fetchedAt: Date.now(),
       result: normalizedResult,
     });
+    updateUserNotificationCaches({ role, userId, result: normalizedResult });
     applyNotificationResult(normalizedResult);
+    publishNotificationChange({
+      source: 'read-state',
+      role,
+      userId,
+      databaseUserId,
+      result: normalizedResult,
+    });
   };
 
   const readAllNotifications = async () => {
@@ -151,8 +201,54 @@ export const useNotifications = ({
       fetchedAt: Date.now(),
       result: normalizedResult,
     });
+    updateUserNotificationCaches({ role, userId, result: normalizedResult });
     applyNotificationResult(normalizedResult);
+    publishNotificationChange({
+      source: 'read-state',
+      role,
+      userId,
+      databaseUserId,
+      result: normalizedResult,
+    });
   };
+
+  useEffect(() => {
+    if (!userId || !role) return undefined;
+
+    return subscribeToNotificationChanges((event) => {
+      if (event?.role && event.role !== role) return;
+      if (event?.userId && event.userId !== userId) return;
+      if (event?.databaseUserId && databaseUserId && Number(event.databaseUserId) !== Number(databaseUserId)) return;
+
+      if (event?.result) {
+        applyNotificationResult(event.result);
+        return;
+      }
+
+      invalidateUserNotificationCaches({ role, userId });
+      void refreshNotifications({ silent: true, force: true });
+    });
+  }, [applyNotificationResult, databaseUserId, refreshNotifications, role, userId]);
+
+  useEffect(() => {
+    if (!userId || !role) return undefined;
+
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      const wasInactive = appStateRef.current === 'background' || appStateRef.current === 'inactive';
+      appStateRef.current = nextState;
+      if (wasInactive && nextState === 'active') {
+        invalidateUserNotificationCaches({ role, userId });
+        void refreshNotifications({ silent: true, force: true });
+      }
+    });
+
+    return () => subscription.remove();
+  }, [refreshNotifications, role, userId]);
+
+  useEffect(() => {
+    if (!userId || !role) return;
+    void Notifications.setBadgeCountAsync(Math.max(0, Number(unreadCount) || 0)).catch(() => {});
+  }, [role, unreadCount, userId]);
 
   useEffect(() => {
     let isMounted = true;

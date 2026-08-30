@@ -26,6 +26,8 @@ import { DonorTopBar } from '../src/components/donor/DonorTopBar';
 import { useProfileActions } from '../src/hooks/useProfileActions';
 import { useNotifications } from '../src/hooks/useNotifications';
 import { useAuth } from '../src/providers/AuthProvider';
+import { useLanguage } from '../src/providers/LanguageProvider';
+import { useTextSize } from '../src/providers/TextSizeProvider';
 import { resolveThemeRoles, theme } from '../src/design-system/theme';
 import { getPasswordStrengthMessage } from '../src/utils/passwordRules';
 import { logAppEvent } from '../src/utils/appErrors';
@@ -296,7 +298,7 @@ function ProfileMenuRow({ icon, title, subtitle = '', badge, danger = false, isL
         ]}>{title}</Text>
         {subtitle ? (
           <Text
-            numberOfLines={1}
+            numberOfLines={2}
             style={[styles.profileMenuSubtitle, rowRoles ? { color: rowRoles.metaText } : null]}
           >
             {subtitle}
@@ -336,7 +338,7 @@ function ProfileMoreRow({ icon, title, subtitle, badge = null, isLast = false, o
         <View style={styles.profileMoreCopy}>
           <Text style={[styles.profileMoreText, rowRoles ? { color: textColor || rowRoles.bodyText } : null]}>{title}</Text>
           {subtitle ? (
-            <Text numberOfLines={1} style={[styles.profileMoreSubtitle, rowRoles ? { color: rowRoles.metaText } : null]}>
+            <Text numberOfLines={2} style={[styles.profileMoreSubtitle, rowRoles ? { color: rowRoles.metaText } : null]}>
               {subtitle}
             </Text>
           ) : null}
@@ -351,6 +353,57 @@ function ProfileMoreRow({ icon, title, subtitle, badge = null, isLast = false, o
         </View>
       </View>
     </Pressable>
+  );
+}
+
+function ProfileModalActionButton({
+  title,
+  icon,
+  onPress,
+  roles,
+  variant = 'primary',
+  loading = false,
+  disabled = false,
+}) {
+  const isPrimary = variant === 'primary';
+  const isInactive = loading || disabled;
+  const foregroundColor = isPrimary ? roles.primaryActionText : roles.headingText;
+
+  return (
+    <View style={styles.editModalActionSlot}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={title}
+        accessibilityState={{ disabled: isInactive, busy: loading }}
+        disabled={isInactive}
+        onPress={onPress}
+        style={({ pressed }) => [
+          styles.editModalActionButton,
+          {
+            opacity: isInactive ? 0.68 : pressed ? 0.88 : 1,
+            transform: [{ scale: pressed && !isInactive ? 0.985 : 1 }],
+          },
+        ]}
+      >
+        <View
+          pointerEvents="none"
+          style={[
+            styles.editModalActionContent,
+            {
+              backgroundColor: isPrimary ? roles.primaryActionBackground : roles.pageBackground,
+              borderColor: isPrimary ? roles.primaryActionBackground : roles.defaultCardBorder,
+            },
+          ]}
+        >
+          {loading ? (
+            <ActivityIndicator size="small" color={foregroundColor} />
+          ) : (
+            <AppIcon name={icon} size="sm" color={foregroundColor} />
+          )}
+          <Text numberOfLines={1} style={[styles.editModalActionText, { color: foregroundColor }]}>{title}</Text>
+        </View>
+      </Pressable>
+    </View>
   );
 }
 
@@ -412,6 +465,8 @@ export default function ProfileScreen() {
   const router = useRouter();
   const { width, height: viewportHeight } = useWindowDimensions();
   const { resolvedTheme } = useAuth();
+  const { language, setLanguage, supportedLanguages, t } = useLanguage();
+  const { textSize, setTextSize, textSizeOptions } = useTextSize();
   const isMobileViewport = width < 768;
   const roles = resolveThemeRoles(resolvedTheme, { isMobile: isMobileViewport });
   const {
@@ -420,12 +475,9 @@ export default function ProfileScreen() {
     patientProfile,
     hospitalProfile,
     defaultValues,
-    profileCompletionMeta,
-    isLoadingRoleProfile,
     isSavingProfile,
     isChangingPassword,
     isUploadingAvatar,
-    getProfileCompletionMeta,
     hasUnsavedProfileChanges,
     saveSharedProfile,
     uploadAvatar,
@@ -439,6 +491,10 @@ export default function ProfileScreen() {
 
   const [mode, setMode] = useState('view');
   const [feedback, setFeedback] = useState(null);
+  const [isLogoutConfirmationOpen, setIsLogoutConfirmationOpen] = useState(false);
+  const [isLanguageModalOpen, setIsLanguageModalOpen] = useState(false);
+  const [isTextSizeModalOpen, setIsTextSizeModalOpen] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [passwordSuccess, setPasswordSuccess] = useState(false);
   const [activeProfilePicker, setActiveProfilePicker] = useState('');
@@ -459,6 +515,7 @@ export default function ProfileScreen() {
     achievements: 0,
   });
   const successTimerRef = useRef(null);
+  const logoutRequestRef = useRef(false);
 
   const profileForm = useForm({
     resolver: zodResolver(profileUpdateSchema),
@@ -593,11 +650,12 @@ export default function ProfileScreen() {
   ];
   const profileEditFieldLabel = [styles.profileEditFieldLabel, { color: primaryTextColor }];
   const profileEditFieldText = [styles.profileEditFieldText, { color: primaryTextColor }];
+  const profileEditFieldPlaceholder = [styles.profileEditFieldText, { color: roles.metaText }];
   const profileEditFieldHelper = [styles.profileEditFieldHelper, { color: primaryTextColor }];
   const profileEditFieldError = [styles.profileEditFieldError];
   const profileEditInputProps = {
     variant: 'default',
-    placeholderTextColor: primaryTextColor,
+    placeholderTextColor: roles.metaText,
     style: styles.profileEditFieldContainer,
     labelStyle: profileEditFieldLabel,
     shellStyle: profileEditFieldShell,
@@ -610,7 +668,7 @@ export default function ProfileScreen() {
     labelStyle: profileEditFieldLabel,
     fieldStyle: profileEditFieldShell,
     valueStyle: profileEditFieldText,
-    placeholderStyle: profileEditFieldText,
+    placeholderStyle: profileEditFieldPlaceholder,
     helperTextStyle: profileEditFieldHelper,
     errorTextStyle: profileEditFieldError,
     leftIconColor: roles.primaryActionBackground,
@@ -621,7 +679,7 @@ export default function ProfileScreen() {
     labelStyle: profileEditFieldLabel,
     shellStyle: profileEditFieldShell,
     valueStyle: profileEditFieldText,
-    placeholderStyle: profileEditFieldText,
+    placeholderStyle: profileEditFieldPlaceholder,
     helperTextStyle: profileEditFieldHelper,
     errorTextStyle: profileEditFieldError,
     leftIconColor: roles.primaryActionBackground,
@@ -648,13 +706,6 @@ export default function ProfileScreen() {
     : 'info';
   const isPopupVisible = mode !== 'view';
   const modalMaxHeight = Math.max(360, viewportHeight - theme.spacing.xl * 2);
-  const liveProfileCompletionMeta = useMemo(() => (
-    getProfileCompletionMeta(watchedProfileValues)
-  ), [getProfileCompletionMeta, watchedProfileValues]);
-  const activeProfileCompletionMeta = watchedProfileValues
-    ? liveProfileCompletionMeta
-    : profileCompletionMeta;
-  const isProfileCompletionLoading = isLoadingRoleProfile && mode === 'edit';
   const hasDirtyProfileDraft = mode === 'edit' && hasUnsavedProfileChanges(watchedProfileValues);
   const setFloatingFeedback = useCallback((type, title, message) => {
     setFeedback({ type, title, message });
@@ -821,15 +872,33 @@ export default function ProfileScreen() {
   }, [patientMedicalDocument, setFloatingFeedback]);
 
   const handleLogoutPress = useCallback(async () => {
+    if (logoutRequestRef.current) return;
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setIsLogoutConfirmationOpen(true);
+  }, []);
+
+  const closeLogoutConfirmation = useCallback(() => {
+    if (logoutRequestRef.current) return;
+    setIsLogoutConfirmationOpen(false);
+  }, []);
+
+  const handleConfirmLogout = useCallback(async () => {
+    if (logoutRequestRef.current) return;
+    logoutRequestRef.current = true;
+    setIsLoggingOut(true);
+    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+
     const result = await logout();
     if (result?.success && !result?.error) {
+      setIsLogoutConfirmationOpen(false);
       router.replace('/auth/access');
       return;
     }
-    if (result?.error) {
-      setFloatingFeedback('error', 'Logout Failed', result.error || 'Unable to log out right now.');
-    }
+
+    logoutRequestRef.current = false;
+    setIsLoggingOut(false);
+    setIsLogoutConfirmationOpen(false);
+    setFloatingFeedback('error', 'Logout Failed', result?.error || 'Unable to log out right now.');
   }, [logout, router, setFloatingFeedback]);
 
   const submitProfile = async (values) => {
@@ -955,14 +1024,14 @@ export default function ProfileScreen() {
           {[
             {
               key: 'donations',
-              label: 'Donations',
+              label: t('profile.donations'),
               value: donorStats.donations,
               valueColor: primaryTextColor,
               labelColor: primaryTextColor,
             },
             {
               key: 'achievements',
-              label: 'Achievements',
+              label: t('profile.achievements'),
               value: donorStats.achievements,
               valueColor: primaryTextColor,
               labelColor: primaryTextColor,
@@ -988,7 +1057,7 @@ export default function ProfileScreen() {
 
       <View style={styles.profileSection}>
         <SectionTitleRow
-          title="Account"
+          title={t('profile.account')}
           icon="profile"
           color={primaryTextColor}
           iconColor={roles.primaryActionBackground}
@@ -999,24 +1068,24 @@ export default function ProfileScreen() {
           <ProfileMenuRow
             roles={roles}
             icon="editProfile"
-            title="Edit Profile"
-            subtitle="Update your personal details"
+            title={t('profile.edit')}
+            subtitle={t('profile.editSubtitle')}
             textColor={primaryTextColor}
             onPress={() => setMode('edit')}
           />
           <ProfileMenuRow
             roles={roles}
             icon="changePassword"
-            title="Change Password"
-            subtitle="Keep your account secure"
+            title={t('profile.changePassword')}
+            subtitle={t('profile.changePasswordSubtitle')}
             textColor={primaryTextColor}
             onPress={() => setMode('password')}
           />
           <ProfileMenuRow
             roles={roles}
             icon="updates"
-            title="History"
-            subtitle="Review your donation journey"
+            title={t('profile.history')}
+            subtitle={t('profile.historySubtitle')}
             badge={donorStats.donations}
             textColor={primaryTextColor}
             onPress={() => router.navigate('/donor/donation-history')}
@@ -1024,8 +1093,8 @@ export default function ProfileScreen() {
           <ProfileMenuRow
             roles={roles}
             icon="sparkle"
-            title="Achievements"
-            subtitle="View certificates and milestones"
+            title={t('profile.achievements')}
+            subtitle={t('profile.achievementsSubtitle')}
             badge={donorStats.achievements}
             isLast
             textColor={primaryTextColor}
@@ -1036,7 +1105,7 @@ export default function ProfileScreen() {
 
       <View style={styles.profileSection}>
         <SectionTitleRow
-          title="Preferences & support"
+          title={t('profile.preferences')}
           icon="quickActions"
           color={primaryTextColor}
           iconColor={roles.primaryActionBackground}
@@ -1046,9 +1115,25 @@ export default function ProfileScreen() {
         <View style={[styles.profileSectionShell, { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder }]}>
           <ProfileMoreRow
             roles={roles}
+            icon="translate"
+            title={t('profile.language')}
+            subtitle={language === 'fil' ? 'Filipino' : 'English'}
+            textColor={primaryTextColor}
+            onPress={() => setIsLanguageModalOpen(true)}
+          />
+          <ProfileMoreRow
+            roles={roles}
+            icon="format-size"
+            title={t('profile.textSize')}
+            subtitle={t(`textSize.${textSize}`)}
+            textColor={primaryTextColor}
+            onPress={() => setIsTextSizeModalOpen(true)}
+          />
+          <ProfileMoreRow
+            roles={roles}
             icon="bell-outline"
-            title="Notifications"
-            subtitle="View your latest updates"
+            title={t('profile.notifications')}
+            subtitle={t('profile.notificationsSubtitle')}
             badge={unreadCount}
             textColor={primaryTextColor}
             onPress={() => router.navigate('/donor/notifications')}
@@ -1056,16 +1141,16 @@ export default function ProfileScreen() {
           <ProfileMoreRow
             roles={roles}
             icon="message-alert-outline"
-            title="Feedback"
-            subtitle="Tell us about your experience"
+            title={t('profile.feedback')}
+            subtitle={t('profile.feedbackSubtitle')}
             textColor={primaryTextColor}
             onPress={() => router.navigate('/donor/feedback')}
           />
           <ProfileMoreRow
             roles={roles}
             icon="help-circle-outline"
-            title="Help"
-            subtitle="Get help and app information"
+            title={t('profile.help')}
+            subtitle={t('profile.helpSubtitle')}
             isLast
             textColor={primaryTextColor}
             onPress={() => router.navigate('/help')}
@@ -1075,7 +1160,7 @@ export default function ProfileScreen() {
 
       <View style={styles.profileLogoutSection}>
         <AppButton
-          title="Log out"
+          title={t('profile.logout')}
           variant="outline"
           fullWidth
           onPress={handleLogoutPress}
@@ -1145,7 +1230,7 @@ export default function ProfileScreen() {
       <View style={styles.patientProfileGrid}>
         <View style={styles.profileSection}>
           <SectionTitleRow
-            title="Medical Information"
+            title={t('profile.medicalInformation')}
             icon="shield"
             color={primaryTextColor}
             iconColor={roles.primaryActionBackground}
@@ -1194,7 +1279,7 @@ export default function ProfileScreen() {
 
         <View style={styles.profileSection}>
           <SectionTitleRow
-            title="Account Settings"
+            title={t('profile.accountSettings')}
             icon="settings"
             color={primaryTextColor}
             iconColor={roles.primaryActionBackground}
@@ -1204,22 +1289,38 @@ export default function ProfileScreen() {
           <View style={[styles.profileSectionShell, { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder }]}>
             <PatientProfileRow
               icon="profile"
-              title="Personal Information"
+              title={t('profile.personalInformation')}
               onPress={() => setMode('edit')}
               roles={roles}
               textColor={primaryTextColor}
             />
             <PatientProfileRow
               icon="feedback"
-              title="Feedback"
+              title={t('profile.feedback')}
               onPress={() => router.navigate('/patient/feedback')}
               roles={roles}
               textColor={primaryTextColor}
             />
             <PatientProfileRow
+              icon="translate"
+              title={t('profile.language')}
+              value={language === 'fil' ? 'Filipino' : 'English'}
+              onPress={() => setIsLanguageModalOpen(true)}
+              roles={roles}
+              textColor={primaryTextColor}
+            />
+            <PatientProfileRow
+              icon="format-size"
+              title={t('profile.textSize')}
+              value={t(`textSize.${textSize}`)}
+              onPress={() => setIsTextSizeModalOpen(true)}
+              roles={roles}
+              textColor={primaryTextColor}
+            />
+            <PatientProfileRow
               icon="help-circle-outline"
-              title="Help & User Guide"
-              value="Learn how to use Donivra"
+              title={t('profile.helpGuide')}
+              value={t('profile.helpGuideSubtitle')}
               onPress={() => router.navigate('/help')}
               roles={roles}
               textColor={primaryTextColor}
@@ -1230,7 +1331,7 @@ export default function ProfileScreen() {
 
       <View style={styles.profileLogoutSection}>
         <AppButton
-          title="Log Out"
+          title={t('profile.logout')}
           variant="outline"
           fullWidth={false}
           onPress={handleLogoutPress}
@@ -1255,8 +1356,8 @@ export default function ProfileScreen() {
         header={(
           <DashboardHeaderSurface>
             <DonorTopBar
-              title="My profile"
-              subtitle="Account and preferences"
+              title={t('profile.title')}
+              subtitle={t('profile.subtitle')}
               showBack
               unreadCount={unreadCount}
               showLogoutAction={false}
@@ -1279,48 +1380,52 @@ export default function ProfileScreen() {
               <AppCard
                 variant="elevated"
                 radius="md"
-                padding="lg"
+                padding={mode === 'edit' ? 'none' : 'lg'}
                 style={[styles.modalCard, { maxHeight: modalMaxHeight }]}
-                contentStyle={styles.modalCardContent}
+                contentStyle={[
+                  styles.modalCardContent,
+                  mode === 'edit' ? styles.editModalCardContent : null,
+                ]}
               >
                 {mode === 'edit' ? (
                   <>
-                    <View style={styles.modalHeaderBlock}>
-                      <View style={styles.completionCard}>
-                        <View style={styles.completionHeader}>
-                          <Text style={[styles.completionTitle, { color: primaryTextColor }]}>Profile Completion</Text>
-                          <Text style={[styles.completionPercent, { color: primaryTextColor }]}>{activeProfileCompletionMeta.percentage}%</Text>
-                        </View>
-                        <View style={styles.completionBarTrack}>
-                          <View
-                            style={[
-                              styles.completionBarFill,
-                              { width: `${activeProfileCompletionMeta.percentage}%` },
-                            ]}
-                          />
-                        </View>
-                        {isProfileCompletionLoading ? (
-                          <View style={styles.completionLoadingRow}>
-                            <ActivityIndicator size="small" color={roles.primaryActionBackground} />
-                            <Text style={[styles.completionLoadingText, { color: primaryTextColor }]}>
-                              Loading profile completion...
-                            </Text>
-                          </View>
-                        ) : activeProfileCompletionMeta.isComplete ? (
-                          <View style={styles.completionCompleteRow}>
-                            <AppIcon name="check-decagram" size="sm" color={roles.primaryActionBackground} />
-                            <Text style={[styles.completionCompleteText, { color: primaryTextColor }]}>
-                              All required fields are complete.
-                            </Text>
-                          </View>
-                        ) : null}
+                    <LinearGradient
+                      colors={role === 'patient'
+                        ? [theme.colors.dashboardPatientFrom, theme.colors.dashboardPatientTo]
+                        : [theme.colors.dashboardDonorFrom, theme.colors.dashboardDonorTo]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={[
+                        styles.editModalHeader,
+                        { borderBottomColor: roles.primaryActionBackground },
+                      ]}
+                    >
+                      <View pointerEvents="none" style={styles.editModalHeaderGlow} />
+                      <View style={styles.editModalHeaderCopy}>
+                        <Text style={[styles.editModalTitle, { color: roles.primaryActionText }]}>Edit profile</Text>
+                        <Text style={[styles.editModalSubtitle, { color: roles.primaryActionText }]}>
+                          Keep your personal details accurate and up to date.
+                        </Text>
                       </View>
-                    </View>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="Close edit profile"
+                        onPress={requestEditModalClose}
+                        hitSlop={8}
+                        style={({ pressed }) => [
+                          styles.editModalCloseButton,
+                          { backgroundColor: 'rgba(255,255,255,0.16)', opacity: pressed ? 0.72 : 1 },
+                        ]}
+                      >
+                        <AppIcon name="close" size="sm" color={roles.primaryActionText} />
+                      </Pressable>
+                    </LinearGradient>
 
                     <ScrollView
-                      style={[styles.modalBodyScroll, { maxHeight: modalMaxHeight - 210 }]}
-                      contentContainerStyle={styles.modalBodyContent}
+                      style={styles.editModalBodyScroll}
+                      contentContainerStyle={styles.editModalBodyContent}
                       showsVerticalScrollIndicator={true}
+                      persistentScrollbar={false}
                       keyboardShouldPersistTaps="handled"
                       keyboardDismissMode="interactive"
                       nestedScrollEnabled={true}
@@ -1337,24 +1442,53 @@ export default function ProfileScreen() {
                             { opacity: pressed ? 0.9 : 1 },
                           ]}
                         >
-                          <View style={styles.profileEditPhotoAvatarWrap}>
-                            <View style={[styles.profileEditPhotoAvatar, { backgroundColor: theme.colors.surfaceCard, borderColor: roles.defaultCardBorder }]}>
-                              {avatarUri ? (
-                                <Image source={{ uri: avatarUri }} style={styles.profileEditPhotoAvatarImage} resizeMode="cover" />
-                              ) : (
-                                <Text style={[styles.profileEditPhotoAvatarText, { color: roles.primaryActionBackground }]}>
-                                  {(avatarInitials || 'DN').toUpperCase().slice(0, 2)}
-                                </Text>
-                              )}
+                          <LinearGradient
+                            pointerEvents="none"
+                            colors={[roles.iconPrimarySurface, roles.defaultCardBackground]}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 1, y: 1 }}
+                            style={[styles.profileEditPhotoSurface, { borderColor: roles.defaultCardBorder }]}
+                          >
+                            <View style={styles.profileEditPhotoAvatarWrap}>
+                              <View style={[styles.profileEditPhotoAvatar, { backgroundColor: roles.defaultCardBackground, borderColor: roles.primaryActionBackground }]}>
+                                {avatarUri ? (
+                                  <Image source={{ uri: avatarUri }} style={styles.profileEditPhotoAvatarImage} resizeMode="cover" />
+                                ) : (
+                                  <Text style={[styles.profileEditPhotoAvatarText, { color: roles.primaryActionBackground }]}>
+                                    {(avatarInitials || 'DN').toUpperCase().slice(0, 2)}
+                                  </Text>
+                                )}
+                              </View>
+                              <View style={[styles.profileEditPhotoBadge, { backgroundColor: roles.iconAccentSurface, borderColor: roles.defaultCardBackground }]}>
+                                <AppIcon name="pencil-outline" size="sm" color={roles.iconAccentColor} />
+                              </View>
                             </View>
-                            <View style={[styles.profileEditPhotoBadge, { backgroundColor: '#F7D86A', borderColor: theme.colors.surfaceCard }]}>
-                              <AppIcon name="pencil-outline" size="sm" color={roles.primaryActionBackground} />
+                            <View style={styles.profileEditPhotoCopy}>
+                              <Text style={[styles.profileEditPhotoTitle, { color: roles.headingText }]}>Profile photo</Text>
+                              <Text style={[styles.profileEditPhotoHint, { color: roles.bodyText }]}>Use a clear photo so your account is easy to recognize.</Text>
+                              <View style={[styles.profileEditPhotoLabel, { backgroundColor: roles.primaryActionBackground }]}>
+                                <AppIcon name="camera" size="sm" color={roles.primaryActionText} />
+                                <Text style={[styles.profileEditPhotoLabelText, { color: roles.primaryActionText }]}>Change photo</Text>
+                              </View>
                             </View>
-                          </View>
+                          </LinearGradient>
                         </Pressable>
                       </View>
 
+                      <View style={styles.editModalSectionHeading}>
+                        <View style={[styles.editModalSectionIcon, { backgroundColor: roles.iconPrimarySurface }]}>
+                          <AppIcon name="profile" size="md" color={roles.iconPrimaryColor} />
+                        </View>
+                        <View style={styles.editModalSectionCopy}>
+                          <Text style={[styles.editModalSectionTitle, { color: roles.headingText }]}>Personal details</Text>
+                          <Text style={[styles.editModalSectionText, { color: roles.metaText }]}>Required fields are marked with *</Text>
+                        </View>
+                      </View>
+
                       {profileFieldConfig.map((field) => {
+                        const isRequiredField = REQUIRED_PROFILE_FIELDS.has(field.formKey);
+                        const emptyFieldText = isRequiredField ? 'Required' : 'N/A';
+
                         if (field.formKey === 'street') {
                           return (
                             <SignupAddressSection
@@ -1362,12 +1496,13 @@ export default function ProfileScreen() {
                               control={profileForm.control}
                               errors={profileErrors}
                               setValue={profileForm.setValue}
-                              showHeader={false}
+                              showHeader
                               showHelperText={false}
                               showTopBorder={false}
                               inputProps={profileEditInputProps}
                               selectProps={profileEditSelectProps}
                               countryInputProps={{ helperText: '' }}
+                              emptyValuePlaceholder="N/A"
                             />
                           );
                         }
@@ -1387,9 +1522,9 @@ export default function ProfileScreen() {
                                   <View>
                                     <DatePickerField
                                       label={field.label}
-                                      required={REQUIRED_PROFILE_FIELDS.has(field.formKey)}
+                                      required={isRequiredField}
                                       value={controllerField.value}
-                                      placeholder={field.placeholder}
+                                      placeholder={emptyFieldText}
                                       helperText={field.helperText}
                                       error={fieldState.error?.message}
                                       onChange={controllerField.onChange}
@@ -1446,9 +1581,9 @@ export default function ProfileScreen() {
                                   <>
                                     <AddressSelectField
                                       label={field.label}
-                                      required={REQUIRED_PROFILE_FIELDS.has(field.formKey)}
+                                      required={isRequiredField}
                                       value={controllerField.value}
-                                      placeholder={field.placeholder}
+                                      placeholder={emptyFieldText}
                                       helperText={field.helperText}
                                       error={fieldState.error?.message}
                                       onPress={async () => {
@@ -1483,9 +1618,9 @@ export default function ProfileScreen() {
                                   <>
                                     <AddressSelectField
                                       label={field.label}
-                                      required={REQUIRED_PROFILE_FIELDS.has(field.formKey)}
+                                      required={isRequiredField}
                                       value={watchedGender}
-                                      placeholder={field.placeholder}
+                                      placeholder={emptyFieldText}
                                       helperText={field.helperText}
                                       error={fieldState.error?.message}
                                       onPress={async () => {
@@ -1518,8 +1653,8 @@ export default function ProfileScreen() {
                               return (
                                 <AppInput
                                   label={field.label}
-                                  required={REQUIRED_PROFILE_FIELDS.has(field.formKey)}
-                                  placeholder={field.placeholder}
+                                  required={isRequiredField}
+                                  placeholder={emptyFieldText}
                                   keyboardType={field.keyboardType}
                                   helperText={field.helperText}
                                   disabled={field.editable === false}
@@ -1577,35 +1712,37 @@ export default function ProfileScreen() {
                         </Pressable>
                       ) : null}
 
-                      <View style={styles.profileModalActionRow}>
-                        <ProfileGradientActionButton
-                          title="Close"
-                          onPress={requestEditModalClose}
-                          textColor={primaryTextColor}
-                          fillColors={PROFILE_ACTION_MUTED_FILL_GRAD}
-                          borderColors={PROFILE_ACTION_BORDER_GRAD}
-                          variant="outline"
-                          showShine={false}
-                          style={styles.profileModalActionShell}
-                          buttonStyle={styles.profileModalActionButton}
-                        />
-                        <ProfileGradientActionButton
-                          title="Save Changes"
-                          loading={isSavingProfile}
-                          success={saveSuccess}
-                          onPress={profileForm.handleSubmit(
-                            submitProfile,
-                            () => setFloatingFeedback('error', 'Check Your Details', 'Please correct the highlighted profile fields before saving.')
-                          )} 
-                          textColor={roles.primaryActionText}
-                          fillColors={PROFILE_ACTION_FILL_GRAD}
-                          borderColors={PROFILE_ACTION_BORDER_GRAD}
-                          variant="outline"
-                          style={styles.profileModalActionShell}
-                          buttonStyle={styles.profileModalActionButton}
-                        />
-                      </View>
                     </ScrollView>
+
+                    <View
+                      style={[
+                        styles.editModalFooter,
+                        {
+                          backgroundColor: roles.defaultCardBackground,
+                          borderTopColor: roles.defaultCardBorder,
+                        },
+                      ]}
+                    >
+                      <ProfileModalActionButton
+                        title="Cancel"
+                        icon="close"
+                        onPress={requestEditModalClose}
+                        roles={roles}
+                        variant="secondary"
+                        disabled={isSavingProfile}
+                      />
+                      <ProfileModalActionButton
+                        title={saveSuccess ? 'Saved' : 'Save changes'}
+                        icon={saveSuccess ? 'success' : 'save'}
+                        loading={isSavingProfile}
+                        disabled={isSavingProfile}
+                        onPress={profileForm.handleSubmit(
+                          submitProfile,
+                          () => setFloatingFeedback('error', 'Check Your Details', 'Please correct the highlighted profile fields before saving.')
+                        )}
+                        roles={roles}
+                      />
+                    </View>
                   </>
                 ) : null}
 
@@ -1849,6 +1986,336 @@ export default function ProfileScreen() {
         </Modal>
       </DashboardLayout>
 
+      <Modal
+        transparent
+        visible={isLanguageModalOpen}
+        animationType="fade"
+        onRequestClose={() => setIsLanguageModalOpen(false)}
+        statusBarTranslucent
+      >
+        <View style={styles.languageModalOverlay}>
+          <Pressable
+            accessibilityLabel={t('common.close')}
+            onPress={() => setIsLanguageModalOpen(false)}
+            style={styles.languageModalBackdrop}
+          />
+          <View
+            accessibilityViewIsModal
+            style={[
+              styles.languageModalCard,
+              { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder },
+            ]}
+          >
+            <LinearGradient
+              pointerEvents="none"
+              colors={[roles.primaryActionBackground, theme.colors.palette.wine700]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 0 }}
+              style={styles.languageModalAccent}
+            />
+            <View style={styles.languageModalHeader}>
+              <View style={[styles.languageModalHeaderIcon, { backgroundColor: roles.iconPrimarySurface }]}>
+                <AppIcon name="translate" size="lg" color={roles.primaryActionBackground} />
+              </View>
+              <View style={styles.languageModalHeaderCopy}>
+                <Text style={[styles.languageModalTitle, { color: primaryTextColor }]}>{t('language.title')}</Text>
+                <Text style={[styles.languageModalSubtitle, { color: roles.metaText }]}>{t('language.subtitle')}</Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t('common.close')}
+                hitSlop={8}
+                onPress={() => setIsLanguageModalOpen(false)}
+                style={[styles.languageModalClose, { backgroundColor: roles.iconPrimarySurface }]}
+              >
+                <AppIcon name="close" size="sm" color={roles.primaryActionBackground} />
+              </Pressable>
+            </View>
+
+            <View style={styles.languageOptionList}>
+              {supportedLanguages.map((option) => {
+                const selected = language === option.code;
+                const descriptionKey = option.code === 'fil'
+                  ? 'language.filipinoDescription'
+                  : 'language.englishDescription';
+                return (
+                  <Pressable
+                    key={option.code}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected }}
+                    onPress={() => {
+                      void setLanguage(option.code);
+                      void Haptics.selectionAsync();
+                    }}
+                    style={({ pressed }) => [
+                      styles.languageOptionPressable,
+                      pressed ? styles.pressed : null,
+                    ]}
+                  >
+                    <View
+                      style={[
+                        styles.languageOptionSurface,
+                        {
+                          backgroundColor: selected ? roles.iconPrimarySurface : roles.pageBackground,
+                          borderColor: selected ? roles.primaryActionBackground : roles.defaultCardBorder,
+                        },
+                      ]}
+                    >
+                      <View
+                        style={[
+                          styles.languageOptionCode,
+                          { backgroundColor: selected ? roles.primaryActionBackground : roles.supportCardBackground },
+                        ]}
+                      >
+                        <Text style={[styles.languageOptionCodeText, { color: selected ? roles.primaryActionText : roles.headingText }]}>
+                          {option.code === 'fil' ? 'FIL' : 'EN'}
+                        </Text>
+                      </View>
+                      <View style={styles.languageOptionCopy}>
+                        <Text style={[styles.languageOptionTitle, { color: primaryTextColor }]}>{option.nativeLabel}</Text>
+                        <Text numberOfLines={2} style={[styles.languageOptionSubtitle, { color: roles.metaText }]}>
+                          {t(descriptionKey)}
+                        </Text>
+                      </View>
+                      <View
+                        style={[
+                          styles.languageRadio,
+                          { borderColor: selected ? roles.primaryActionBackground : roles.defaultCardBorder },
+                          selected ? { backgroundColor: roles.primaryActionBackground } : null,
+                        ]}
+                      >
+                        {selected ? <AppIcon name="checkmark" size="sm" color={roles.primaryActionText} /> : null}
+                      </View>
+                    </View>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        transparent
+        visible={isTextSizeModalOpen}
+        animationType="fade"
+        onRequestClose={() => setIsTextSizeModalOpen(false)}
+        statusBarTranslucent
+      >
+        <View style={styles.languageModalOverlay}>
+          <Pressable
+            accessibilityLabel={t('common.close')}
+            onPress={() => setIsTextSizeModalOpen(false)}
+            style={styles.languageModalBackdrop}
+          />
+          <View
+            accessibilityViewIsModal
+            style={[
+              styles.languageModalCard,
+              { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder },
+            ]}
+          >
+            <LinearGradient
+              pointerEvents="none"
+              colors={[roles.primaryActionBackground, theme.colors.palette.wine700]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 0 }}
+              style={styles.languageModalAccent}
+            />
+            <View style={styles.languageModalHeader}>
+              <View style={[styles.languageModalHeaderIcon, { backgroundColor: roles.iconPrimarySurface }]}>
+                <AppIcon name="format-size" size="lg" color={roles.primaryActionBackground} />
+              </View>
+              <View style={styles.languageModalHeaderCopy}>
+                <Text style={[styles.languageModalTitle, { color: primaryTextColor }]}>{t('textSize.title')}</Text>
+                <Text style={[styles.languageModalSubtitle, { color: roles.metaText }]}>{t('textSize.subtitle')}</Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t('common.close')}
+                hitSlop={8}
+                onPress={() => setIsTextSizeModalOpen(false)}
+                style={[styles.languageModalClose, { backgroundColor: roles.iconPrimarySurface }]}
+              >
+                <AppIcon name="close" size="sm" color={roles.primaryActionBackground} />
+              </Pressable>
+            </View>
+
+            <View style={styles.languageOptionList}>
+              {textSizeOptions.map((option) => {
+                const selected = textSize === option.code;
+                return (
+                  <Pressable
+                    key={option.code}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected }}
+                    onPress={() => {
+                      void setTextSize(option.code);
+                      void Haptics.selectionAsync();
+                    }}
+                    style={({ pressed }) => [
+                      styles.languageOptionPressable,
+                      pressed ? styles.pressed : null,
+                    ]}
+                  >
+                    <View
+                      style={[
+                        styles.languageOptionSurface,
+                        {
+                          backgroundColor: selected ? roles.iconPrimarySurface : roles.pageBackground,
+                          borderColor: selected ? roles.primaryActionBackground : roles.defaultCardBorder,
+                        },
+                      ]}
+                    >
+                      <View
+                        style={[
+                          styles.textSizePreview,
+                          { backgroundColor: selected ? roles.primaryActionBackground : roles.supportCardBackground },
+                        ]}
+                      >
+                        <Text
+                          maxFontSizeMultiplier={1}
+                          style={[
+                            styles.textSizePreviewText,
+                            { color: selected ? roles.primaryActionText : roles.headingText },
+                            option.code === 'large' ? styles.textSizePreviewTextLarge : null,
+                            option.code === 'maximum' ? styles.textSizePreviewTextMaximum : null,
+                          ]}
+                        >
+                          Aa
+                        </Text>
+                      </View>
+                      <View style={styles.languageOptionCopy}>
+                        <Text style={[styles.languageOptionTitle, { color: primaryTextColor }]}>{t(`textSize.${option.code}`)}</Text>
+                        <Text style={[styles.languageOptionSubtitle, { color: roles.metaText }]}>
+                          {t(`textSize.${option.code}Description`)}
+                        </Text>
+                      </View>
+                      <View
+                        style={[
+                          styles.languageRadio,
+                          { borderColor: selected ? roles.primaryActionBackground : roles.defaultCardBorder },
+                          selected ? { backgroundColor: roles.primaryActionBackground } : null,
+                        ]}
+                      >
+                        {selected ? <AppIcon name="checkmark" size="sm" color={roles.primaryActionText} /> : null}
+                      </View>
+                    </View>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        transparent
+        visible={isLogoutConfirmationOpen}
+        animationType="fade"
+        onRequestClose={closeLogoutConfirmation}
+        statusBarTranslucent
+      >
+        <View style={styles.logoutConfirmationOverlay}>
+          <Pressable
+            accessibilityLabel="Keep account signed in"
+            disabled={isLoggingOut}
+            onPress={closeLogoutConfirmation}
+            style={styles.logoutConfirmationBackdrop}
+          />
+
+          <View
+            accessibilityViewIsModal
+            style={[
+              styles.logoutConfirmationCard,
+              {
+                backgroundColor: theme.colors.surfaceCard,
+                borderColor: theme.colors.borderSubtle,
+              },
+            ]}
+          >
+            <LinearGradient
+              pointerEvents="none"
+              colors={[theme.colors.palette.wine900, theme.colors.palette.wine700]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 0 }}
+              style={styles.logoutConfirmationAccent}
+            />
+
+            <View style={[styles.logoutConfirmationIcon, { backgroundColor: theme.colors.surfaceSoft }]}>
+              <AppIcon name="signOut" size="lg" color={theme.colors.textError} />
+            </View>
+
+            <Text style={[styles.logoutConfirmationEyebrow, { color: theme.colors.brandPrimary }]}>{t('logout.eyebrow')}</Text>
+            <Text style={[styles.logoutConfirmationTitle, { color: theme.colors.textPrimary }]}>{t('logout.title')}</Text>
+            <Text style={[styles.logoutConfirmationBody, { color: theme.colors.textSecondary }]}>
+              {t('logout.body')}
+            </Text>
+
+            <View style={[styles.logoutConfirmationNote, { backgroundColor: theme.colors.surfaceSoft, borderColor: theme.colors.borderSubtle }]}>
+              <AppIcon name="shield" size="sm" color={theme.colors.brandPrimary} />
+              <Text style={[styles.logoutConfirmationNoteText, { color: theme.colors.textSecondary }]}>{t('logout.note')}</Text>
+            </View>
+
+            <View style={styles.logoutConfirmationActions}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Confirm logout"
+                accessibilityState={{ busy: isLoggingOut, disabled: isLoggingOut }}
+                disabled={isLoggingOut}
+                onPress={handleConfirmLogout}
+                style={({ pressed }) => [
+                  styles.logoutConfirmationActionPressable,
+                  pressed && !isLoggingOut ? styles.logoutConfirmationButtonPressed : null,
+                  isLoggingOut ? styles.logoutConfirmationButtonDisabled : null,
+                ]}
+              >
+                <LinearGradient
+                  colors={[theme.colors.palette.wine900, theme.colors.palette.wine700]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.logoutConfirmationButtonSurface}
+                >
+                  {isLoggingOut ? (
+                    <ActivityIndicator size="small" color={theme.colors.textOnBrand} />
+                  ) : (
+                    <AppIcon name="signOut" size="sm" color={theme.colors.textOnBrand} />
+                  )}
+                  <Text style={[styles.logoutConfirmationButtonText, { color: theme.colors.textOnBrand }]}>
+                    {isLoggingOut ? t('logout.loading') : t('profile.logout')}
+                  </Text>
+                </LinearGradient>
+              </Pressable>
+
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Stay signed in"
+                disabled={isLoggingOut}
+                onPress={closeLogoutConfirmation}
+                style={({ pressed }) => [
+                  styles.logoutConfirmationActionPressable,
+                  pressed && !isLoggingOut ? styles.logoutConfirmationButtonPressed : null,
+                  isLoggingOut ? styles.logoutConfirmationButtonDisabled : null,
+                ]}
+              >
+                <View
+                  style={[
+                    styles.logoutConfirmationButtonSurface,
+                    {
+                      backgroundColor: theme.colors.surfaceCard,
+                      borderColor: theme.colors.borderStrong,
+                    },
+                  ]}
+                >
+                  <AppIcon name="close" size="sm" color={theme.colors.textPrimary} />
+                  <Text style={[styles.logoutConfirmationButtonText, { color: theme.colors.textPrimary }]}>{t('logout.stay')}</Text>
+                </View>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       <StatusBanner
         presentation="floating"
         visible={Boolean(feedback?.message)}
@@ -2076,8 +2543,8 @@ const styles = StyleSheet.create({
   },
   profileMenuSubtitle: {
     fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.caption,
-    lineHeight: 16,
+    fontSize: theme.typography.semantic.caption,
+    lineHeight: 17,
     color: theme.colors.textMuted,
   },
   profileMenuTitleDanger: {
@@ -2144,8 +2611,8 @@ const styles = StyleSheet.create({
   },
   profileMoreSubtitle: {
     fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.caption,
-    lineHeight: 16,
+    fontSize: theme.typography.semantic.caption,
+    lineHeight: 17,
     color: theme.colors.textMuted,
   },
   profileMoreChevron: {
@@ -2837,84 +3304,37 @@ const styles = StyleSheet.create({
     lineHeight: theme.typography.semantic.bodySm * theme.typography.lineHeights.relaxed,
     color: theme.colors.textSecondary,
   },
-  completionCard: {
-    marginBottom: theme.spacing.xs,
-    gap: 4,
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: theme.spacing.xs,
-    borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.surfaceSoft,
-    borderWidth: 1,
-    borderColor: theme.colors.borderSubtle,
-  },
-  completionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: theme.spacing.sm,
-  },
-  completionTitle: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.semantic.bodySm,
-    fontWeight: theme.typography.weights.semibold,
-    color: theme.colors.textPrimary,
-  },
-  completionPercent: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.semantic.bodySm,
-    fontWeight: theme.typography.weights.bold,
-    color: theme.colors.brandPrimary,
-  },
-  completionBarTrack: {
-    height: 6,
-    borderRadius: theme.radius.full,
-    backgroundColor: theme.colors.borderSubtle,
-    overflow: 'hidden',
-  },
-  completionBarFill: {
-    height: '100%',
-    borderRadius: theme.radius.full,
-    backgroundColor: theme.colors.brandPrimary,
-  },
-  completionLoadingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.xs,
-  },
-  completionLoadingText: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.semantic.bodySm,
-    lineHeight: theme.typography.semantic.bodySm * theme.typography.lineHeights.relaxed,
-  },
-  completionCompleteRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.xs,
-  },
-  completionCompleteText: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.semantic.bodySm,
-    lineHeight: theme.typography.semantic.bodySm * theme.typography.lineHeights.relaxed,
-  },
   profileEditPhotoSection: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: theme.spacing.xs,
+    width: '100%',
+    marginBottom: theme.spacing.lg,
     paddingVertical: 0,
   },
   profileEditPhotoPressable: {
-    alignSelf: 'center',
+    width: '100%',
+    borderRadius: 20,
+    overflow: 'hidden',
+  },
+  profileEditPhotoSurface: {
+    width: '100%',
+    minHeight: 122,
+    borderRadius: 20,
+    borderWidth: 1,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    ...theme.shadows.soft,
   },
   profileEditPhotoAvatarWrap: {
-    width: 120,
-    height: 120,
+    width: 92,
+    height: 92,
     position: 'relative',
     alignItems: 'center',
     justifyContent: 'center',
   },
   profileEditPhotoAvatar: {
-    width: 110,
-    height: 110,
+    width: 84,
+    height: 84,
     borderRadius: theme.radius.full,
     overflow: 'hidden',
     alignItems: 'center',
@@ -2943,6 +3363,39 @@ const styles = StyleSheet.create({
     borderWidth: 3,
     ...theme.shadows.soft,
   },
+  profileEditPhotoCopy: {
+    flex: 1,
+    minWidth: 0,
+    marginLeft: theme.spacing.md,
+  },
+  profileEditPhotoTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.bodyLg,
+    fontWeight: theme.typography.weights.bold,
+    lineHeight: 22,
+  },
+  profileEditPhotoHint: {
+    marginTop: 3,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 16,
+  },
+  profileEditPhotoLabel: {
+    minHeight: 30,
+    alignSelf: 'flex-start',
+    marginTop: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.md,
+    borderRadius: theme.radius.pill,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  profileEditPhotoLabelText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    fontWeight: theme.typography.weights.bold,
+  },
   profileEditFieldContainer: {
     marginBottom: theme.spacing.xs,
     minHeight: 0,
@@ -2970,6 +3423,7 @@ const styles = StyleSheet.create({
   },
   modalCard: {
     width: '100%',
+    height: '100%',
     alignSelf: 'center',
     maxWidth: theme.layout.authCardMaxWidth,
     borderRadius: 18,
@@ -2979,6 +3433,130 @@ const styles = StyleSheet.create({
   },
   modalCardContent: {
     minHeight: 0,
+  },
+  editModalCardContent: {
+    flex: 1,
+    minHeight: 0,
+  },
+  editModalHeader: {
+    minHeight: 76,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.md,
+    borderBottomWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    overflow: 'hidden',
+  },
+  editModalHeaderGlow: {
+    position: 'absolute',
+    width: 118,
+    height: 118,
+    borderRadius: 59,
+    right: -34,
+    top: -70,
+    backgroundColor: 'rgba(255,255,255,0.10)',
+  },
+  editModalHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+    paddingRight: theme.spacing.md,
+  },
+  editModalTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.titleSm,
+    fontWeight: theme.typography.weights.bold,
+    lineHeight: 24,
+  },
+  editModalSubtitle: {
+    marginTop: 2,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 16,
+    opacity: 0.82,
+  },
+  editModalCloseButton: {
+    width: 40,
+    height: 40,
+    borderRadius: theme.radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  editModalBodyScroll: {
+    flex: 1,
+    minHeight: 0,
+  },
+  editModalBodyContent: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.lg,
+    paddingBottom: theme.spacing.xl,
+  },
+  editModalSectionHeading: {
+    minHeight: 48,
+    marginBottom: theme.spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  editModalSectionIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    marginRight: theme.spacing.md,
+  },
+  editModalSectionCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  editModalSectionTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.bodyLg,
+    fontWeight: theme.typography.weights.bold,
+    lineHeight: 22,
+  },
+  editModalSectionText: {
+    marginTop: 2,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 16,
+  },
+  editModalFooter: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.md,
+    paddingBottom: theme.spacing.lg,
+    borderTopWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: theme.spacing.sm,
+  },
+  editModalActionButton: {
+    width: '100%',
+    minHeight: 50,
+    borderRadius: theme.radius.pill,
+    overflow: 'hidden',
+  },
+  editModalActionSlot: {
+    flex: 1,
+    minWidth: 0,
+    ...theme.shadows.soft,
+  },
+  editModalActionContent: {
+    width: '100%',
+    minHeight: 50,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.sm,
+  },
+  editModalActionText: {
+    marginLeft: 6,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.bodySm,
+    fontWeight: theme.typography.weights.bold,
   },
   modalHeaderBlock: {
     flexShrink: 0,
@@ -3164,6 +3742,261 @@ const styles = StyleSheet.create({
     paddingBottom: theme.spacing.xl,
     alignItems: 'center',
     gap: theme.spacing.sm,
+  },
+  languageModalOverlay: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.xl,
+    backgroundColor: 'rgba(37, 6, 14, 0.48)',
+  },
+  languageModalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  languageModalCard: {
+    width: '100%',
+    maxWidth: 400,
+    borderWidth: 1,
+    borderRadius: 24,
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.xl,
+    paddingBottom: theme.spacing.lg,
+    gap: theme.spacing.md,
+    overflow: 'hidden',
+    ...theme.shadows.lg,
+  },
+  languageModalAccent: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 6,
+  },
+  languageModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: theme.spacing.sm,
+  },
+  languageModalHeaderIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  languageModalHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 4,
+  },
+  languageModalTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.titleSm,
+    fontWeight: theme.typography.weights.bold,
+  },
+  languageModalSubtitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+    lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.relaxed,
+  },
+  languageModalClose: {
+    width: 36,
+    height: 36,
+    borderRadius: theme.radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  languageOptionList: {
+    width: '100%',
+    gap: theme.spacing.sm,
+  },
+  languageOptionPressable: {
+    width: '100%',
+    borderRadius: 18,
+  },
+  languageOptionSurface: {
+    width: '100%',
+    minHeight: 76,
+    borderWidth: 1,
+    borderRadius: 18,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  languageOptionCode: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  languageOptionCodeText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 0.7,
+  },
+  languageOptionCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  languageOptionTitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.body,
+    fontWeight: theme.typography.weights.bold,
+  },
+  languageOptionSubtitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.caption,
+    lineHeight: 17,
+  },
+  textSizePreview: {
+    width: 48,
+    height: 48,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  textSizePreviewText: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.bodySm,
+    fontWeight: theme.typography.weights.bold,
+  },
+  textSizePreviewTextLarge: {
+    fontSize: 17,
+  },
+  textSizePreviewTextMaximum: {
+    fontSize: 19,
+  },
+  languageRadio: {
+    width: 28,
+    height: 28,
+    borderWidth: 1.5,
+    borderRadius: theme.radius.full,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  logoutConfirmationOverlay: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.lg,
+    backgroundColor: theme.colors.overlay,
+  },
+  logoutConfirmationBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  logoutConfirmationCard: {
+    width: '100%',
+    maxWidth: 370,
+    borderWidth: 1,
+    borderRadius: 26,
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.xl,
+    paddingBottom: theme.spacing.lg,
+    alignItems: 'center',
+    overflow: 'hidden',
+    ...theme.shadows.lg,
+  },
+  logoutConfirmationAccent: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 6,
+  },
+  logoutConfirmationIcon: {
+    width: 62,
+    height: 62,
+    borderRadius: 21,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: theme.spacing.md,
+  },
+  logoutConfirmationEyebrow: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 1.2,
+    marginBottom: 5,
+  },
+  logoutConfirmationTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.titleSm,
+    fontWeight: theme.typography.weights.bold,
+    textAlign: 'center',
+  },
+  logoutConfirmationBody: {
+    marginTop: theme.spacing.sm,
+    maxWidth: 300,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.bodySm,
+    lineHeight: theme.typography.semantic.bodySm * theme.typography.lineHeights.relaxed,
+    textAlign: 'center',
+  },
+  logoutConfirmationNote: {
+    width: '100%',
+    minHeight: 46,
+    marginTop: theme.spacing.lg,
+    borderWidth: 1,
+    borderRadius: 15,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  logoutConfirmationNoteText: {
+    flex: 1,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: theme.typography.compact.caption * theme.typography.lineHeights.relaxed,
+  },
+  logoutConfirmationActions: {
+    width: '100%',
+    marginTop: theme.spacing.lg,
+    flexDirection: 'column',
+    gap: theme.spacing.sm,
+  },
+  logoutConfirmationActionPressable: {
+    width: '100%',
+    minHeight: 52,
+    borderRadius: 17,
+    ...theme.shadows.soft,
+  },
+  logoutConfirmationButtonSurface: {
+    width: '100%',
+    minHeight: 52,
+    borderWidth: 1,
+    borderColor: theme.colors.palette.wine700,
+    borderRadius: 17,
+    paddingHorizontal: theme.spacing.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
+  },
+  logoutConfirmationButtonText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.bodySm,
+    fontWeight: theme.typography.weights.bold,
+    textAlign: 'center',
+  },
+  logoutConfirmationButtonPressed: {
+    opacity: 0.82,
+    transform: [{ scale: 0.985 }],
+  },
+  logoutConfirmationButtonDisabled: {
+    opacity: 0.68,
   },
   modalKeyboardWrap: {
     flex: 1,

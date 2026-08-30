@@ -6,6 +6,7 @@ import {
   Pressable,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { useRouter } from 'expo-router';
@@ -104,6 +105,8 @@ function GoogleButton({ onPress, disabled, loading, roles }) {
 // ─── SignupScreen ────────────────────────────────────────────────────────────
 export default function SignupScreen() {
   const router = useRouter();
+  const { height: viewportHeight } = useWindowDimensions();
+  const isCompactViewport = viewportHeight < 800;
   const {
     handleSignup,
     handleGoogleAuth,
@@ -138,7 +141,7 @@ export default function SignupScreen() {
           colors={['#26050a', '#4a0a15', '#6f1228', '#8f1d3b']}
           start={{ x: 0.25, y: 0 }}
           end={{ x: 0.75, y: 1 }}
-          style={styles.hero}
+          style={[styles.hero, isCompactViewport ? styles.heroCompact : null]}
         >
           {/* Decorative rings */}
           <View style={styles.heroRingLg} pointerEvents="none" />
@@ -177,12 +180,13 @@ export default function SignupScreen() {
         <View
           style={[
             styles.formPanel,
+            isCompactViewport ? styles.formPanelCompact : null,
             { backgroundColor: theme.colors.surfaceCard },
           ]}
         >
 
           {/* Heading + sub-copy */}
-          <View style={styles.formHeadingBlock}>
+          <View style={[styles.formHeadingBlock, isCompactViewport ? styles.formHeadingBlockCompact : null]}>
             <Text style={[styles.formHeading, { color: roles.primaryActionBackground }]}>
               Create Account
             </Text>
@@ -203,7 +207,7 @@ export default function SignupScreen() {
           />
 
           {/* OR divider */}
-          <View style={styles.dividerRow}>
+          <View style={[styles.dividerRow, isCompactViewport ? styles.dividerRowCompact : null]}>
             <View style={[styles.dividerLine, { backgroundColor: roles.supportCardBorder }]} />
             <Text style={[styles.dividerText, { color: roles.headingText }]}>OR</Text>
             <View style={[styles.dividerLine, { backgroundColor: roles.supportCardBorder }]} />
@@ -266,6 +270,11 @@ const styles = StyleSheet.create({
     paddingBottom: 40,
     overflow: 'hidden',
     gap: 8,
+  },
+  heroCompact: {
+    minHeight: 182,
+    paddingBottom: 30,
+    gap: 5,
   },
 
   heroRingLg: {
@@ -378,10 +387,17 @@ const styles = StyleSheet.create({
     paddingBottom: theme.spacing.section,
     flex: 1,
   },
+  formPanelCompact: {
+    paddingTop: theme.spacing.lg,
+    paddingBottom: theme.spacing.xl,
+  },
 
   // Heading block
   formHeadingBlock: {
     marginBottom: theme.spacing.lg,
+  },
+  formHeadingBlockCompact: {
+    marginBottom: theme.spacing.md,
   },
   formHeading: {
     fontFamily: theme.typography.fontFamilyDisplay,
@@ -397,6 +413,10 @@ const styles = StyleSheet.create({
     gap: theme.spacing.md,
     marginTop: theme.spacing.lg,
     marginBottom: theme.spacing.md,
+  },
+  dividerRowCompact: {
+    marginTop: theme.spacing.md,
+    marginBottom: theme.spacing.sm,
   },
   dividerLine: {
     height: 1,

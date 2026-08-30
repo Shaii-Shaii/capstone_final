@@ -1,7 +1,7 @@
 import { supabase } from '../api/supabase/client';
 import { logAppError, logAppEvent } from '../utils/appErrors';
 import { canSubmitHairDonation, mapDonationPermissionError } from './donorCompliance.service';
-import { createNotifications } from './notification.api';
+import { createNotifications, sendPushNotificationsByIds } from './notification.api';
 import { notificationTypes } from './notification.constants';
 
 const donationDriveRequestsTable = 'Event_Requests';
@@ -144,7 +144,7 @@ const createDriveRsvpNotification = async ({ databaseUserId, drive = null, regis
   if (!databaseUserId || !registration?.registration_id) return;
   const isParticipatingDonor = normalizeRegistrationStatus(registration?.attendee_type) === 'donor';
 
-  await createNotifications([{
+  const notificationResult = await createNotifications([{
     user_id: databaseUserId,
     type: notificationTypes.driveRsvpConfirmed,
     title: 'RSVP confirmed',
@@ -156,6 +156,12 @@ const createDriveRsvpNotification = async ({ databaseUserId, drive = null, regis
     reference_id: drive?.donation_drive_id || registration?.donation_drive_id,
     updated_at: registration?.registered_at || registration?.updated_at || new Date().toISOString(),
   }]).catch(() => ({ data: [], error: null }));
+
+  if (!notificationResult?.error) {
+    void sendPushNotificationsByIds(
+      (notificationResult?.data || []).map((notification) => notification.notification_id)
+    ).catch(() => {});
+  }
 };
 
 const resolveDatabaseUserIdFromSession = async (fallbackDatabaseUserId = null) => {
@@ -840,13 +846,9 @@ export const createDonationDriveRegistration = async ({
 
   if (existingResult.data?.registration_id) {
     if (attendanceOnly) {
-      const typeResult = existingResult.data.attendee_type === 'Voluntary'
-        ? { data: existingResult.data, error: null }
-        : await updateDriveRegistrationAttendeeType(existingResult.data.registration_id, 'Voluntary');
-
       return {
-        data: typeResult.data || existingResult.data,
-        error: typeResult.error,
+        data: existingResult.data,
+        error: null,
         alreadyRegistered: true,
       };
     }
@@ -901,13 +903,9 @@ export const createDonationDriveRegistration = async ({
     const duplicateLookupResult = await findExistingDriveRegistration(driveId, effectiveDatabaseUserId);
     if (duplicateLookupResult.data?.registration_id) {
       if (attendanceOnly) {
-        const typeResult = duplicateLookupResult.data.attendee_type === 'Voluntary'
-          ? { data: duplicateLookupResult.data, error: null }
-          : await updateDriveRegistrationAttendeeType(duplicateLookupResult.data.registration_id, 'Voluntary');
-
         return {
-          data: typeResult.data || duplicateLookupResult.data,
-          error: typeResult.error,
+          data: duplicateLookupResult.data,
+          error: null,
           alreadyRegistered: true,
         };
       }

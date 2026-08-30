@@ -1812,12 +1812,9 @@ const hasSubmissionFlowProgress = (submission = null) => (
 const hasEventDonationProgress = ({ submission = null, registration = null } = {}) => (
   Boolean(
     Number(submission?.donation_drive_id) > 0
-    && (
-      hasSubmissionFlowProgress(submission)
-      || Boolean(registration?.waybill_code)
-      || Boolean(registration?.rsvp_scanned_at)
-      || isPresentAttendanceStatus(registration?.attendance_status)
-    )
+    && (registration
+      ? isDonationParticipantRegistration(registration) && isMarkedPresentRegistration(registration)
+      : hasSubmissionFlowProgress(submission))
   )
 );
 
@@ -2080,6 +2077,11 @@ const isPresentAttendanceStatus = (value = '') => [
   'verified',
 ].includes(normalizeTimelineStatusKey(value));
 
+export const isDonationParticipantRegistration = (registration = null) => {
+  const attendeeType = normalizeTimelineStatusKey(registration?.attendee_type);
+  return ['donor', 'participant', 'participatingdonor'].includes(attendeeType);
+};
+
 const isMarkedPresentRegistration = (registration = null) => (
   Boolean(
     registration?.rsvp_scanned_at
@@ -2163,6 +2165,12 @@ const resolveTimelineStages = ({
     || logistics?.pickup_schedule_date
     || logistics?.pickup_scheduled_at
   );
+  const attendanceEvidenceAt = isEventFlow && isMarkedPresentRegistration(registration)
+    ? registration?.rsvp_scanned_at
+      || registration?.attendance_marked_at
+      || registration?.updated_at
+      || null
+    : null;
   const donationSubmittedEvidenceAt = submission?.submitted_at || submission?.updated_at || submission?.created_at || null;
   const hasCutStatus = isCutAndShipCompletedStatus(submission?.status);
   const cutAndShipApprovedAt = submission?.cut_at
@@ -2258,10 +2266,10 @@ const resolveTimelineStages = ({
   const eventStageEntries = isEventFlow ? [
     {
       key: 'cut_and_ship',
-      label: 'Cut & Ship',
-      statusLabel: transitEntry?.status || (cutAndShipApprovedAt ? 'Complete' : ''),
-      savedNote: transitEntry?.description || 'The user has a hair ready to be delivered to the organization.',
-      evidenceAt: transitEvidenceAt || cutAndShipApprovedAt,
+      label: 'Hair received',
+      statusLabel: transitEntry?.status || (attendanceEvidenceAt || cutAndShipApprovedAt ? 'Complete' : ''),
+      savedNote: transitEntry?.description || 'Staff checked you in and accepted your hair donation.',
+      evidenceAt: transitEvidenceAt || cutAndShipApprovedAt || attendanceEvidenceAt,
       entry: transitEntry || registration,
       parcelImages,
     },
@@ -2507,7 +2515,7 @@ const resolveTimelineStages = ({
   ), []);
   const latestReachedIndex = reachedStageIndexes.length
     ? reachedStageIndexes[reachedStageIndexes.length - 1]
-    : 0;
+    : -1;
   const hasConfirmedDonorShipment = !isEventFlow && !isWalkInFlow && Boolean(transitEvidenceAt);
   const hasPreparedIndependentDonation = !isEventFlow && !isWalkInFlow && Boolean(
     transitEvidenceAt
@@ -2517,7 +2525,7 @@ const resolveTimelineStages = ({
   );
   const resolvedCurrentIndex = hasConfirmedDonorShipment || hasPreparedIndependentDonation
     ? Math.min(latestReachedIndex + 1, baseStages.length - 1)
-    : (isEventFlow && submission?.submission_id && latestReachedIndex === 0
+    : (isEventFlow && isDonationParticipantRegistration(registration) && isMarkedPresentRegistration(registration) && latestReachedIndex === 0
       ? Math.min(1, baseStages.length - 1)
       : latestReachedIndex);
   const isDonationCompleted = Boolean(
@@ -3128,16 +3136,27 @@ export const getDonorDonationsModuleData = async ({ userId, databaseUserId, driv
     donationRequirement: donationRequirementResult.data || null,
   });
   const latestQualifiedRecord = resolveActiveDonationRecord({ aiRecord, manualRecord });
+  const eventRegistrationByDriveId = new Map(
+    (registeredDrivesResult.data || [])
+      .filter((drive) => Number(drive?.donation_drive_id) > 0)
+      .map((drive) => [Number(drive.donation_drive_id), drive?.registration || null])
+  );
+  const flowEligibleSubmissions = submissions.filter((submission) => {
+    const submissionDriveId = Number(submission?.donation_drive_id);
+    if (!Number.isFinite(submissionDriveId) || submissionDriveId <= 0) return true;
+    const registration = eventRegistrationByDriveId.get(submissionDriveId) || null;
+    return isDonationParticipantRegistration(registration) && isMarkedPresentRegistration(registration);
+  });
   let activeRecord = resolveCurrentDonationRecord({
-    submissions,
+    submissions: flowEligibleSubmissions,
     donationRequirement: donationRequirementResult.data || null,
     fallbackRecord: latestQualifiedRecord,
   });
   let activeFlowSubmission = resolveCurrentFlowSubmission({
-    submissions,
+    submissions: flowEligibleSubmissions,
   });
   let activeFlowSubmissions = resolveCurrentFlowSubmissions({
-    submissions,
+    submissions: flowEligibleSubmissions,
   });
   let independentFlowSubmissions = activeFlowSubmissions.filter(
     (submission) => submission?.submission_id && !Number(submission?.donation_drive_id)
@@ -3399,6 +3418,7 @@ const hasCompletedDonation = Boolean(
   const completedEventDrives = Array.from(completedEventDrivesById.values());
 
   return {
+    submissions,
     latestAnalysisEntry,
     latestScreening,
     latestAiEligibility,
@@ -3458,6 +3478,128 @@ const hasCompletedDonation = Boolean(
       || activeDriveError?.message
       || certificateResult.error?.message
       || donationRequirementResult.error?.message
+      || null,
+  };
+};
+
+export const getEventDonationProgressData = async ({
+  userId,
+  databaseUserId,
+  driveId,
+} = {}) => {
+  const normalizedDriveId = Number(driveId);
+  if (!userId || !databaseUserId || !Number.isFinite(normalizedDriveId) || normalizedDriveId <= 0) {
+    return {
+      data: null,
+      error: new Error('Your account and event are required to load donation progress.'),
+    };
+  }
+
+  const [driveResult, submissionsResult] = await Promise.all([
+    fetchDonationDrivePreview(normalizedDriveId, databaseUserId),
+    fetchHairSubmissionsByUserId(databaseUserId, 50),
+  ]);
+
+  if (driveResult.error || submissionsResult.error) {
+    return {
+      data: null,
+      error: driveResult.error || submissionsResult.error,
+    };
+  }
+
+  const drive = driveResult.data || null;
+  const registration = drive?.registration || null;
+  const submission = (submissionsResult.data || []).find((item) => (
+    Number(item?.donation_drive_id) === normalizedDriveId
+    && !['cancelled', 'canceled', 'rejected'].includes(normalizeStatus(item?.status))
+  )) || null;
+  const isDonationParticipant = isDonationParticipantRegistration(registration);
+  const isCheckedIn = isMarkedPresentRegistration(registration);
+
+  if (!drive) {
+    return { data: null, error: new Error('This donation event could not be found.') };
+  }
+
+  if (!registration?.registration_id) {
+    return {
+      data: { drive, registration: null, submission: null, canTrack: false, reason: 'not_registered' },
+      error: null,
+    };
+  }
+
+  if (!isDonationParticipant) {
+    return {
+      data: { drive, registration, submission: null, canTrack: false, reason: 'attendance_only' },
+      error: null,
+    };
+  }
+
+  if (!isCheckedIn) {
+    return {
+      data: { drive, registration, submission, canTrack: false, reason: 'awaiting_staff_scan' },
+      error: null,
+    };
+  }
+
+  if (!submission?.submission_id) {
+    return {
+      data: { drive, registration, submission: null, canTrack: false, reason: 'submission_unavailable' },
+      error: null,
+    };
+  }
+
+  const detail = getLatestSubmissionDetail(submission);
+  const [logisticsResult, trackingResult, parcelImages, productionResult, appointmentResult, certificateResult] = await Promise.all([
+    fetchHairSubmissionLogisticsBySubmissionId(submission.submission_id),
+    detail?.submission_detail_id
+      ? fetchHairBundleTrackingHistory({
+          submissionId: submission.submission_id,
+          submissionDetailId: detail.submission_detail_id,
+          limit: 24,
+        })
+      : Promise.resolve({ data: [], error: null }),
+    detail ? getParcelImagesWithUrls(detail) : Promise.resolve([]),
+    submission?.bundle_id
+      ? fetchDonationTimelineProductionByBundleId(submission.bundle_id)
+      : Promise.resolve({ data: null, error: null }),
+    fetchSalonDonationAppointmentBySubmissionId(submission.submission_id),
+    fetchDonationCertificateBySubmissionId(submission.submission_id),
+  ]);
+
+  const timelineStages = resolveTimelineStages({
+    submission,
+    logistics: logisticsResult.data || null,
+    trackingEntries: trackingResult.data || [],
+    parcelImages: parcelImages || [],
+    certificate: certificateResult.data || null,
+    flowType: 'drive',
+    registration,
+    production: productionResult.data || null,
+    appointment: appointmentResult.data || null,
+  });
+
+  return {
+    data: {
+      drive,
+      registration,
+      submission,
+      canTrack: true,
+      reason: '',
+      timelineStages,
+      timelineEvents: buildTimelineEvents({
+        logistics: logisticsResult.data || null,
+        trackingEntries: trackingResult.data || [],
+        parcelImages: parcelImages || [],
+        certificate: certificateResult.data || null,
+        flowType: 'drive',
+      }),
+      certificate: certificateResult.data || null,
+    },
+    error: logisticsResult.error
+      || trackingResult.error
+      || productionResult.error
+      || appointmentResult.error
+      || certificateResult.error
       || null,
   };
 };

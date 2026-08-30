@@ -13,8 +13,16 @@ type NotificationRow = {
 };
 
 type PushTokenRow = {
+  push_token_id: number;
   user_id: number;
   expo_push_token: string;
+};
+
+type PushDelivery = {
+  notificationId: number;
+  pushTokenId: number;
+  token: string;
+  message: Record<string, unknown>;
 };
 
 type UserRow = {
@@ -25,6 +33,7 @@ type UserRow = {
 const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
 const RESEND_EMAIL_URL = 'https://api.resend.com/emails';
 const MAX_EXPO_BATCH_SIZE = 100;
+const MAX_EXPO_ATTEMPTS = 3;
 const VIEW_DETAILS_CATEGORY_ID = 'donivra_view_details';
 const MAX_PUSH_BODY_LENGTH = 110;
 
@@ -127,6 +136,47 @@ const chunk = <T>(items: T[], size: number) => {
     batches.push(items.slice(index, index + size));
   }
   return batches;
+};
+
+const wait = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+const sendExpoBatch = async (
+  batch: PushDelivery[],
+  headers: Record<string, string>,
+) => {
+  let lastResult: { ok: boolean; status: number; body: Record<string, unknown> } | null = null;
+
+  for (let attempt = 0; attempt < MAX_EXPO_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await fetch(EXPO_PUSH_URL, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(batch.map((delivery) => delivery.message)),
+      });
+      const body = await response.clone().json().catch(async () => ({
+        errors: [{ message: await response.text().catch(() => 'Expo push request failed.') }],
+      })) as Record<string, unknown>;
+
+      lastResult = { ok: response.ok, status: response.status, body };
+      const isTransient = response.status === 429 || response.status >= 500;
+      if (!isTransient || attempt === MAX_EXPO_ATTEMPTS - 1) return lastResult;
+    } catch (error) {
+      lastResult = {
+        ok: false,
+        status: 0,
+        body: { errors: [{ message: error instanceof Error ? error.message : 'Expo push request failed.' }] },
+      };
+      if (attempt === MAX_EXPO_ATTEMPTS - 1) return lastResult;
+    }
+
+    await wait(500 * (2 ** attempt));
+  }
+
+  return lastResult || {
+    ok: false,
+    status: 0,
+    body: { errors: [{ message: 'Expo push request failed.' }] },
+  };
 };
 
 const escapeHtml = (value = '') => String(value)
@@ -258,7 +308,7 @@ Deno.serve(async (request) => {
   const [tokenResult, userResult] = await Promise.all([
     supabase
       .from('Push_Notification_Tokens')
-      .select('user_id:User_ID, expo_push_token:Expo_Push_Token')
+      .select('push_token_id:Push_Token_ID, user_id:User_ID, expo_push_token:Expo_Push_Token')
       .in('User_ID', userIds)
       .eq('Is_Active', true),
     supabase
@@ -362,33 +412,39 @@ Deno.serve(async (request) => {
     });
   }
 
-  const tokensByUserId = new Map<number, string[]>();
+  const tokensByUserId = new Map<number, Array<{ pushTokenId: number; token: string }>>();
   ((tokenResult.data || []) as PushTokenRow[]).forEach((row) => {
     const token = String(row.expo_push_token || '').trim();
     if (!isExpoPushToken(token)) return;
     const tokens = tokensByUserId.get(row.user_id) || [];
-    tokens.push(token);
+    tokens.push({ pushTokenId: row.push_token_id, token });
     tokensByUserId.set(row.user_id, tokens);
   });
 
-  const messages = notifications.flatMap((notification) => {
+  const deliveries: PushDelivery[] = notifications.flatMap((notification) => {
     const route = getRouteForNotification(notification);
-    return (tokensByUserId.get(notification.user_id) || []).map((token) => ({
-      to: token,
-      sound: 'default',
-      channelId: 'donivra-updates',
-      categoryId: VIEW_DETAILS_CATEGORY_ID,
-      title: notification.title || 'Donivra update',
-      body: getPushBody(notification),
-      data: {
-        notificationId: notification.notification_id,
-        type: notification.type || 'system_update',
-        url: route,
+    return (tokensByUserId.get(notification.user_id) || []).map(({ pushTokenId, token }) => ({
+      notificationId: notification.notification_id,
+      pushTokenId,
+      token,
+      message: {
+        to: token,
+        sound: 'default',
+        priority: 'high',
+        channelId: 'donivra-updates',
+        categoryId: VIEW_DETAILS_CATEGORY_ID,
+        title: notification.title || 'Donivra update',
+        body: getPushBody(notification),
+        data: {
+          notificationId: notification.notification_id,
+          type: notification.type || 'system_update',
+          url: route,
+        },
       },
     }));
   });
 
-  if (!messages.length) {
+  if (!deliveries.length) {
     await supabase
       .from('Notification')
       .update({
@@ -417,42 +473,75 @@ Deno.serve(async (request) => {
   }
 
   const expoResponses = [];
-  for (const batch of chunk(messages, MAX_EXPO_BATCH_SIZE)) {
-    const expoResponse = await fetch(EXPO_PUSH_URL, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(batch),
-    });
+  const pushTickets: Array<Record<string, unknown>> = [];
+  const invalidTokens = new Set<string>();
 
-    const responseBody = await expoResponse.clone().json().catch(async () => ({
-      errors: [{ message: await expoResponse.text().catch(() => 'Expo push request failed.') }],
-    }));
+  for (const batch of chunk(deliveries, MAX_EXPO_BATCH_SIZE)) {
+    const response = await sendExpoBatch(batch, headers);
+    expoResponses.push(response);
 
-    expoResponses.push({
-      ok: expoResponse.ok,
-      status: expoResponse.status,
-      body: responseBody,
+    const ticketData = Array.isArray(response.body?.data) ? response.body.data : [];
+    batch.forEach((delivery, index) => {
+      const ticket = ticketData[index] as Record<string, unknown> | undefined;
+      const details = ticket?.details as Record<string, unknown> | undefined;
+      const ticketError = String(details?.error || '');
+      const status = response.ok && ticket?.status === 'ok' ? 'ok' : 'error';
+
+      if (ticketError === 'DeviceNotRegistered') {
+        invalidTokens.add(delivery.token);
+      }
+
+      pushTickets.push({
+        notificationId: delivery.notificationId,
+        pushTokenId: delivery.pushTokenId,
+        status,
+        ticketId: ticket?.id || null,
+        error: ticketError || (ticket?.message as string | undefined) || null,
+        httpStatus: response.status,
+      });
     });
   }
 
-  const hasFailure = expoResponses.some((response) => !response.ok || response.body?.errors?.length);
-  await supabase
-    .from('Notification')
-    .update({
-      Push_Status: hasFailure ? 'Failed' : 'Sent',
-      Push_Sent_At: hasFailure ? null : new Date().toISOString(),
-      Push_Response: {
-        sent_count: messages.length,
-        responses: expoResponses,
-      },
-    })
-    .in('Notification_ID', notifications.map((row) => row.notification_id));
+  if (invalidTokens.size) {
+    await supabase
+      .from('Push_Notification_Tokens')
+      .update({
+        Is_Active: false,
+        Updated_At: new Date().toISOString(),
+      })
+      .in('Expo_Push_Token', [...invalidTokens]);
+  }
+
+  const acceptedCount = pushTickets.filter((ticket) => ticket.status === 'ok').length;
+  const hasFailure = pushTickets.some((ticket) => ticket.status !== 'ok');
+  const acceptedAt = new Date().toISOString();
+
+  for (const notification of notifications) {
+    const tickets = pushTickets.filter((ticket) => ticket.notificationId === notification.notification_id);
+    const notificationAcceptedCount = tickets.filter((ticket) => ticket.status === 'ok').length;
+    const pushStatus = notificationAcceptedCount === tickets.length
+      ? 'Accepted'
+      : notificationAcceptedCount > 0 ? 'Partially accepted' : 'Failed';
+
+    await supabase
+      .from('Notification')
+      .update({
+        Push_Status: pushStatus,
+        Push_Sent_At: notificationAcceptedCount ? acceptedAt : null,
+        Push_Response: {
+          accepted_count: notificationAcceptedCount,
+          tickets,
+        },
+      })
+      .eq('Notification_ID', notification.notification_id);
+  }
 
   return createJsonResponse({
-    pushSent: hasFailure ? 0 : messages.length,
+    pushAccepted: acceptedCount,
     emailSent: emailResults.filter((result) => result.sent).length,
     pushFailed: hasFailure,
     notificationCount: notifications.length,
+    invalidTokensDeactivated: invalidTokens.size,
     emailResults,
-  }, hasFailure ? 502 : 200);
+  });
 });

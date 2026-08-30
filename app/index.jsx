@@ -1906,10 +1906,10 @@ function FirstTimeOnboarding() {
     const roleOptions = [
       {
         key: 'donor',
+        eyebrow: 'DONOR PATH',
         title: 'Donate Hair',
-        description: 'Help a patient in need by donating your hair',
+        description: 'Check your hair eligibility and begin a donation journey.',
         icon: 'content-cut',
-        isPrimary: false,
         onPress: async () => {
           await Haptics.selectionAsync();
           setBranchMode('donor-info');
@@ -1918,10 +1918,10 @@ function FirstTimeOnboarding() {
       },
       {
         key: 'patient',
+        eyebrow: 'PATIENT PATH',
         title: 'I Need a Wig',
-        description: 'Find a hair wig or prosthesis for medical needs',
+        description: 'Request a wig or hair prosthesis for medical support.',
         icon: 'account-heart-outline',
-        isPrimary: true,
         onPress: async () => {
           await Haptics.selectionAsync();
           setBranchMode('patient-code');
@@ -1931,20 +1931,21 @@ function FirstTimeOnboarding() {
     ];
 
     const isDisabled = !isIntroReady || isSubmitting;
-    const roleChoiceBorderColor = '#b87b44';
 
     return (
       <View style={styles.pathSection}>
-        <View style={styles.pathIconWrap}>
-          <MaterialCommunityIcons
-            name="account-switch-outline"
-            size={28}
-            color={roles.primaryActionBackground}
-          />
+        <View style={styles.pathIntro}>
+          <View style={[styles.pathIconWrap, { backgroundColor: roles.iconPrimarySurface }]}>
+            <MaterialCommunityIcons
+              name="account-switch-outline"
+              size={25}
+              color={roles.primaryActionBackground}
+            />
+          </View>
+          <Text style={[styles.pathEyebrow, { color: roles.primaryActionBackground }]}>CHOOSE YOUR PATH</Text>
+          <Text style={[styles.pathHeading, { color: roles.headingText }]}>How will you use Donivra?</Text>
+          <Text style={[styles.pathSubheading, { color: roles.bodyText }]}>Select the option that best matches what you need today.</Text>
         </View>
-        <Text style={[styles.pathHeading, { color: roles.primaryActionBackground }]}>
-          How will you use Donivra?
-        </Text>
 
         <View style={styles.choiceStack}>
           {roleOptions.map((option) => (
@@ -1955,68 +1956,37 @@ function FirstTimeOnboarding() {
               disabled={isDisabled}
               onPress={option.onPress}
               style={({ pressed }) => [
-                styles.choiceCard,
-                option.isPrimary
-                  ? { backgroundColor: 'transparent', borderColor: roleChoiceBorderColor }
-                  : { backgroundColor: '#ffffff', borderColor: roleChoiceBorderColor },
+                styles.choicePressable,
                 {
                   opacity: isDisabled ? 0.60 : pressed ? 0.88 : 1,
                   transform: [{ scale: pressed && !isDisabled ? 0.985 : 1 }],
                 },
               ]}
             >
-              {option.isPrimary ? (
-                <LinearGradient
-                  colors={ACTION_BUTTON_FILL_GRAD}
-                  start={{ x: 0.2, y: 0 }}
-                  end={{ x: 0.8, y: 1 }}
-                  style={styles.choicePrimaryGradientFill}
-                >
-                  <LinearGradient
-                    colors={['rgba(255, 246, 222, 0)', 'rgba(255, 246, 222, 0.18)', 'rgba(255, 246, 222, 0)']}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={styles.choicePrimaryDiagonalShine}
-                  />
-                </LinearGradient>
-              ) : null}
+              <LinearGradient
+                colors={option.key === 'donor'
+                  ? [roles.defaultCardBackground, roles.iconPrimarySurface]
+                  : [roles.defaultCardBackground, roles.supportCardBackground]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={[styles.choiceCard, { borderColor: roles.defaultCardBorder }]}
+              >
+                <View style={[styles.choiceAccent, { backgroundColor: roles.primaryActionBackground }]} />
 
-              {/* Icon badge */}
-              <View style={[
-                styles.choiceIconBadge,
-                option.isPrimary
-                  ? { backgroundColor: 'rgba(255,255,255,0.18)' }
-                  : { backgroundColor: '#ffffff' },
-              ]}>
-                <MaterialCommunityIcons
-                  name={option.icon}
-                  size={26}
-                  color={option.isPrimary ? roles.primaryActionText : roles.primaryActionBackground}
-                />
-              </View>
+                <View style={[styles.choiceIconBadge, { backgroundColor: roles.primaryActionBackground }]}>
+                  <MaterialCommunityIcons name={option.icon} size={25} color={roles.primaryActionText} />
+                </View>
 
-              {/* Text */}
-              <View style={styles.choiceTextGroup}>
-                <Text style={[
-                  styles.choiceTitle,
-                  { color: option.isPrimary ? roles.primaryActionText : roles.headingText },
-                ]}>
-                  {option.title}
-                </Text>
-                <Text style={[
-                  styles.choiceDesc,
-                  { color: option.isPrimary ? 'rgba(255,255,255,0.72)' : roles.bodyText },
-                ]}>
-                  {option.description}
-                </Text>
-              </View>
+                <View style={styles.choiceTextGroup}>
+                  <Text style={[styles.choiceEyebrow, { color: roles.primaryActionBackground }]}>{option.eyebrow}</Text>
+                  <Text style={[styles.choiceTitle, { color: roles.headingText }]}>{option.title}</Text>
+                  <Text numberOfLines={2} style={[styles.choiceDesc, { color: roles.bodyText }]}>{option.description}</Text>
+                </View>
 
-              {/* Chevron */}
-              <MaterialCommunityIcons
-                name="chevron-right"
-                size={22}
-                color={option.isPrimary ? 'rgba(255,255,255,0.65)' : roles.metaText}
-              />
+                <View style={[styles.choiceArrow, { backgroundColor: roles.iconPrimarySurface }]}>
+                  <MaterialCommunityIcons name="arrow-right" size={19} color={roles.primaryActionBackground} />
+                </View>
+              </LinearGradient>
             </Pressable>
           ))}
         </View>
@@ -2265,80 +2235,113 @@ const styles = StyleSheet.create({
   // ── Role-choice tiles ─────────────────────────────────────────
   pathSection: {
     width: '100%',
+    maxWidth: 430,
+    alignSelf: 'center',
+  },
+  pathIntro: {
+    width: '100%',
+    alignItems: 'center',
+    marginBottom: theme.spacing.xl,
   },
   pathIconWrap: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    width: 48,
+    height: 48,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
-    alignSelf: 'center',
-    marginBottom: theme.spacing.xs,
+    marginBottom: theme.spacing.sm,
+  },
+  pathEyebrow: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 1.2,
+    marginBottom: 5,
   },
   pathHeading: {
     fontFamily: theme.typography.fontFamilyDisplay,
     fontSize: theme.typography.semantic.titleSm,
     fontWeight: theme.typography.weights.bold,
     textAlign: 'center',
-    marginBottom: theme.spacing.lg,
   },
   pathSubheading: {
+    maxWidth: 310,
+    marginTop: theme.spacing.xs,
     fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.semantic.bodySm,
-    marginBottom: theme.spacing.xl,
-    lineHeight: theme.typography.semantic.bodySm * theme.typography.lineHeights.snug,
+    fontSize: theme.typography.compact.bodySm,
+    lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.relaxed,
+    textAlign: 'center',
   },
   choiceStack: {
     width: '100%',
     gap: theme.spacing.md,
   },
+  choicePressable: {
+    width: '100%',
+    borderRadius: 22,
+    ...theme.shadows.card,
+  },
   choiceCard: {
     width: '100%',
+    minHeight: 108,
     flexDirection: 'row',
     alignItems: 'center',
     gap: theme.spacing.md,
-    paddingHorizontal: theme.spacing.lg,
-    paddingVertical: theme.spacing.md,
-    borderRadius: 20,
+    paddingLeft: theme.spacing.lg,
+    paddingRight: theme.spacing.md,
+    paddingVertical: theme.spacing.lg,
+    borderRadius: 22,
     borderWidth: 1,
-    shadowColor: theme.colors.palette.black,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.06,
-    shadowRadius: 12,
-    elevation: 3,
     overflow: 'hidden',
     position: 'relative',
   },
-  choicePrimaryGradientFill: {
-    ...StyleSheet.absoluteFillObject,
-    borderRadius: 20,
-  },
-  choicePrimaryDiagonalShine: {
-    ...StyleSheet.absoluteFillObject,
-    width: '44%',
-    transform: [{ skewX: '-20deg' }, { translateX: -34 }],
+  choiceAccent: {
+    position: 'absolute',
+    left: 0,
+    top: 16,
+    bottom: 16,
+    width: 4,
+    borderTopRightRadius: 4,
+    borderBottomRightRadius: 4,
   },
   choiceIconBadge: {
-    width: 46, height: 46,
-    borderRadius: 23,
+    width: 52,
+    height: 52,
+    borderRadius: 17,
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
+    ...theme.shadows.soft,
   },
   choiceTextGroup: {
     flex: 1,
-    gap: 2,
+    minWidth: 0,
+    gap: 3,
+  },
+  choiceEyebrow: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 8,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 1,
   },
   choiceTitle: {
     fontFamily: theme.typography.fontFamilyDisplay,
-    fontSize: theme.typography.semantic.body,
+    fontSize: theme.typography.semantic.bodyLg,
     fontWeight: theme.typography.weights.bold,
-    lineHeight: theme.typography.semantic.body * theme.typography.lineHeights.tight,
+    lineHeight: theme.typography.semantic.bodyLg * theme.typography.lineHeights.tight,
   },
   choiceDesc: {
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.bodySm,
-    lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.snug,
+    lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.relaxed,
+  },
+  choiceArrow: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
   },
 
   // ── Legacy / ScreenContainer ───────────────────────────────────

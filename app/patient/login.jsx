@@ -9,7 +9,7 @@ import { useRoleAuthFlow } from '../../src/hooks/useRoleAuthFlow';
 
 export default function PatientLoginScreen() {
   const router = useRouter();
-  const { config, handleLogin, handleGoogleAuth, isLoading, activeAuthAction, loginError, clearLoginError, resolvedTheme } = useRoleAuthFlow('patient');
+  const { config, handleLogin, handleGoogleAuth, isLoading, activeAuthAction, loginError, loginErrorCode, isLoginLocked, clearLoginError, resolvedTheme } = useRoleAuthFlow('patient');
 
   return (
     <AuthScreenLayout role="patient" resolvedTheme={resolvedTheme}>
@@ -31,6 +31,8 @@ export default function PatientLoginScreen() {
           onForgotPassword={() => router.push('/auth/forgot-password')}
           buttonText={config.login.buttonText}
           submitError={loginError}
+          submitErrorCode={loginErrorCode}
+          isLoginLocked={isLoginLocked}
           onFieldEdit={clearLoginError}
           resolvedTheme={resolvedTheme}
           onGooglePress={handleGoogleAuth}

@@ -1,12 +1,11 @@
 import React from 'react';
-import { Animated, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Animated, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { DashboardLayout } from '../layout/DashboardLayout';
 import { DashboardHeaderSurface } from '../layout/DashboardHeaderSurface';
 import { DonorTopBar } from '../donor/DonorTopBar';
-import { AppButton } from '../ui/AppButton';
 import { AppCard } from '../ui/AppCard';
 import { AppIcon } from '../ui/AppIcon';
 import { StatusBanner } from '../ui/StatusBanner';
@@ -42,6 +41,75 @@ const FEEDBACK_TYPES = [
 ];
 
 const MAX_MESSAGE_LENGTH = 2000;
+
+function FeedbackActionButton({
+  title,
+  onPress,
+  disabled = false,
+  loading = false,
+  icon = 'arrow-right',
+  gradientColors,
+  roles,
+}) {
+  const isInactive = disabled || loading;
+  const content = (
+    <View
+      pointerEvents="none"
+      style={[
+        styles.actionButtonSurface,
+        isInactive
+          ? {
+              backgroundColor: roles.iconPrimarySurface,
+              borderColor: roles.defaultCardBorder,
+            }
+          : { borderColor: roles.primaryActionBackground },
+      ]}
+    >
+      {loading ? (
+        <ActivityIndicator color={roles.primaryActionText} />
+      ) : (
+        <>
+          <Text style={[
+            styles.actionButtonText,
+            { color: isInactive ? roles.metaText : roles.primaryActionText },
+          ]}>
+            {title}
+          </Text>
+          <AppIcon
+            name={icon}
+            size="sm"
+            color={isInactive ? roles.metaText : roles.primaryActionText}
+          />
+        </>
+      )}
+    </View>
+  );
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={title}
+      accessibilityState={{ disabled: isInactive, busy: loading }}
+      disabled={isInactive}
+      onPress={onPress}
+      style={({ pressed }) => [
+        styles.actionButton,
+        pressed && !isInactive ? styles.actionButtonPressed : null,
+      ]}
+    >
+      {isInactive ? content : (
+        <LinearGradient
+          colors={gradientColors}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 0 }}
+          style={styles.actionButtonGradient}
+        >
+          {content}
+        </LinearGradient>
+      )}
+    </Pressable>
+  );
+}
 
 export function FeedbackFlowScreen({
   role,
@@ -89,7 +157,7 @@ export function FeedbackFlowScreen({
   }, [stepEntrance]);
 
   const handleSelectType = React.useCallback(async (type) => {
-    setSelectedType(type);
+    setSelectedType((currentType) => (currentType === type ? '' : type));
     setFeedback(null);
     await Haptics.selectionAsync();
   }, []);
@@ -206,9 +274,6 @@ export function FeedbackFlowScreen({
           <Text style={styles.heroTitle}>Your voice matters</Text>
           <Text style={styles.heroText}>Tell us what we should fix or improve.</Text>
         </View>
-        <View style={styles.heroStepBadge}>
-          <Text style={styles.heroStepText}>2 quick steps</Text>
-        </View>
       </LinearGradient>
 
       <View style={styles.progressRow}>
@@ -248,44 +313,55 @@ export function FeedbackFlowScreen({
                       key={item.key}
                       accessibilityRole="radio"
                       accessibilityState={{ checked: isSelected }}
+                      accessibilityHint={isSelected ? 'Tap again to clear this selection' : 'Tap to select this topic'}
                       onPress={() => handleSelectType(item.key)}
                       style={({ pressed }) => [
                         styles.typeRow,
                         {
-                          backgroundColor: item.surface,
+                          backgroundColor: isSelected ? roles.iconPrimarySurface : roles.defaultCardBackground,
                           borderColor: isSelected ? roles.primaryActionBackground : roles.defaultCardBorder,
                         },
+                        isSelected ? styles.typeRowSelected : null,
                         pressed && styles.pressed,
                       ]}
                     >
-                      <View style={[styles.typeIcon, { backgroundColor: item.iconSurface }]}>
-                        <AppIcon name={item.icon} size="md" color={roles.primaryActionBackground} />
-                      </View>
-                      <View style={styles.typeCopy}>
-                        <Text style={[styles.typeLabel, { color: roles.headingText }]}>{item.label}</Text>
-                        <Text style={[styles.typeHelper, { color: roles.metaText }]}>{item.helper}</Text>
-                      </View>
-                      <View style={[
-                        styles.radio,
-                        { borderColor: isSelected ? roles.primaryActionBackground : roles.defaultCardBorder },
-                        isSelected && { backgroundColor: roles.primaryActionBackground },
-                      ]}>
-                        {isSelected ? <AppIcon name="check" size="sm" color={roles.primaryActionText} /> : null}
+                      <View pointerEvents="none" style={styles.typeRowContent}>
+                        <View style={[
+                          styles.typeIcon,
+                          {
+                            backgroundColor: isSelected ? roles.primaryActionBackground : item.iconSurface,
+                            borderColor: isSelected ? roles.primaryActionBackground : roles.defaultCardBorder,
+                          },
+                        ]}>
+                          <AppIcon
+                            name={item.icon}
+                            size="md"
+                            color={isSelected ? roles.primaryActionText : roles.primaryActionBackground}
+                          />
+                        </View>
+                        <View style={styles.typeCopy}>
+                          <Text style={[styles.typeLabel, { color: roles.headingText }]}>{item.label}</Text>
+                          <Text style={[styles.typeHelper, { color: roles.metaText }]}>{item.helper}</Text>
+                        </View>
+                        <View style={[
+                          styles.radio,
+                          { borderColor: isSelected ? roles.primaryActionBackground : roles.defaultCardBorder },
+                          isSelected && { backgroundColor: roles.primaryActionBackground },
+                        ]}>
+                          {isSelected ? <AppIcon name="check" size="sm" color={roles.primaryActionText} /> : null}
+                        </View>
                       </View>
                     </Pressable>
                   );
                 })}
               </View>
 
-              <AppButton
-                title="Continue"
+              <FeedbackActionButton
+                title={canContinue ? 'Continue' : 'Select an option'}
                 disabled={!canContinue}
                 onPress={() => moveToStep(2)}
-                trailing={<AppIcon name="arrow-right" size="sm" color={roles.primaryActionText} />}
-                backgroundColorOverride={roles.primaryActionBackground}
-                borderColorOverride={roles.primaryActionBackground}
-                textColorOverride={roles.primaryActionText}
-                style={styles.primaryButton}
+                gradientColors={heroColors}
+                roles={roles}
               />
             </View>
           ) : (
@@ -341,16 +417,14 @@ export function FeedbackFlowScreen({
                 <Text style={[styles.privacyText, { color: roles.bodyText }]}>Linked to your account for follow-up.</Text>
               </View>
 
-              <AppButton
+              <FeedbackActionButton
                 title={isSubmitting ? 'Sending...' : 'Send feedback'}
                 loading={isSubmitting}
                 disabled={isSubmitting}
                 onPress={handleSubmit}
-                leading={<AppIcon name="send-outline" size="sm" color={roles.primaryActionText} />}
-                backgroundColorOverride={roles.primaryActionBackground}
-                borderColorOverride={roles.primaryActionBackground}
-                textColorOverride={roles.primaryActionText}
-                style={styles.primaryButton}
+                icon="send-outline"
+                gradientColors={heroColors}
+                roles={roles}
               />
             </View>
           )}
@@ -417,21 +491,6 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     color: '#F9EDEF',
   },
-  heroStepBadge: {
-    position: 'absolute',
-    right: theme.spacing.md,
-    bottom: theme.spacing.sm,
-    borderRadius: theme.radius.pill,
-    paddingHorizontal: 9,
-    paddingVertical: 5,
-    backgroundColor: 'rgba(255, 255, 255, 0.14)',
-  },
-  heroStepText: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: 9,
-    fontWeight: theme.typography.weights.bold,
-    color: '#FFFFFF',
-  },
   progressRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -479,52 +538,99 @@ const styles = StyleSheet.create({
     gap: theme.spacing.sm,
   },
   typeRow: {
-    minHeight: 72,
+    width: '100%',
+    minHeight: 80,
     borderWidth: 1,
     borderRadius: 18,
+    overflow: 'hidden',
+  },
+  typeRowContent: {
+    width: '100%',
+    minHeight: 78,
+    display: 'flex',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: theme.spacing.md,
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.sm,
+  },
+  typeRowSelected: {
+    borderWidth: 2,
+    ...theme.shadows.soft,
   },
   pressed: {
     opacity: 0.86,
     transform: [{ scale: 0.99 }],
   },
   typeIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: 14,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
+    marginRight: theme.spacing.md,
   },
   typeCopy: {
     flex: 1,
     minWidth: 0,
-    gap: 2,
+    paddingVertical: 2,
   },
   typeLabel: {
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.semantic.bodySm,
     fontWeight: theme.typography.weights.bold,
+    lineHeight: 20,
   },
   typeHelper: {
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.caption,
+    lineHeight: 17,
+    marginTop: 2,
   },
   radio: {
-    width: 24,
-    height: 24,
+    width: 26,
+    height: 26,
     borderRadius: theme.radius.full,
-    borderWidth: 1,
+    borderWidth: 2,
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
+    marginLeft: theme.spacing.md,
   },
-  primaryButton: {
-    borderRadius: 16,
+  actionButton: {
+    width: '100%',
+    minHeight: 56,
+    borderRadius: theme.radius.pill,
+    overflow: 'hidden',
+    ...theme.shadows.soft,
+  },
+  actionButtonGradient: {
+    width: '100%',
+    minHeight: 56,
+    borderRadius: theme.radius.pill,
+  },
+  actionButtonSurface: {
+    width: '100%',
+    minHeight: 56,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1,
+    paddingHorizontal: theme.spacing.lg,
+    display: 'flex',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  actionButtonPressed: {
+    opacity: 0.9,
+    transform: [{ scale: 0.985 }],
+  },
+  actionButtonText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.body,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 0.1,
+    marginRight: theme.spacing.sm,
   },
   stepTwoHeader: {
     flexDirection: 'row',

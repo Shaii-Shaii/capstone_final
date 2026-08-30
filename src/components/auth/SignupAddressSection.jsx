@@ -13,7 +13,8 @@ import phil from 'phil-reg-prov-mun-brgy';
 import { AppInput } from '../ui/AppInput';
 import { AppIcon } from '../ui/AppIcon';
 import { SectionTitleRow } from '../ui/SectionTitleRow';
-import { theme } from '../../design-system/theme';
+import { resolveThemeRoles, theme } from '../../design-system/theme';
+import { useAuth } from '../../providers/AuthProvider';
 
 const sortByName = (items = []) => phil.sort(items, 'A');
 const normalizeValue = (value = '') => value.trim().toLowerCase();
@@ -102,29 +103,31 @@ export function AddressSelectField({
           fieldStyle,
         ]}
       >
-        {leftIcon ? (
-          <View style={styles.selectFieldLeftIconWrap}>
-            <AppIcon name={leftIcon} color={leftIconColor} />
-          </View>
-        ) : null}
-        <Text
-          style={[
-            styles.selectFieldValue,
-            leftIcon ? styles.selectFieldValueWithIcon : null,
-            !value ? styles.selectFieldPlaceholder : null,
-            disabled ? styles.selectFieldValueDisabled : null,
-            valueStyle,
-            !value ? placeholderStyle : null,
-          ]}
-          numberOfLines={1}
-        >
-          {value || placeholder}
-        </Text>
-        <AppIcon
-          name="chevronRight"
-          color={rightIconColor}
-          state={disabled ? 'disabled' : 'muted'}
-        />
+        <View pointerEvents="none" style={styles.selectFieldContent}>
+          {leftIcon ? (
+            <View style={styles.selectFieldLeftIconWrap}>
+              <AppIcon name={leftIcon} color={leftIconColor} />
+            </View>
+          ) : null}
+          <Text
+            style={[
+              styles.selectFieldValue,
+              leftIcon ? styles.selectFieldValueWithIcon : null,
+              !value ? styles.selectFieldPlaceholder : null,
+              disabled ? styles.selectFieldValueDisabled : null,
+              valueStyle,
+              !value ? placeholderStyle : null,
+            ]}
+            numberOfLines={1}
+          >
+            {value || placeholder}
+          </Text>
+          <AppIcon
+            name="chevronRight"
+            color={rightIconColor}
+            state={disabled ? 'disabled' : 'muted'}
+          />
+        </View>
       </Pressable>
       {error ? (
         <Text style={[styles.selectFieldErrorText, errorTextStyle]}>{error}</Text>
@@ -144,6 +147,8 @@ export function AddressOptionSheet({
   onClose,
   onSelect,
 }) {
+  const { resolvedTheme } = useAuth();
+  const roles = resolveThemeRoles(resolvedTheme);
   const [searchValue, setSearchValue] = useState('');
 
   useEffect(() => {
@@ -165,15 +170,31 @@ export function AddressOptionSheet({
     <Modal transparent visible={visible} animationType="fade" onRequestClose={onClose}>
       <View style={styles.sheetOverlay}>
         <Pressable style={styles.sheetBackdrop} onPress={onClose} />
-        <View style={styles.sheetCard}>
-          <View style={styles.sheetHandle} />
+        <View style={[styles.sheetCard, { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder }]}>
+          <View style={[styles.sheetHandle, { backgroundColor: roles.defaultCardBorder }]} />
           <View style={styles.sheetHeader}>
-            <View>
-              <Text style={styles.sheetTitle}>{title}</Text>
-              <Text style={styles.sheetSubtitle}>Choose one option to continue.</Text>
+            <View style={[styles.sheetHeaderIcon, { backgroundColor: roles.iconPrimarySurface }]}>
+              <AppIcon name="format-list-bulleted" size="md" color={roles.iconPrimaryColor} />
             </View>
-            <Pressable onPress={onClose} style={styles.sheetCloseButton}>
-              <AppIcon name="close" state="muted" />
+            <View style={styles.sheetHeaderCopy}>
+              <Text style={[styles.sheetTitle, { color: roles.headingText }]}>{title}</Text>
+              <Text style={[styles.sheetSubtitle, { color: roles.bodyText }]}>Choose the option that matches your profile.</Text>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Close ${title}`}
+              onPress={onClose}
+              style={({ pressed }) => [styles.sheetCloseButton, { opacity: pressed ? 0.72 : 1 }]}
+            >
+              <View
+                pointerEvents="none"
+                style={[
+                  styles.sheetCloseSurface,
+                  { backgroundColor: roles.iconPrimarySurface, borderColor: roles.defaultCardBorder },
+                ]}
+              >
+                <AppIcon name="close" size="sm" color={roles.iconPrimaryColor} />
+              </View>
             </Pressable>
           </View>
 
@@ -187,9 +208,24 @@ export function AddressOptionSheet({
             autoCapitalize="words"
             leftIcon="magnify"
             style={styles.sheetSearchInput}
-            shellStyle={styles.sheetSearchShell}
-            inputStyle={styles.sheetSearchText}
+            shellStyle={[
+              styles.sheetSearchShell,
+              { backgroundColor: roles.iconPrimarySurface, borderColor: roles.defaultCardBorder },
+            ]}
+            inputStyle={[styles.sheetSearchText, { color: roles.headingText }]}
+            leftIconColor={roles.iconPrimaryColor}
           />
+
+          <View style={styles.sheetResultsRow}>
+            <Text style={[styles.sheetResultsText, { color: roles.metaText }]}>
+              {filteredOptions.length} {filteredOptions.length === 1 ? 'option' : 'options'}
+            </Text>
+            {selectedValue ? (
+              <View style={[styles.sheetSelectedPill, { backgroundColor: roles.iconPrimarySurface }]}>
+                <Text numberOfLines={1} style={[styles.sheetSelectedText, { color: roles.iconPrimaryColor }]}>Selected: {selectedValue}</Text>
+              </View>
+            ) : null}
+          </View>
 
           <ScrollView
             style={styles.sheetScroll}
@@ -210,21 +246,57 @@ export function AddressOptionSheet({
                     }}
                     style={({ pressed }) => [
                       styles.sheetOption,
-                      isSelected ? styles.sheetOptionSelected : null,
                       pressed ? styles.sheetOptionPressed : null,
                     ]}
                   >
-                    <Text style={[styles.sheetOptionText, isSelected ? styles.sheetOptionTextSelected : null]}>
-                      {option.label}
-                    </Text>
-                    {isSelected ? <AppIcon name="success" state="active" /> : null}
+                    <View
+                      pointerEvents="none"
+                      style={[
+                        styles.sheetOptionSurface,
+                        {
+                          backgroundColor: isSelected ? roles.iconPrimarySurface : roles.defaultCardBackground,
+                          borderColor: isSelected ? roles.primaryActionBackground : roles.defaultCardBorder,
+                        },
+                      ]}
+                    >
+                      <View
+                        style={[
+                          styles.sheetOptionLeading,
+                          { backgroundColor: isSelected ? roles.primaryActionBackground : roles.iconPrimarySurface },
+                        ]}
+                      >
+                        <AppIcon name="format-list-bulleted" size="sm" color={isSelected ? roles.primaryActionText : roles.iconPrimaryColor} />
+                      </View>
+                      <Text
+                        numberOfLines={1}
+                        style={[
+                          styles.sheetOptionText,
+                          { color: isSelected ? roles.primaryActionBackground : roles.headingText },
+                          isSelected ? styles.sheetOptionTextSelected : null,
+                        ]}
+                      >
+                        {option.label}
+                      </Text>
+                      <View
+                        style={[
+                          styles.sheetOptionCheck,
+                          { borderColor: isSelected ? roles.primaryActionBackground : roles.defaultCardBorder },
+                          isSelected ? { backgroundColor: roles.primaryActionBackground } : null,
+                        ]}
+                      >
+                        {isSelected ? <AppIcon name="check" size="sm" color={roles.primaryActionText} /> : null}
+                      </View>
+                    </View>
                   </Pressable>
                 );
               })
             ) : (
-              <View style={styles.emptyState}>
-                <Text style={styles.emptyStateTitle}>No results found</Text>
-                <Text style={styles.emptyStateBody}>Try a different search term.</Text>
+              <View style={[styles.emptyState, { backgroundColor: roles.iconPrimarySurface }]}>
+                <View style={[styles.emptyStateIcon, { backgroundColor: roles.defaultCardBackground }]}>
+                  <AppIcon name="magnify" size="lg" color={roles.iconPrimaryColor} />
+                </View>
+                <Text style={[styles.emptyStateTitle, { color: roles.headingText }]}>No results found</Text>
+                <Text style={[styles.emptyStateBody, { color: roles.bodyText }]}>Try a different search term.</Text>
               </View>
             )}
           </ScrollView>
@@ -245,6 +317,7 @@ export function SignupAddressSection({
   inputProps = {},
   selectProps = {},
   countryInputProps = {},
+  emptyValuePlaceholder = '',
 }) {
   const { width } = useWindowDimensions();
   const isWide = width >= twoColumnMinWidth;
@@ -356,7 +429,7 @@ export function SignupAddressSection({
         render={({ field }) => (
           <AppInput
             label={fieldConfig.street.label}
-            placeholder={fieldConfig.street.placeholder}
+            placeholder={emptyValuePlaceholder || fieldConfig.street.placeholder}
             variant="filled"
             helperText={fieldConfig.street.helperText}
             value={field.value}
@@ -373,7 +446,7 @@ export function SignupAddressSection({
         <AddressSelectField
           label={fieldConfig.region.label}
           value={region}
-          placeholder={fieldConfig.region.placeholder}
+          placeholder={emptyValuePlaceholder || fieldConfig.region.placeholder}
           helperText={fieldConfig.region.helperText}
           error={errors.region?.message}
           onPress={() => setActivePicker('region')}
@@ -386,7 +459,7 @@ export function SignupAddressSection({
         <AddressSelectField
           label={fieldConfig.province.label}
           value={province}
-          placeholder={fieldConfig.province.placeholder}
+          placeholder={emptyValuePlaceholder || fieldConfig.province.placeholder}
           helperText={fieldConfig.province.helperText}
           error={errors.province?.message}
           disabled={!region}
@@ -397,7 +470,7 @@ export function SignupAddressSection({
         <AddressSelectField
           label={fieldConfig.city.label}
           value={city}
-          placeholder={fieldConfig.city.placeholder}
+          placeholder={emptyValuePlaceholder || fieldConfig.city.placeholder}
           helperText={fieldConfig.city.helperText}
           error={errors.city?.message}
           disabled={!province}
@@ -411,7 +484,7 @@ export function SignupAddressSection({
         <AddressSelectField
           label={fieldConfig.barangay.label}
           value={barangay}
-          placeholder={fieldConfig.barangay.placeholder}
+          placeholder={emptyValuePlaceholder || fieldConfig.barangay.placeholder}
           helperText={fieldConfig.barangay.helperText}
           error={errors.barangay?.message}
           disabled={!city}
@@ -422,7 +495,7 @@ export function SignupAddressSection({
 
         <AppInput
           label={fieldConfig.country.label}
-          placeholder={fieldConfig.country.placeholder}
+          placeholder={emptyValuePlaceholder || fieldConfig.country.placeholder}
           variant="filled"
           value={country || 'Philippines'}
           editable={false}
@@ -543,6 +616,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: theme.colors.borderSubtle,
     backgroundColor: theme.colors.surfaceCard,
+    overflow: 'hidden',
+  },
+  selectFieldContent: {
+    width: '100%',
+    minHeight: theme.inputs.minHeightCompact,
     paddingHorizontal: theme.spacing.inputPaddingXCompact,
     flexDirection: 'row',
     alignItems: 'center',
@@ -599,8 +677,8 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
   },
   sheetCard: {
-    maxHeight: '82%',
-    minHeight: '56%',
+    maxHeight: '86%',
+    minHeight: '52%',
     backgroundColor: '#ffffff',
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
@@ -630,6 +708,18 @@ const styles = StyleSheet.create({
     gap: theme.spacing.md,
     marginBottom: theme.spacing.sm,
   },
+  sheetHeaderIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  sheetHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
   sheetTitle: {
     fontFamily: theme.typography.fontFamilyDisplay,
     fontSize: theme.typography.semantic.titleSm,
@@ -643,17 +733,23 @@ const styles = StyleSheet.create({
     lineHeight: theme.typography.compact.caption * theme.typography.lineHeights.normal,
   },
   sheetCloseButton: {
-    width: 38,
-    height: 38,
+    width: 40,
+    height: 40,
     borderRadius: theme.radius.full,
+    overflow: 'hidden',
+    flexShrink: 0,
+  },
+  sheetCloseSurface: {
+    width: 40,
+    height: 40,
+    borderRadius: theme.radius.full,
+    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: theme.colors.surfaceCard,
-    borderWidth: 1,
-    borderColor: theme.colors.borderSubtle,
   },
   sheetSearchInput: {
-    marginBottom: theme.spacing.sm,
+    minHeight: 0,
+    marginBottom: theme.spacing.xs,
   },
   sheetSearchShell: {
     minHeight: 48,
@@ -664,6 +760,31 @@ const styles = StyleSheet.create({
   sheetSearchText: {
     fontSize: theme.typography.compact.bodySm,
   },
+  sheetResultsRow: {
+    minHeight: 30,
+    marginBottom: theme.spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  sheetResultsText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    fontWeight: theme.typography.weights.semibold,
+  },
+  sheetSelectedPill: {
+    maxWidth: '68%',
+    minHeight: 28,
+    paddingHorizontal: theme.spacing.sm,
+    borderRadius: theme.radius.pill,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sheetSelectedText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    fontWeight: theme.typography.weights.semibold,
+  },
   sheetScroll: {
     marginTop: 0,
   },
@@ -671,18 +792,40 @@ const styles = StyleSheet.create({
     paddingBottom: theme.spacing.lg,
   },
   sheetOption: {
-    minHeight: 54,
+    width: '100%',
+    minHeight: 58,
     borderRadius: theme.radius.xl,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: 12,
     marginBottom: 8,
-    backgroundColor: theme.colors.surfaceCard,
+    overflow: 'hidden',
+  },
+  sheetOptionSurface: {
+    width: '100%',
+    minHeight: 58,
+    borderRadius: theme.radius.xl,
     borderWidth: 1,
-    borderColor: theme.colors.borderSubtle,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: theme.spacing.md,
+  },
+  sheetOptionLeading: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    marginRight: theme.spacing.md,
+  },
+  sheetOptionCheck: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    marginLeft: theme.spacing.sm,
   },
   sheetOptionSelected: {
     borderColor: '#9f2f38',
@@ -704,7 +847,17 @@ const styles = StyleSheet.create({
   emptyState: {
     alignItems: 'center',
     justifyContent: 'center',
+    paddingHorizontal: theme.spacing.xl,
     paddingVertical: theme.spacing.xxl,
+    borderRadius: 20,
+  },
+  emptyStateIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: theme.spacing.sm,
   },
   emptyStateTitle: {
     fontFamily: theme.typography.fontFamilyDisplay,

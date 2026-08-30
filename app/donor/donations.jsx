@@ -30,6 +30,7 @@ import {
 } from '../../src/features/hairScreeningPresentation';
 import { useNotifications } from '../../src/hooks/useNotifications';
 import { useAuth } from '../../src/providers/AuthProvider';
+import { useLanguage } from '../../src/providers/LanguageProvider';
 import { resolveThemeRoles, theme } from '../../src/design-system/theme';
 import hairAnalysisAiIcon from '../../src/assets/images/hair-analysis-ai-icon.png';
 
@@ -98,9 +99,25 @@ const getMoistureLabel = (screening = null) => {
   return 'Low';
 };
 
-const formatRecentLogDate = (value) => {
+const localizeAnalysisValue = (value, t) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized || normalized === 'n/a') return value || 'N/A';
+  if (normalized.includes('needs care')) return t('analysis.needsCare');
+  if (normalized.includes('healthy')) return t('analysis.healthy');
+  if (normalized.includes('damage')) return t('analysis.damage');
+  if (normalized.includes('wavy')) return t('analysis.wavy');
+  if (normalized.includes('straight')) return t('analysis.straight');
+  if (normalized.includes('curly')) return t('analysis.curly');
+  if (normalized.includes('balanced')) return t('analysis.balanced');
+  if (normalized.includes('medium')) return t('analysis.medium');
+  if (normalized.includes('low')) return t('analysis.low');
+  if (normalized.includes('unknown')) return t('analysis.unknown');
+  return value;
+};
+
+const formatRecentLogDate = (value, locale = 'en-US') => {
   if (!value) return 'No date';
-  return new Intl.DateTimeFormat('en-US', {
+  return new Intl.DateTimeFormat(locale, {
     month: 'short',
     day: 'numeric',
     hour: 'numeric',
@@ -112,13 +129,15 @@ const WEEKLY_SCAN_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 
 function HairConditionSummaryCard({ entry, eligibility = null, onPress }) {
   const { resolvedTheme } = useAuth();
+  const { language, t } = useLanguage();
   const roles = resolveThemeRoles(resolvedTheme);
+  const locale = language === 'fil' ? 'fil-PH' : 'en-US';
 
   if (!entry) return null;
 
   const mood = getHairScreeningMood(entry);
   const isEligible = Boolean(eligibility?.isQualified);
-  const conditionLabel = isEligible ? 'Eligible for donation' : 'Not eligible for donation yet';
+  const conditionLabel = isEligible ? t('analysis.eligible') : t('analysis.notEligible');
   const currentLengthCm = Number(eligibility?.normalized_length_cm);
   const minimumLengthCm = Number(eligibility?.minimum_length_cm);
   const eligibilityNote = !isEligible
@@ -127,12 +146,15 @@ function HairConditionSummaryCard({ entry, eligibility = null, onPress }) {
     && currentLengthCm > 0
     && minimumLengthCm > 0
     && currentLengthCm < minimumLengthCm
-    ? `${(currentLengthCm / 2.54).toFixed(1)} in measured · ${Math.round(minimumLengthCm / 2.54)} in required`
+    ? t('analysis.measuredRequired', {
+      measured: (currentLengthCm / 2.54).toFixed(1),
+      required: Math.round(minimumLengthCm / 2.54),
+    })
     : '';
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`Open hair check details for ${formatRecentLogDate(entry.created_at)}`}
+      accessibilityLabel={`Open hair check details for ${formatRecentLogDate(entry.created_at, locale)}`}
       onPress={onPress}
       style={({ pressed }) => [pressed ? styles.cardPressed : null]}
     >
@@ -159,11 +181,11 @@ function HairConditionSummaryCard({ entry, eligibility = null, onPress }) {
 
         <View style={styles.hairConditionMetaRow}>
           <Text style={[styles.hairConditionDate, { color: roles.metaText }]}>
-            {formatRecentLogDate(entry.created_at)}
+            {formatRecentLogDate(entry.created_at, locale)}
           </Text>
           <View style={[styles.hairConditionMoodInline, { backgroundColor: mood.surface }]}>
             <MaterialCommunityIcons name={mood.icon} size={16} color={mood.color} />
-            <Text style={[styles.hairConditionMoodInlineText, { color: mood.color }]}>{mood.label}</Text>
+            <Text style={[styles.hairConditionMoodInlineText, { color: mood.color }]}>{localizeAnalysisValue(mood.label, t)}</Text>
           </View>
         </View>
 
@@ -171,9 +193,9 @@ function HairConditionSummaryCard({ entry, eligibility = null, onPress }) {
 
         <View style={styles.hairConditionFooter}>
           <View style={styles.hairConditionActionCopy}>
-            <Text style={[styles.hairConditionViewLabel, { color: roles.headingText }]}>View details</Text>
+            <Text style={[styles.hairConditionViewLabel, { color: roles.headingText }]}>{t('analysis.viewDetails')}</Text>
             <Text style={[styles.hairConditionStatusText, { color: roles.metaText }]}>
-              {isEligible ? 'Eligible' : 'Review requirements'}
+              {isEligible ? t('analysis.eligibleShort') : t('analysis.reviewRequirements')}
             </Text>
           </View>
           <AppIcon name="chevronRight" size="sm" state="muted" color={roles.metaText} />
@@ -183,8 +205,8 @@ function HairConditionSummaryCard({ entry, eligibility = null, onPress }) {
   );
 }
 
-const getMonthLabel = (date) => (
-  new Intl.DateTimeFormat('en-US', { month: 'long', year: 'numeric' }).format(date)
+const getMonthLabel = (date, locale = 'en-US') => (
+  new Intl.DateTimeFormat(locale, { month: 'long', year: 'numeric' }).format(date)
 );
 
 const buildHairCalendarCells = (cursorDate, markedDateKeys = new Set(), selectedDateKey = '') => {
@@ -229,17 +251,17 @@ const buildHairWeekCells = (cursorDate, markedDateKeys = new Set(), selectedDate
   });
 };
 
-const getCalendarWeekLabel = (date) => {
+const getCalendarWeekLabel = (date, locale = 'en-US') => {
   const week = buildHairWeekCells(date);
   const first = week[0]?.date;
   const last = week[6]?.date;
   if (!first || !last) return 'This week';
 
   const sameMonth = first.getMonth() === last.getMonth() && first.getFullYear() === last.getFullYear();
-  const firstLabel = new Intl.DateTimeFormat('en-US', sameMonth
+  const firstLabel = new Intl.DateTimeFormat(locale, sameMonth
     ? { month: 'short', day: 'numeric' }
     : { month: 'short', day: 'numeric', year: first.getFullYear() !== last.getFullYear() ? 'numeric' : undefined }).format(first);
-  const lastLabel = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(last);
+  const lastLabel = new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric', year: 'numeric' }).format(last);
   return `${firstLabel} - ${lastLabel}`;
 };
 
@@ -299,7 +321,9 @@ function HairAnalysisFloatingButton({ title, icon, onPress, showHairAnalysisIcon
 function HairAnalysisHomeModule() {
   const router = useRouter();
   const { user, profile, resolvedTheme } = useAuth();
+  const { language, t } = useLanguage();
   const roles = resolveThemeRoles(resolvedTheme);
+  const locale = language === 'fil' ? 'fil-PH' : 'en-US';
   const cachedHome = getCachedHairAnalysisHomeData(user?.id);
   const cacheMatchesUser = Boolean(cachedHome);
   const submissionsRef = React.useRef(cachedHome?.submissions || []);
@@ -449,8 +473,8 @@ function HairAnalysisHomeModule() {
   );
   const calendarRows = calendarMode === 'week' ? [weekCalendarCells] : monthCalendarRows;
   const calendarPeriodLabel = calendarMode === 'week'
-    ? getCalendarWeekLabel(calendarCursor)
-    : getMonthLabel(calendarCursor);
+    ? getCalendarWeekLabel(calendarCursor, locale)
+    : getMonthLabel(calendarCursor, locale);
   const isProfileComplete = profileCompletionMeta.isComplete;
   const isFirstHairCheck = screenings.length === 0;
   const latestScreeningAtMs = latestScreening?.created_at ? new Date(latestScreening.created_at).getTime() : NaN;
@@ -466,12 +490,14 @@ function HairAnalysisHomeModule() {
     () => getHairScreeningMood(latestScreening),
     [latestScreening]
   );
-  const todayCondition = latestAssessment.label;
+  const todayCondition = localizeAnalysisValue(latestAssessment.label, t);
   const lengthLabel = getLengthLabel(latestScreening);
-  const textureLabel = latestScreening?.detected_texture || 'N/A';
+  const textureLabel = localizeAnalysisValue(latestScreening?.detected_texture || 'N/A', t);
   const scalpLabel = latestScreening ? todayCondition : 'N/A';
-  const moistureLabel = getMoistureLabel(latestScreening);
-  const healthRangeLabel = latestScreening ? `Week ${getWeekRangeLabel(new Date(latestScreening.created_at))}` : '';
+  const moistureLabel = localizeAnalysisValue(getMoistureLabel(latestScreening), t);
+  const healthRangeLabel = latestScreening
+    ? t('analysis.weekRange', { range: getWeekRangeLabel(new Date(latestScreening.created_at)) })
+    : '';
 
   const animateCalendarChange = React.useCallback((applyChange) => {
     calendarTransition.stopAnimation();
@@ -538,12 +564,12 @@ function HairAnalysisHomeModule() {
   };
 
   const primaryActionTitle = !isProfileComplete
-    ? 'Complete Profile'
+    ? t('analysis.completeProfile')
     : isFirstHairCheck
-      ? 'Start First Hair Check'
+      ? t('analysis.startFirst')
       : isWeeklyScanLocked
-        ? 'View Recent Log'
-        : 'Start Hair Analysis';
+        ? t('analysis.viewRecent')
+        : t('analysis.start');
   const resolvedPrimaryActionIcon = !isProfileComplete
     ? 'editProfile'
     : isWeeklyScanLocked && !isFirstHairCheck
@@ -631,16 +657,6 @@ function HairAnalysisHomeModule() {
             <Text style={[styles.errorText, { color: roles.bodyText }]}>{error}</Text>
           </View>
         ) : null}
-        <View style={styles.analysisIntro}>
-          <View style={styles.analysisIntroCopy}>
-            <Text style={[styles.analysisIntroTitle, { color: roles.headingText }]}>Your hair health</Text>
-            <Text style={[styles.analysisIntroText, { color: roles.bodyText }]}>See your latest result and follow changes over time.</Text>
-          </View>
-          <View style={[styles.analysisIntroIcon, { backgroundColor: roles.iconPrimarySurface }]}>
-            <MaterialCommunityIcons name="chart-timeline-variant-shimmer" size={25} color={roles.primaryActionBackground} />
-          </View>
-        </View>
-
         <View style={styles.tabPanelStack}>
           <LinearGradient
             colors={[theme.colors.dashboardDonorFrom, theme.colors.dashboardDonorTo]}
@@ -651,22 +667,22 @@ function HairAnalysisHomeModule() {
             <View style={styles.healthOverviewGlow} />
             <View style={styles.healthOverviewHeader}>
               <View style={styles.healthOverviewHeaderCopy}>
-                <Text style={styles.healthOverviewEyebrow}>LATEST RESULT</Text>
+                <Text style={styles.healthOverviewEyebrow}>{t('analysis.latestResult')}</Text>
                 <Text numberOfLines={2} style={styles.healthOverviewTitle}>{todayCondition}</Text>
-                {healthRangeLabel ? <Text style={styles.healthOverviewRange}>{healthRangeLabel}</Text> : <Text style={styles.healthOverviewRange}>Complete your first check to begin.</Text>}
+                {healthRangeLabel ? <Text style={styles.healthOverviewRange}>{healthRangeLabel}</Text> : <Text style={styles.healthOverviewRange}>{t('analysis.completeFirst')}</Text>}
               </View>
               <View style={styles.healthMoodRing}>
                 <MaterialCommunityIcons name={latestMood.icon} size={31} color="#FFFFFF" />
-                <Text numberOfLines={1} style={styles.healthMoodLabel}>{latestMood.label}</Text>
+                <Text numberOfLines={1} style={styles.healthMoodLabel}>{localizeAnalysisValue(latestMood.label, t)}</Text>
               </View>
             </View>
 
             <View style={styles.healthMetricsRow}>
               {[
-                { key: 'length', label: 'Length', value: lengthLabel },
-                { key: 'texture', label: 'Texture', value: textureLabel },
-                { key: 'scalp', label: 'Condition', value: scalpLabel },
-                { key: 'moisture', label: 'Moisture', value: moistureLabel },
+                { key: 'length', label: t('analysis.length'), value: lengthLabel },
+                { key: 'texture', label: t('analysis.texture'), value: textureLabel },
+                { key: 'scalp', label: t('analysis.condition'), value: scalpLabel },
+                { key: 'moisture', label: t('analysis.moisture'), value: moistureLabel },
               ].map((metric, index) => (
                 <React.Fragment key={metric.key}>
                   {index ? <View style={styles.healthMetricDivider} /> : null}
@@ -683,8 +699,8 @@ function HairAnalysisHomeModule() {
           <View style={styles.analysisSectionBlock}>
             <View style={styles.analysisSectionHeaderRow}>
               <View style={styles.analysisSectionHeaderCopy}>
-                <Text style={[styles.analysisSectionTitle, { color: roles.headingText }]}>Hair history</Text>
-                <Text style={[styles.analysisSectionSubtitle, { color: roles.metaText }]}>Review saved results by week or month.</Text>
+                <Text style={[styles.analysisSectionTitle, { color: roles.headingText }]}>{t('analysis.hairHistory')}</Text>
+                <Text style={[styles.analysisSectionSubtitle, { color: roles.metaText }]}>{t('analysis.historySubtitle')}</Text>
               </View>
               <View style={[styles.calendarModeSwitch, { backgroundColor: roles.iconPrimarySurface }]}>
                 {['week', 'month'].map((mode) => {
@@ -706,7 +722,7 @@ function HairAnalysisHomeModule() {
                         styles.calendarModeText,
                         { color: selected ? roles.primaryActionText : roles.primaryActionBackground },
                       ]}>
-                        {mode === 'week' ? 'Week' : 'Month'}
+                        {mode === 'week' ? t('analysis.week') : t('analysis.month')}
                       </Text>
                     </Pressable>
                   );
@@ -737,7 +753,7 @@ function HairAnalysisHomeModule() {
                 </Pressable>
                 <View style={styles.calendarHeaderCopy}>
                   <Text style={[styles.calendarPeriodLabel, { color: roles.headingText }]}>{calendarPeriodLabel}</Text>
-                  <Text style={[styles.calendarPeriodHint, { color: roles.metaText }]}>{calendarMode === 'week' ? 'Weekly view' : 'Monthly view'}</Text>
+                  <Text style={[styles.calendarPeriodHint, { color: roles.metaText }]}>{calendarMode === 'week' ? t('analysis.weeklyView') : t('analysis.monthlyView')}</Text>
                 </View>
                 <Pressable
                   accessibilityRole="button"
@@ -750,7 +766,7 @@ function HairAnalysisHomeModule() {
               </View>
 
               <View style={styles.calendarWeekdayRow}>
-                {HAIR_CALENDAR_WEEKDAYS.map((label) => (
+                {(language === 'fil' ? ['Lin', 'Lun', 'Mar', 'Miy', 'Huw', 'Biy', 'Sab'] : HAIR_CALENDAR_WEEKDAYS).map((label) => (
                   <Text key={`hair-calendar-weekday-${label}`} style={[styles.calendarWeekdayText, { color: roles.metaText }]}>{label}</Text>
                 ))}
               </View>
@@ -795,7 +811,7 @@ function HairAnalysisHomeModule() {
 
                 <View style={[styles.calendarLegend, { borderTopColor: roles.defaultCardBorder }]}>
                   <View style={[styles.calendarLegendDot, { backgroundColor: roles.primaryActionBackground }]} />
-                  <Text style={[styles.calendarLegendText, { color: roles.metaText }]}>Marked dates have saved results. Tap one to open it.</Text>
+                  <Text style={[styles.calendarLegendText, { color: roles.metaText }]}>{t('analysis.calendarLegend')}</Text>
                 </View>
               </View>
             </Animated.View>
@@ -803,8 +819,8 @@ function HairAnalysisHomeModule() {
 
           <View style={styles.analysisSectionBlock}>
             <View style={styles.analysisSectionHeaderCopy}>
-              <Text style={[styles.analysisSectionTitle, { color: roles.headingText }]}>Recent results</Text>
-              <Text style={[styles.analysisSectionSubtitle, { color: roles.metaText }]}>Open a result to view the full assessment and guidance.</Text>
+              <Text style={[styles.analysisSectionTitle, { color: roles.headingText }]}>{t('analysis.recentResults')}</Text>
+              <Text style={[styles.analysisSectionSubtitle, { color: roles.metaText }]}>{t('analysis.recentSubtitle')}</Text>
             </View>
             {hasRecentLogs ? (
               <View style={styles.recentLogFeed}>
@@ -824,7 +840,7 @@ function HairAnalysisHomeModule() {
                           <Pressable
                             key={entry.ai_screening_id || entry.created_at || index}
                             accessibilityRole="button"
-                            accessibilityLabel={`Open result from ${formatRecentLogDate(entry.created_at)}`}
+                            accessibilityLabel={`Open result from ${formatRecentLogDate(entry.created_at, locale)}`}
                             onPress={() => openLogDetailsForEntry(entry)}
                             style={({ pressed }) => [
                               styles.recentLogItem,
@@ -836,11 +852,11 @@ function HairAnalysisHomeModule() {
                               <MaterialCommunityIcons name={mood.icon} size={20} color={mood.color} />
                             </View>
                             <View style={styles.recentLogMain}>
-                              <Text style={[styles.recentLogDate, { color: roles.metaText }]}>{formatRecentLogDate(entry.created_at)}</Text>
-                              <Text numberOfLines={1} style={[styles.recentLogCondition, { color: roles.headingText }]}>{assessment.label}</Text>
+                              <Text style={[styles.recentLogDate, { color: roles.metaText }]}>{formatRecentLogDate(entry.created_at, locale)}</Text>
+                              <Text numberOfLines={1} style={[styles.recentLogCondition, { color: roles.headingText }]}>{localizeAnalysisValue(assessment.label, t)}</Text>
                             </View>
                             <View style={[styles.recentLogMoodWrap, { backgroundColor: mood.surface }]}>
-                              <Text style={[styles.recentLogMoodText, { color: mood.color }]}>{mood.label}</Text>
+                              <Text style={[styles.recentLogMoodText, { color: mood.color }]}>{localizeAnalysisValue(mood.label, t)}</Text>
                             </View>
                           </Pressable>
                         );
@@ -853,8 +869,8 @@ function HairAnalysisHomeModule() {
               <EmptyDataState
                 compact
                 showCountBadge={false}
-                title="No saved results yet"
-                message="Start a hair check to save your first result."
+                title={t('analysis.noResults')}
+                message={t('analysis.noResultsMessage')}
                 variant="analysis"
               />
             )}

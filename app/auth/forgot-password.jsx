@@ -39,6 +39,16 @@ const SUBMIT_FILL_GRAD = [
   '#5c0910',
 ];
 
+const RESET_LINK_VALIDITY_SECONDS = 60 * 60;
+const RESET_RESEND_COOLDOWN_SECONDS = 60;
+
+const formatCountdown = (totalSeconds) => {
+  const safeSeconds = Math.max(0, Number(totalSeconds) || 0);
+  const minutes = Math.floor(safeSeconds / 60);
+  const seconds = safeSeconds % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+};
+
 function BrandBadge({ resolvedTheme }) {
   const [imageFailed, setImageFailed] = useState(false);
   const logoSrc = resolveBrandLogoSource(resolvedTheme, imageFailed);
@@ -79,6 +89,9 @@ export default function ForgotPasswordScreen() {
   const [emailSent, setEmailSent] = useState(false);
   const [submittedEmail, setSubmittedEmail] = useState('');
   const [sendError, setSendError] = useState('');
+  const [resetLinkExpiresAt, setResetLinkExpiresAt] = useState(0);
+  const [resendAvailableAt, setResendAvailableAt] = useState(0);
+  const [clockNow, setClockNow] = useState(Date.now());
 
   const {
     control,
@@ -96,14 +109,51 @@ export default function ForgotPasswordScreen() {
     const result = await sendPasswordReset(data.email);
 
     if (result.success) {
+      const sentAt = Date.now();
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setSubmittedEmail(data.email);
+      setClockNow(sentAt);
+      setResetLinkExpiresAt(sentAt + RESET_LINK_VALIDITY_SECONDS * 1000);
+      setResendAvailableAt(sentAt + RESET_RESEND_COOLDOWN_SECONDS * 1000);
       setEmailSent(true);
       return;
     }
 
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
     setSendError(result.error || 'Failed to send reset link. Please try again.');
+  };
+
+  useEffect(() => {
+    if (!emailSent) return undefined;
+
+    setClockNow(Date.now());
+    const timer = setInterval(() => setClockNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [emailSent]);
+
+  const resetLinkSecondsRemaining = Math.max(0, Math.ceil((resetLinkExpiresAt - clockNow) / 1000));
+  const resendSecondsRemaining = Math.max(0, Math.ceil((resendAvailableAt - clockNow) / 1000));
+  const isResetLinkExpired = emailSent && resetLinkSecondsRemaining === 0;
+  const isResendDisabled = isLoading || resendSecondsRemaining > 0;
+
+  const handleResendReset = async () => {
+    if (!submittedEmail || isResendDisabled) return;
+
+    await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setSendError('');
+    const result = await sendPasswordReset(submittedEmail);
+
+    if (result.success) {
+      const sentAt = Date.now();
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setClockNow(sentAt);
+      setResetLinkExpiresAt(sentAt + RESET_LINK_VALIDITY_SECONDS * 1000);
+      setResendAvailableAt(sentAt + RESET_RESEND_COOLDOWN_SECONDS * 1000);
+      return;
+    }
+
+    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+    setSendError(result.error || 'Failed to resend the reset link. Please try again.');
   };
 
   return (
@@ -249,7 +299,7 @@ export default function ForgotPasswordScreen() {
               </View>
             </>
           ) : (
-            <>
+            <View style={styles.successState}>
               <View
                 style={[
                   styles.successCard,
@@ -261,10 +311,10 @@ export default function ForgotPasswordScreen() {
               >
                 <View
                   style={[
-                    styles.successIconWrap,
-                    {
-                      backgroundColor: theme.colors.surfaceCard,
-                      borderColor: roles.defaultCardBorder,
+                  styles.successIconWrap,
+                  {
+                      backgroundColor: roles.iconPrimarySurface,
+                      borderColor: roles.supportCardBorder,
                     },
                   ]}
                 >
@@ -274,64 +324,176 @@ export default function ForgotPasswordScreen() {
                     color={roles.primaryActionBackground}
                   />
                 </View>
-                <Text style={[styles.successText, { color: roles.headingText }]}>
-                  Reset link sent to <Text style={styles.successEmail}>{submittedEmail}</Text>
-                </Text>
+                <View style={styles.successCopy}>
+                  <Text style={[styles.successLabel, { color: roles.metaText }]}>RESET LINK SENT TO</Text>
+                  <Text numberOfLines={2} style={[styles.successEmail, { color: roles.headingText }]}>
+                    {submittedEmail}
+                  </Text>
+                </View>
               </View>
 
-              <LinearGradient
-                colors={SUBMIT_BORDER_GRAD}
-                start={{ x: 0, y: 0.5 }}
-                end={{ x: 1, y: 0.5 }}
-                style={styles.submitGradientBorder}
+              <View
+                style={[
+                  styles.expiryCard,
+                  {
+                    backgroundColor: isResetLinkExpired ? roles.supportCardBackground : roles.iconPrimarySurface,
+                    borderColor: isResetLinkExpired ? theme.colors.textError : roles.supportCardBorder,
+                  },
+                ]}
               >
+                <View style={styles.expiryIconWrap}>
+                  <MaterialCommunityIcons
+                    name={isResetLinkExpired ? 'clock-alert-outline' : 'timer-sand'}
+                    size={22}
+                    color={isResetLinkExpired ? theme.colors.textError : roles.primaryActionBackground}
+                  />
+                </View>
+                <View style={styles.expiryCopy}>
+                  <Text style={[styles.expiryLabel, { color: roles.metaText }]}>
+                    {isResetLinkExpired ? 'LINK EXPIRED' : 'LINK EXPIRES IN'}
+                  </Text>
+                  <Text
+                    accessibilityLiveRegion="polite"
+                    style={[
+                      styles.expiryTime,
+                      { color: isResetLinkExpired ? theme.colors.textError : roles.primaryActionBackground },
+                    ]}
+                  >
+                    {isResetLinkExpired ? 'Request a new link' : formatCountdown(resetLinkSecondsRemaining)}
+                  </Text>
+                </View>
+                {!isResetLinkExpired ? (
+                  <View style={[styles.expiryBadge, { backgroundColor: roles.primaryActionBackground }]}>
+                    <Text style={[styles.expiryBadgeText, { color: roles.primaryActionText }]}>1 HOUR</Text>
+                  </View>
+                ) : null}
+              </View>
+
+              {sendError ? <Text style={styles.successErrorText}>{sendError}</Text> : null}
+
+              <View style={styles.successActions}>
                 <LinearGradient
-                  colors={SUBMIT_FILL_GRAD}
-                  start={{ x: 0.2, y: 0 }}
-                  end={{ x: 0.8, y: 1 }}
-                  style={styles.submitGradientFill}
+                  colors={SUBMIT_BORDER_GRAD}
+                  start={{ x: 0, y: 0.5 }}
+                  end={{ x: 1, y: 0.5 }}
+                  style={styles.submitGradientBorder}
                 >
                   <LinearGradient
-                    colors={[
-                      'rgba(255, 246, 222, 0)',
-                      'rgba(255, 246, 222, 0.18)',
-                      'rgba(255, 246, 222, 0)',
-                    ]}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={styles.submitDiagonalShine}
-                  />
-                  <AppButton
-                    title="Back to Login"
-                    onPress={() => router.replace('/auth/access')}
-                    size="lg"
-                    variant="outline"
-                    style={styles.submitBtn}
-                    textStyle={styles.submitBtnText}
-                    backgroundColorOverride="transparent"
-                    borderColorOverride="transparent"
-                    textColorOverride={roles.primaryActionText}
-                  />
+                    colors={SUBMIT_FILL_GRAD}
+                    start={{ x: 0.2, y: 0 }}
+                    end={{ x: 0.8, y: 1 }}
+                    style={styles.submitGradientFill}
+                  >
+                    <LinearGradient
+                      colors={[
+                        'rgba(255, 246, 222, 0)',
+                        'rgba(255, 246, 222, 0.18)',
+                        'rgba(255, 246, 222, 0)',
+                      ]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={styles.submitDiagonalShine}
+                    />
+                    <AppButton
+                      title="Back to Login"
+                      onPress={() => router.replace('/auth/access')}
+                      size="lg"
+                      variant="outline"
+                      style={styles.submitBtn}
+                      textStyle={styles.submitBtnText}
+                      backgroundColorOverride="transparent"
+                      borderColorOverride="transparent"
+                      textColorOverride={roles.primaryActionText}
+                    />
+                  </LinearGradient>
                 </LinearGradient>
-              </LinearGradient>
 
-              <Pressable
-                onPress={() => setEmailSent(false)}
-                style={({ pressed }) => [
-                  styles.resendBtn,
-                  {
-                    backgroundColor: theme.colors.surfaceCard,
-                    borderColor: roles.defaultCardBorder,
-                  },
-                  pressed ? styles.pressed : null,
-                ]}
-                accessibilityRole="button"
-              >
-                <Text style={[styles.resendBtnText, { color: roles.headingText }]}>
-                  Send Another Email
-                </Text>
-              </Pressable>
-            </>
+                <Pressable
+                  onPress={handleResendReset}
+                  disabled={isResendDisabled}
+                  style={({ pressed }) => [
+                    styles.secondaryActionPressable,
+                    isResendDisabled ? styles.disabledAction : null,
+                    pressed && !isResendDisabled ? styles.pressed : null,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityState={{ disabled: isResendDisabled }}
+                >
+                  <View
+                    style={[
+                      styles.secondaryActionSurface,
+                      styles.resendActionSurface,
+                      {
+                        backgroundColor: roles.supportCardBackground,
+                        borderColor: roles.supportCardBorder,
+                      },
+                    ]}
+                  >
+                    <View style={[styles.secondaryActionIcon, { backgroundColor: theme.colors.surfaceCard }]}>
+                      <MaterialCommunityIcons
+                        name="email-sync-outline"
+                        size={19}
+                        color={roles.primaryActionBackground}
+                      />
+                    </View>
+                    <View style={styles.secondaryActionCopy}>
+                      <Text
+                        numberOfLines={1}
+                        adjustsFontSizeToFit
+                        minimumFontScale={0.78}
+                        style={[styles.secondaryActionText, { color: roles.primaryActionBackground }]}
+                      >
+                        {resendSecondsRemaining > 0
+                          ? `Resend available in ${formatCountdown(resendSecondsRemaining)}`
+                          : isResetLinkExpired
+                            ? 'Send a new reset link'
+                            : 'Resend reset email'}
+                      </Text>
+                    </View>
+                    <View style={[styles.secondaryActionEndIcon, { backgroundColor: theme.colors.surfaceCard }]}>
+                      <MaterialCommunityIcons
+                        name={resendSecondsRemaining > 0 ? 'timer-outline' : 'refresh'}
+                        size={18}
+                        color={roles.primaryActionBackground}
+                      />
+                    </View>
+                  </View>
+                </Pressable>
+
+                <Pressable
+                  onPress={() => {
+                    setEmailSent(false);
+                    setSendError('');
+                  }}
+                  style={({ pressed }) => [
+                    styles.secondaryActionPressable,
+                    pressed ? styles.pressed : null,
+                  ]}
+                  accessibilityRole="button"
+                >
+                  <View
+                    style={[
+                      styles.secondaryActionSurface,
+                      styles.differentEmailSurface,
+                      {
+                        backgroundColor: theme.colors.surfaceCard,
+                        borderColor: theme.colors.borderStrong,
+                      },
+                    ]}
+                  >
+                    <View style={[styles.secondaryActionIcon, { backgroundColor: roles.iconPrimarySurface }]}>
+                      <MaterialCommunityIcons name="pencil-outline" size={18} color={roles.primaryActionBackground} />
+                    </View>
+                    <View style={styles.secondaryActionCopy}>
+                      <Text style={[styles.secondaryActionText, { color: roles.headingText }]}>Use a different email</Text>
+                    </View>
+                    <View style={[styles.secondaryActionEndIcon, { borderColor: roles.supportCardBorder }]}>
+                      <MaterialCommunityIcons name="chevron-right" size={20} color={roles.primaryActionBackground} />
+                    </View>
+                  </View>
+                </Pressable>
+              </View>
+            </View>
           )}
         </View>
       </View>
@@ -561,44 +723,149 @@ const styles = StyleSheet.create({
   },
   successCard: {
     borderWidth: 1,
-    borderRadius: 16,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.md,
+    borderRadius: 18,
+    padding: theme.spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    ...theme.shadows.soft,
+  },
+  successState: {
+    gap: theme.spacing.md,
+  },
+  successIconWrap: {
+    width: 44,
+    height: 44,
+    borderWidth: 1,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  successCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
+  },
+  successLabel: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 1,
+  },
+  successEmail: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.body,
+    lineHeight: theme.typography.semantic.body * theme.typography.lineHeights.snug,
+    fontWeight: theme.typography.weights.bold,
+  },
+  expiryCard: {
+    minHeight: 82,
+    borderWidth: 1,
+    borderRadius: 18,
+    padding: theme.spacing.md,
     flexDirection: 'row',
     alignItems: 'center',
     gap: theme.spacing.sm,
-    marginBottom: theme.spacing.md,
   },
-  successIconWrap: {
-    width: 36,
-    height: 36,
-    borderWidth: 1,
-    borderRadius: 18,
+  expiryIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.72)',
   },
-  successText: {
+  expiryCopy: {
     flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  expiryLabel: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 1,
+  },
+  expiryTime: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.bodyLg,
+    fontWeight: theme.typography.weights.bold,
+  },
+  expiryBadge: {
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: 5,
+  },
+  expiryBadgeText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 8,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 0.8,
+  },
+  successErrorText: {
+    textAlign: 'center',
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+    lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.relaxed,
+    color: theme.colors.textError,
+  },
+  successActions: {
+    gap: theme.spacing.md,
+  },
+  secondaryActionPressable: {
+    width: '100%',
+    borderRadius: 17,
+  },
+  secondaryActionSurface: {
+    width: '100%',
+    minHeight: 56,
+    borderWidth: 1,
+    borderRadius: 17,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: 8,
+    gap: theme.spacing.sm,
+  },
+  resendActionSurface: {
+    ...theme.shadows.soft,
+  },
+  differentEmailSurface: {
+    borderWidth: 1.5,
+  },
+  secondaryActionIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  secondaryActionCopy: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 2,
+  },
+  secondaryActionEndIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  secondaryActionText: {
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.semantic.bodySm,
-    lineHeight: theme.typography.semantic.bodySm * theme.typography.lineHeights.relaxed,
-  },
-  successEmail: {
     fontWeight: theme.typography.weights.bold,
-    color: theme.colors.actionTextLink,
+    textAlign: 'center',
   },
-  resendBtn: {
-    minHeight: 50,
-    borderWidth: 1,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: theme.spacing.md,
-  },
-  resendBtnText: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.semantic.body,
-    fontWeight: theme.typography.weights.semibold,
+  disabledAction: {
+    opacity: 0.72,
   },
   pressed: {
     opacity: 0.72,

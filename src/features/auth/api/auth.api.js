@@ -16,7 +16,52 @@ try {
  */
 
 export const loginWithEmail = async ({ email, password }) => {
-  return await supabase.auth.signInWithPassword({ email, password });
+  const functionResult = await supabase.functions.invoke('secure-password-login', {
+    body: { email, password },
+  });
+
+  if (functionResult.error) {
+    return {
+      data: { user: null, session: null },
+      error: functionResult.error,
+    };
+  }
+
+  if (!functionResult.data?.success) {
+    const loginError = new Error(functionResult.data?.message || 'Login could not be completed.');
+    loginError.code = functionResult.data?.errorCode || 'AUTH_ERROR';
+    loginError.lockedUntil = functionResult.data?.lockedUntil || null;
+    loginError.retryAfterSeconds = Number(functionResult.data?.retryAfterSeconds) || 0;
+    loginError.failedAttempts = Number(functionResult.data?.failedAttempts) || 0;
+    loginError.attemptsRemaining = Number.isFinite(Number(functionResult.data?.attemptsRemaining))
+      ? Number(functionResult.data.attemptsRemaining)
+      : null;
+    return {
+      data: { user: null, session: null },
+      error: loginError,
+    };
+  }
+
+  const session = functionResult.data?.session || null;
+  if (!session?.access_token || !session?.refresh_token) {
+    return {
+      data: { user: null, session: null },
+      error: new Error('Secure login did not return a valid session.'),
+    };
+  }
+
+  const sessionResult = await supabase.auth.setSession({
+    access_token: session.access_token,
+    refresh_token: session.refresh_token,
+  });
+
+  return {
+    data: {
+      user: sessionResult.data?.user || functionResult.data?.user || null,
+      session: sessionResult.data?.session || session,
+    },
+    error: sessionResult.error || null,
+  };
 };
 
 export const registerWithEmail = async ({ email, password, metadata }) => {

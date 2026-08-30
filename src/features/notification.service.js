@@ -26,9 +26,10 @@ import { writeAuditLog } from '../utils/appErrors';
 
 const buildStorageKey = ({ userId, role }) => `${notificationStoragePrefix}.${role}.${userId}`;
 const DONOR_REMINDER_EMAIL_FUNCTION = 'send-donor-hair-analysis-reminder';
-const PUSH_NOTIFICATION_FUNCTION = 'send-push-notification';
 const DRIVE_REMINDER_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
+const PUSH_RECEIPT_CHECK_INTERVAL_MS = 15 * 60 * 1000;
 const reminderEmailAttemptCache = new Map();
+const pushReceiptAttemptCache = new Map();
 
 const formatDateTime = (value) => {
   if (!value) return new Date().toISOString();
@@ -472,11 +473,8 @@ const sendPushForBackendNotifications = async ({ notificationIds = [] } = {}) =>
   const ids = (notificationIds || []).filter(Boolean);
   if (!ids.length) return null;
 
-  const result = await invokeEdgeFunction(PUSH_NOTIFICATION_FUNCTION, {
-    body: {
-      notificationIds: ids,
-    },
-  }).catch((error) => ({ data: null, error }));
+  const result = await NotificationAPI.sendPushNotificationsByIds(ids)
+    .catch((error) => ({ data: null, error }));
 
   return result?.error || null;
 };
@@ -492,6 +490,12 @@ const fetchBackendNotifications = async (databaseUserId) => {
       notifications: [],
       error: null,
     };
+  }
+
+  const lastReceiptAttempt = pushReceiptAttemptCache.get(databaseUserId) || 0;
+  if (Date.now() - lastReceiptAttempt >= PUSH_RECEIPT_CHECK_INTERVAL_MS) {
+    pushReceiptAttemptCache.set(databaseUserId, Date.now());
+    void NotificationAPI.reconcilePushNotificationReceipts().catch(() => {});
   }
 
   const backendResult = await NotificationAPI.fetchNotificationsByUserId(databaseUserId)

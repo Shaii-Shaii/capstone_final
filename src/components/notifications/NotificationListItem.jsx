@@ -21,41 +21,89 @@ const TYPE_ICON_MAP = {
   certificate_available: 'certificate-outline',
 };
 
-export function NotificationListItem({ notification, onPress, compact = false, showDivider = true }) {
+export function NotificationListItem({
+  notification,
+  onPress,
+  compact = false,
+  showDivider = true,
+  presentation = 'list',
+}) {
   const { resolvedTheme } = useAuth();
   const roles = resolveThemeRoles(resolvedTheme);
   const timestamp = getNotificationTimestampLabel(notification?.createdAt);
+  const isCard = presentation === 'card';
+  const isUnread = !notification?.isRead;
 
   return (
     <Pressable
       onPress={() => onPress?.(notification)}
       style={({ pressed }) => [
         styles.row,
-        compact ? styles.rowCompact : null,
-        showDivider ? styles.rowDivider : styles.rowLast,
         pressed ? styles.rowPressed : null,
       ]}
     >
-      <View style={[styles.iconWrap, { backgroundColor: roles.iconPrimarySurface }]}>
-        <AppIcon
-          name={TYPE_ICON_MAP[notification?.type] || 'bell-outline'}
-          size="md"
-          color={roles.iconPrimaryColor}
-        />
-      </View>
-
-      <View style={styles.copyWrap}>
-        <View style={styles.topRow}>
-          <Text numberOfLines={2} style={[styles.title, compact ? styles.titleCompact : null]}>
-            {notification?.title}
-          </Text>
-          {timestamp ? <Text style={styles.timestamp}>{timestamp}</Text> : null}
+      <View
+        pointerEvents="none"
+        style={[
+          styles.rowContent,
+          compact ? styles.rowContentCompact : null,
+          isCard
+            ? [
+                styles.rowCard,
+                {
+                  backgroundColor: isUnread ? roles.iconPrimarySurface : roles.defaultCardBackground,
+                  borderColor: isUnread ? roles.primaryActionBackground : roles.defaultCardBorder,
+                },
+              ]
+            : showDivider ? styles.rowDivider : styles.rowLast,
+        ]}
+      >
+        {isCard && isUnread ? (
+          <View style={[styles.unreadAccent, { backgroundColor: roles.primaryActionBackground }]} />
+        ) : null}
+        <View
+          style={[
+            styles.iconWrap,
+            {
+              backgroundColor: isUnread ? roles.primaryActionBackground : roles.iconPrimarySurface,
+              borderColor: isUnread ? roles.primaryActionBackground : roles.defaultCardBorder,
+            },
+          ]}
+        >
+          <AppIcon
+            name={TYPE_ICON_MAP[notification?.type] || 'bell-outline'}
+            size="md"
+            color={isUnread ? roles.primaryActionText : roles.iconPrimaryColor}
+          />
         </View>
-        <View style={styles.messageRow}>
-          <Text numberOfLines={compact ? 1 : 2} style={[styles.message, compact ? styles.messageCompact : null]}>
-            {notification?.message}
-          </Text>
-          {!notification?.isRead ? <View style={styles.unreadDot} /> : null}
+
+        <View style={styles.copyWrap}>
+          <View style={styles.topRow}>
+            <Text
+              numberOfLines={2}
+              style={[
+                styles.title,
+                compact ? styles.titleCompact : null,
+                { color: roles.headingText },
+              ]}
+            >
+              {notification?.title}
+            </Text>
+            {timestamp ? <Text numberOfLines={1} style={[styles.timestamp, { color: roles.metaText }]}>{timestamp}</Text> : null}
+          </View>
+          <View style={styles.messageRow}>
+            <Text
+              numberOfLines={compact ? 1 : 2}
+              style={[
+                styles.message,
+                compact ? styles.messageCompact : null,
+                { color: roles.bodyText },
+              ]}
+            >
+              {notification?.message}
+            </Text>
+            {isUnread ? <View style={[styles.unreadDot, { backgroundColor: roles.primaryActionBackground }]} /> : null}
+          </View>
         </View>
       </View>
     </Pressable>
@@ -64,14 +112,25 @@ export function NotificationListItem({ notification, onPress, compact = false, s
 
 const styles = StyleSheet.create({
   row: {
+    width: '100%',
+  },
+  rowContent: {
+    width: '100%',
+    minHeight: 88,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.md,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: theme.spacing.md,
-    paddingVertical: theme.spacing.md,
   },
-  rowCompact: {
+  rowContentCompact: {
     paddingVertical: theme.spacing.sm,
     minHeight: 60,
+  },
+  rowCard: {
+    borderWidth: 1,
+    borderRadius: 20,
+    overflow: 'hidden',
+    ...theme.shadows.soft,
   },
   rowDivider: {
     borderBottomWidth: 1,
@@ -81,14 +140,26 @@ const styles = StyleSheet.create({
     borderBottomWidth: 0,
   },
   rowPressed: {
-    opacity: 0.84,
+    opacity: 0.86,
+    transform: [{ scale: 0.99 }],
+  },
+  unreadAccent: {
+    position: 'absolute',
+    left: 0,
+    top: theme.spacing.md,
+    bottom: theme.spacing.md,
+    width: 4,
+    borderRadius: theme.radius.full,
   },
   iconWrap: {
-    width: 52,
-    height: 52,
-    borderRadius: 18,
+    width: 48,
+    height: 48,
+    borderRadius: 16,
+    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
+    flexShrink: 0,
+    marginRight: theme.spacing.md,
   },
   copyWrap: {
     flex: 1,
@@ -107,7 +178,6 @@ const styles = StyleSheet.create({
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.semantic.bodyLg,
     fontWeight: theme.typography.weights.semibold,
-    color: theme.colors.textPrimary,
     lineHeight: theme.typography.semantic.bodyLg * theme.typography.lineHeights.snug,
   },
   titleCompact: {
@@ -115,10 +185,9 @@ const styles = StyleSheet.create({
     lineHeight: theme.typography.semantic.body * theme.typography.lineHeights.snug,
   },
   unreadDot: {
-    width: 10,
-    height: 10,
+    width: 8,
+    height: 8,
     borderRadius: theme.radius.full,
-    backgroundColor: theme.colors.textError,
     marginTop: 3,
     marginLeft: theme.spacing.sm,
   },
@@ -132,7 +201,6 @@ const styles = StyleSheet.create({
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.semantic.bodySm,
     lineHeight: theme.typography.semantic.bodySm * theme.typography.lineHeights.relaxed,
-    color: theme.colors.textSecondary,
   },
   messageCompact: {
     fontSize: theme.typography.compact.caption,
@@ -142,7 +210,6 @@ const styles = StyleSheet.create({
     flexShrink: 0,
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.semantic.caption,
-    color: theme.colors.textMuted,
     marginTop: 1,
   },
 });

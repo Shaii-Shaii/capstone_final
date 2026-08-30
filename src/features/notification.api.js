@@ -1,6 +1,8 @@
-import { supabase } from '../api/supabase/client';
+import { invokeEdgeFunction, supabase } from '../api/supabase/client';
 
 const NOTIFICATION_TABLE = 'Notification';
+const PUSH_NOTIFICATION_FUNCTION = 'send-push-notification';
+const PUSH_RECEIPT_FUNCTION = 'check-push-receipts';
 
 const notificationSelect = `
   notification_id:Notification_ID,
@@ -58,6 +60,19 @@ export const createNotifications = async (rows) => (
     .from(NOTIFICATION_TABLE)
     .insert((rows || []).map(toNotificationInsertRow))
     .select(notificationSelect)
+);
+
+export const sendPushNotificationsByIds = async (notificationIds = []) => {
+  const ids = [...new Set((notificationIds || []).map(Number).filter((id) => Number.isInteger(id) && id > 0))];
+  if (!ids.length) return { data: null, error: null };
+
+  return await invokeEdgeFunction(PUSH_NOTIFICATION_FUNCTION, {
+    body: { notificationIds: ids },
+  });
+};
+
+export const reconcilePushNotificationReceipts = async () => (
+  await invokeEdgeFunction(PUSH_RECEIPT_FUNCTION, { body: {} })
 );
 
 export const markNotificationsRead = async (ids) => (
@@ -118,3 +133,25 @@ export const deactivatePushNotificationToken = async ({ userId, expoPushToken })
     .eq('Expo_Push_Token', expoPushToken)
     .select(pushTokenSelect)
 );
+
+export const deactivateOtherPushNotificationTokensForDevice = async ({
+  userId,
+  deviceId,
+  expoPushToken,
+}) => {
+  if (!userId || !deviceId || !expoPushToken) {
+    return { data: [], error: null };
+  }
+
+  return await supabase
+    .from('Push_Notification_Tokens')
+    .update({
+      Is_Active: false,
+      Updated_At: new Date().toISOString(),
+    })
+    .eq('User_ID', userId)
+    .eq('Device_ID', deviceId)
+    .neq('Expo_Push_Token', expoPushToken)
+    .eq('Is_Active', true)
+    .select(pushTokenSelect);
+};

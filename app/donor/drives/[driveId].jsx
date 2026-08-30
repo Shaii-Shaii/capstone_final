@@ -29,10 +29,12 @@ import {
 import {
   buildDriveInvitationQrPayload,
   getDonorDonationsModuleData,
+  isDonationParticipantRegistration,
 } from '../../../src/features/donorDonations.service';
 import { DONOR_PERMISSION_REASONS } from '../../../src/features/donorCompliance.service';
 import { supabase } from '../../../src/api/supabase/client';
 import { resolveThemeRoles, theme } from '../../../src/design-system/theme';
+import { useOpenStreetMapAvailability } from '../../../src/hooks/useOpenStreetMapAvailability';
 import { Map, Camera, Marker } from '@maplibre/maplibre-react-native';
 
 const DRIVE_REALTIME_DEBOUNCE_MS = 380;
@@ -151,10 +153,6 @@ const getDriveCoordinates = (drive = null) => {
     : null;
 };
 
-const getMapPreviewLabel = (drive = null) => (
-  drive?.address_label || drive?.location_label || 'Tap to view directions.'
-);
-
 const useResponsiveThemeRoles = (resolvedTheme) => {
   const { width } = useWindowDimensions();
   return React.useMemo(
@@ -201,6 +199,12 @@ function EventMapPreview({ drive }) {
   const coordinates = getDriveCoordinates(drive);
   const directionsUrl = buildDirectionsUrl(drive);
   const mapCoordinate = coordinates ? [coordinates.longitude, coordinates.latitude] : null;
+  const {
+    isAvailable: isMapAvailable,
+    isChecking: isCheckingMap,
+    retry: retryMap,
+    markUnavailable: markMapUnavailable,
+  } = useOpenStreetMapAvailability({ enabled: Boolean(mapCoordinate) });
 
   const handleOpenDirections = React.useCallback(async () => {
     if (!directionsUrl) return;
@@ -216,8 +220,15 @@ function EventMapPreview({ drive }) {
         { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder },
       ]}
     >
-      {mapCoordinate ? (
-        <Map style={styles.mapNativeView} mapStyle={EVENT_MAP_STYLE} scrollEnabled={false} rotateEnabled={false} pitchEnabled={false}>
+      {mapCoordinate && isMapAvailable ? (
+        <Map
+          style={styles.mapNativeView}
+          mapStyle={EVENT_MAP_STYLE}
+          scrollEnabled={false}
+          rotateEnabled={false}
+          pitchEnabled={false}
+          onDidFailLoadingMap={markMapUnavailable}
+        >
           <Camera initialViewState={{ center: mapCoordinate, zoom: 14 }} />
           <Marker id={`drive-${drive?.event_request_id || drive?.Event_Request_ID || 'location'}`} lngLat={mapCoordinate}>
             <View style={styles.mapMarker}>
@@ -227,17 +238,36 @@ function EventMapPreview({ drive }) {
         </Map>
       ) : (
         <View style={styles.mapFallback}>
-          <MaterialCommunityIcons name="map-marker-radius-outline" size={34} color={roles.primaryActionBackground} />
+          {isCheckingMap ? (
+            <ActivityIndicator color={roles.primaryActionBackground} />
+          ) : (
+            <MaterialCommunityIcons name="map-marker-alert-outline" size={34} color={roles.primaryActionBackground} />
+          )}
           <Text style={[styles.mapFallbackTitle, { color: roles.headingText }]}>
-            {coordinates ? 'Map preview unavailable' : 'Event coordinates needed'}
+            {isCheckingMap ? 'Loading map preview' : coordinates ? 'Map preview unavailable' : 'Event coordinates needed'}
           </Text>
           <Text numberOfLines={2} style={[styles.mapFallbackSubtitle, { color: roles.bodyText }]}>
-            {coordinates ? getMapPreviewLabel(drive) : 'Add latitude and longitude to enable directions.'}
+            {isCheckingMap
+              ? 'Checking the map connection...'
+              : coordinates
+                ? 'The map service cannot be reached. You can still open directions.'
+                : 'Add latitude and longitude to enable directions.'}
           </Text>
+          {coordinates && !isCheckingMap ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Retry event map"
+              onPress={retryMap}
+              style={[styles.mapRetryButton, { borderColor: roles.primaryActionBackground }]}
+            >
+              <MaterialCommunityIcons name="reload" size={15} color={roles.primaryActionBackground} />
+              <Text style={[styles.mapRetryText, { color: roles.primaryActionBackground }]}>Retry map</Text>
+            </Pressable>
+          ) : null}
         </View>
       )}
 
-      {mapCoordinate ? (
+      {mapCoordinate && isMapAvailable ? (
         <Text style={styles.mapAttribution}>
           © OpenStreetMap contributors
         </Text>
@@ -342,10 +372,11 @@ function EventRsvpQrCard({ drive }) {
   const primaryTextColor = resolvedTheme?.primaryTextColor || roles.headingText;
   const registration = drive?.registration || null;
   const hasRsvp = Boolean(registration?.registration_id);
-  const isVoluntary = String(registration?.attendee_type || '').trim().toLowerCase() === 'voluntary';
+  const isAttendanceOnly = !isDonationParticipantRegistration(registration);
+  const attendanceConfirmed = isPresentRegistration(registration);
   const qrPayload = hasRsvp ? buildDriveInvitationQrPayload({ drive, registration }) : '';
 
-  if (!hasRsvp || !qrPayload || isPresentRegistration(registration)) return null;
+  if (!hasRsvp || !qrPayload) return null;
 
   return (
     <View style={[styles.rsvpQrCard, { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder }]}>
@@ -353,12 +384,16 @@ function EventRsvpQrCard({ drive }) {
         <View style={styles.rsvpQrHeaderCopy}>
           <Text style={[styles.rsvpQrTitle, { color: primaryTextColor }]}>RSVP QR</Text>
           <Text style={[styles.rsvpQrSubtitle, { color: primaryTextColor }]}>
-            Staff scans this at the event site to mark you Present.
+            {attendanceConfirmed
+              ? 'Your event attendance has been confirmed.'
+              : 'Show this to staff at the event entrance.'}
           </Text>
         </View>
         <View style={[styles.rsvpTypeBadge, { backgroundColor: roles.supportCardBackground, borderColor: roles.defaultCardBorder }]}>
           <Text style={[styles.rsvpTypeText, { color: primaryTextColor }]}>
-            {isVoluntary ? 'Voluntary' : 'Donor'}
+            {attendanceConfirmed
+              ? isAttendanceOnly ? 'Attendee · Present' : 'Donor · Present'
+              : isAttendanceOnly ? 'Attendee' : 'Donor'}
           </Text>
         </View>
       </View>
@@ -510,147 +545,37 @@ function EventDetailsPanel({
   );
 }
 
-const EVENT_TIMELINE_FALLBACK = [
-  {
-    key: 'cut_and_ship',
-    label: 'Hair received',
-    description: 'Staff scanned your RSVP and accepted your hair donation.',
-    matchKeys: ['cutandship', 'receivedbycompany', 'receivedbyhairforhope'],
-  },
-  {
-    key: 'quality_assessment',
-    label: 'Quality assessment',
-    description: 'The donated hair is reviewed before it moves to production.',
-    matchKeys: ['qualityassessment', 'qaassessment', 'qualitychecking'],
-  },
-  {
-    key: 'wig_production',
-    label: 'Wig production',
-    description: 'Approved hair is prepared and used to create a wig.',
-    matchKeys: ['wigproduction', 'forbundling'],
-  },
-  {
-    key: 'assigned_to_patient',
-    label: 'Assigned to a patient',
-    description: 'The finished wig is matched with an approved patient.',
-    matchKeys: ['assignedtopatient', 'wigdistributionhospitals', 'hospitaldistribution'],
-  },
-  {
-    key: 'received_by_patient',
-    label: 'Received by the patient',
-    description: 'The patient confirms that the wig has been received.',
-    matchKeys: ['receivedbypatient', 'distributiontopatients', 'patientdistribution'],
-  },
-];
-
-const getEventTimelineDescription = (stage = null, index = 0) => (
-  String(stage?.savedNote || stage?.description || stage?.note || '').trim()
-  || EVENT_TIMELINE_FALLBACK[index]?.description
-  || 'The organization will update this step when progress is recorded.'
-);
-
-const normalizeEventTimelineKey = (value = '') => String(value || '')
-  .trim()
-  .toLowerCase()
-  .replace(/[^a-z0-9]+/g, '');
-
-const resolveEventTimelineStages = (stages = []) => {
-  const mappedStages = EVENT_TIMELINE_FALLBACK.map((fallback) => {
-    const source = (stages || []).find((stage) => {
-      const searchable = normalizeEventTimelineKey(`${stage?.key || ''} ${stage?.label || ''} ${stage?.title || ''}`);
-      return fallback.matchKeys.some((key) => searchable.includes(key));
-    }) || null;
-    return { ...fallback, ...(source || {}) };
-  });
-  const lastCompletedIndex = mappedStages.reduce((latest, stage, index) => (
-    stage.state === 'completed' || stage.evidenceAt || stage.completedAt || stage.displayEvidenceAt
-      ? index
-      : latest
-  ), 0);
-  const currentIndex = Math.min(lastCompletedIndex + 1, mappedStages.length - 1);
-
-  return mappedStages.map((stage, index) => ({
-    ...stage,
-    state: index <= lastCompletedIndex ? 'completed' : index === currentIndex ? 'current' : 'upcoming',
-    progressLabel: index <= lastCompletedIndex ? 'Complete' : index === currentIndex ? 'Ongoing' : 'Waiting',
-  }));
-};
-
-function EventDonationTimeline({ stages = [] }) {
+function DonationProgressLinkCard({ onPress }) {
   const { resolvedTheme } = useAuth();
   const roles = useResponsiveThemeRoles(resolvedTheme);
-  const resolvedStages = resolveEventTimelineStages(stages);
 
   return (
-    <View style={styles.eventTimelineSection}>
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel="Open donation progress"
+      onPress={onPress}
+      style={({ pressed }) => [styles.progressLinkPressable, pressed ? styles.pressed : null]}
+    >
       <LinearGradient
-        colors={[theme.colors.palette.wine900, theme.colors.palette.wine700]}
+        colors={[theme.colors.palette.wine900, roles.primaryActionBackground, theme.colors.palette.wine700]}
         start={{ x: 0, y: 0 }}
         end={{ x: 1, y: 1 }}
-        style={styles.eventTimelineHeader}
+        style={styles.progressLinkCard}
       >
-        <View style={styles.eventTimelineHeaderIcon}>
-          <MaterialCommunityIcons name="timeline-check-outline" size={22} color="#FFFFFF" />
+        <View pointerEvents="none" style={styles.progressLinkGlow} />
+        <View style={styles.progressLinkIcon}>
+          <MaterialCommunityIcons name="timeline-check-outline" size={24} color={roles.primaryActionText} />
         </View>
-        <View style={styles.eventTimelineHeaderCopy}>
-          <Text style={styles.eventTimelineEyebrow}>DONATION JOURNEY</Text>
-          <Text style={styles.eventTimelineTitle}>Your donation is now in progress</Text>
-          <Text style={styles.eventTimelineSubtitle}>Updates appear here as the organization processes your donation.</Text>
+        <View style={styles.progressLinkCopy}>
+          <Text style={[styles.progressLinkEyebrow, { color: roles.primaryActionText }]}>DONATION JOURNEY</Text>
+          <Text style={[styles.progressLinkTitle, { color: roles.primaryActionText }]}>Track your donation</Text>
+          <Text style={[styles.progressLinkSubtitle, { color: roles.primaryActionText }]}>See each update from hair receipt to patient delivery.</Text>
+        </View>
+        <View style={styles.progressLinkArrow}>
+          <MaterialCommunityIcons name="arrow-right" size={20} color={roles.primaryActionText} />
         </View>
       </LinearGradient>
-
-      <View style={styles.eventTimelineList}>
-        {resolvedStages.map((stage, index) => {
-          const isCompleted = stage.state === 'completed';
-          const isCurrent = stage.state === 'current';
-          return (
-            <View key={stage.key || `${stage.label}-${index}`} style={styles.eventTimelineRow}>
-              <View style={styles.eventTimelineMarkerColumn}>
-                <View style={[
-                  styles.eventTimelineMarker,
-                  {
-                    backgroundColor: isCompleted ? roles.primaryActionBackground : roles.defaultCardBackground,
-                    borderColor: isCompleted || isCurrent ? roles.primaryActionBackground : roles.defaultCardBorder,
-                  },
-                ]}>
-                  {isCompleted ? (
-                    <MaterialCommunityIcons name="check" size={14} color={roles.primaryActionText} />
-                  ) : isCurrent ? (
-                    <View style={[styles.eventTimelineCurrentDot, { backgroundColor: roles.primaryActionBackground }]} />
-                  ) : (
-                    <MaterialCommunityIcons name="clock-outline" size={13} color={roles.metaText} />
-                  )}
-                </View>
-                {index < resolvedStages.length - 1 ? (
-                  <View style={[
-                    styles.eventTimelineConnector,
-                    { backgroundColor: isCompleted ? roles.primaryActionBackground : roles.defaultCardBorder },
-                  ]} />
-                ) : null}
-              </View>
-
-              <View style={[
-                styles.eventTimelineCard,
-                {
-                  backgroundColor: isCurrent ? roles.iconPrimarySurface : roles.defaultCardBackground,
-                  borderColor: isCurrent ? roles.primaryActionBackground : roles.defaultCardBorder,
-                },
-              ]}>
-                <View style={styles.eventTimelineCardHeader}>
-                  <Text style={[styles.eventTimelineStageTitle, { color: roles.headingText }]}>{stage.label || stage.title}</Text>
-                  <Text style={[styles.eventTimelineStatus, { color: isCurrent ? roles.primaryActionBackground : roles.metaText }]}>
-                    {stage.progressLabel || stage.statusLabel || (isCompleted ? 'Complete' : 'Waiting')}
-                  </Text>
-                </View>
-                <Text style={[styles.eventTimelineDescription, { color: roles.bodyText }]}>
-                  {getEventTimelineDescription(stage, index)}
-                </Text>
-              </View>
-            </View>
-          );
-        })}
-      </View>
-    </View>
+    </Pressable>
   );
 }
 
@@ -678,7 +603,7 @@ export default function DonorDriveDetailRoute() {
     requiresPostDonationAnalysis: false,
     hairEligibilityMessage: '',
     hasSubmittedDonationForDrive: false,
-    timelineStages: [],
+    matchingSubmissionId: null,
   });
 
   const driveImageUrl = drive?.event_image_url || drive?.organization_logo_url || '';
@@ -691,6 +616,14 @@ export default function DonorDriveDetailRoute() {
     || 'You already have an ongoing donation. Please complete or wait for the current donation process to finish before starting a new one.';
   const hairEligibilityMessage = donationFlowState.hairEligibilityMessage
     || 'Scan your hair first so the system can confirm if you are eligible to join this donation event.';
+  const isRegisteredDonationParticipant = isDonationParticipantRegistration(drive?.registration);
+  const isDrivePresent = isPresentRegistration(drive?.registration);
+  const canViewDonationProgress = Boolean(
+    isRegisteredDonationParticipant
+    && isDrivePresent
+    && hasSubmittedDonationForDrive
+    && donationFlowState.matchingSubmissionId
+  );
 
   const loadRegistrationCount = React.useCallback(async () => {
     if (!Number.isFinite(numericDriveId) || numericDriveId <= 0) return;
@@ -753,13 +686,11 @@ export default function DonorDriveDetailRoute() {
       nextDrive?.registration?.registration_id ? 1 : 0
     ));
     const matchingEventSubmission = [
+      ...(Array.isArray(donationModuleResult.submissions) ? donationModuleResult.submissions : []),
       ...(Array.isArray(donationModuleResult.activeSubmissions) ? donationModuleResult.activeSubmissions : []),
       donationModuleResult.latestSubmission,
     ].filter(Boolean).find((submission) => Number(submission?.donation_drive_id) === Number(numericDriveId)) || null;
     const hasSubmittedDonationForDrive = Boolean(matchingEventSubmission?.submission_id);
-    const timelineBelongsToDrive = Number(donationModuleResult.activeDrive?.donation_drive_id) === Number(numericDriveId)
-      || Number(donationModuleResult.latestSubmission?.donation_drive_id) === Number(numericDriveId);
-
     setDonationFlowState({
       hasOngoingDonation: Boolean(donationModuleResult.hasOngoingDonation),
       ongoingDonationMessage: donationModuleResult.ongoingDonationMessage || '',
@@ -778,7 +709,7 @@ export default function DonorDriveDetailRoute() {
               })()
           : 'Complete a CheckHair scan to check eligibility.',
       hasSubmittedDonationForDrive,
-      timelineStages: timelineBelongsToDrive ? donationModuleResult.timelineStages || [] : [],
+      matchingSubmissionId: matchingEventSubmission?.submission_id || null,
     });
     setIsLoading(false);
   }, [driveId, loadRegistrationCount, numericDriveId, profile?.user_id, user?.id]);
@@ -910,15 +841,17 @@ export default function DonorDriveDetailRoute() {
       return;
     }
 
-    if (hasOngoingDonation && drive.registration?.registration_id && hasSubmittedDonationForDrive) {
-      router.navigate(`/donor/status?driveId=${drive.donation_drive_id}`);
+    if (canViewDonationProgress) {
+      router.navigate(`/donor/donation-progress?driveId=${drive.donation_drive_id}`);
       return;
     }
 
     if (drive.registration?.registration_id) {
       const isPresent = isPresentRegistration(drive.registration);
       if (isPresent) {
-        router.navigate(`/donor/status?driveId=${drive.donation_drive_id}`);
+        if (isDonationParticipantRegistration(drive.registration) && hasSubmittedDonationForDrive) {
+          router.navigate(`/donor/donation-progress?driveId=${drive.donation_drive_id}`);
+        }
         return;
       }
       return;
@@ -967,6 +900,7 @@ export default function DonorDriveDetailRoute() {
     hasHairScanLog,
     requiresPostDonationAnalysis,
     donationFlowState.isAiEligible,
+    canViewDonationProgress,
     hasSubmittedDonationForDrive,
     loadRegistrationCount,
     ongoingDonationMessage,
@@ -1018,21 +952,19 @@ export default function DonorDriveDetailRoute() {
   ]);
 
   const isRegisteredForDrive = Boolean(drive?.registration?.registration_id);
-  const isDrivePresent = isPresentRegistration(drive?.registration);
-  const hasRegistrationDonationLink = Boolean(drive?.registration?.submission_id);
   const actionTitle = ended
     ? 'Event ended'
     : !isRegisteredForDrive
       ? 'RSVP'
-      : isDrivePresent && hasRegistrationDonationLink
-        ? 'Open Donation Module'
+      : canViewDonationProgress
+        ? 'View donation progress'
         : isDrivePresent
           ? 'Checked in'
           : 'Registered';
 
   const actionDisabled = isLoading
     || ended
-    || (isRegisteredForDrive && (!isDrivePresent || !hasRegistrationDonationLink));
+    || (isRegisteredForDrive && !canViewDonationProgress);
   const shownRegistrationCount = Math.max(registrationCount, isRegisteredForDrive ? 1 : 0);
 
   return (
@@ -1132,8 +1064,10 @@ export default function DonorDriveDetailRoute() {
               ended={ended}
               onScanPress={() => router.navigate('/donor/donations')}
             />
-            {isDrivePresent ? (
-              <EventDonationTimeline stages={donationFlowState.timelineStages} />
+            {canViewDonationProgress ? (
+              <DonationProgressLinkCard
+                onPress={() => router.navigate(`/donor/donation-progress?driveId=${drive.donation_drive_id}`)}
+              />
             ) : null}
         </>
       ) : (
@@ -1428,6 +1362,25 @@ const styles = StyleSheet.create({
     lineHeight: theme.typography.compact.caption * 1.4,
     textAlign: 'center',
   },
+  mapRetryButton: {
+    position: 'absolute',
+    top: theme.spacing.sm,
+    right: theme.spacing.sm,
+    minHeight: 32,
+    borderWidth: 1,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: theme.spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    backgroundColor: 'rgba(255, 255, 255, 0.88)',
+  },
+  mapRetryText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    fontWeight: theme.typography.weights.bold,
+  },
   detailsBlock: {
     paddingBottom: theme.spacing.lg,
   },
@@ -1694,114 +1647,71 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.compact.caption,
     fontWeight: theme.typography.weights.semibold,
   },
-  eventTimelineSection: {
+  progressLinkPressable: {
     marginTop: theme.spacing.xl,
-    gap: theme.spacing.lg,
+    borderRadius: theme.radius.xl,
   },
-  eventTimelineHeader: {
-    borderRadius: 22,
-    padding: theme.spacing.lg,
+  progressLinkCard: {
+    minHeight: 118,
+    borderRadius: theme.radius.xl,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.lg,
     flexDirection: 'row',
     alignItems: 'center',
     gap: theme.spacing.md,
     overflow: 'hidden',
     ...theme.shadows.card,
   },
-  eventTimelineHeaderIcon: {
+  progressLinkGlow: {
+    position: 'absolute',
+    width: 148,
+    height: 148,
+    borderRadius: 74,
+    right: -54,
+    top: -76,
+    backgroundColor: 'rgba(255,255,255,0.09)',
+  },
+  progressLinkIcon: {
     width: 48,
     height: 48,
-    borderRadius: 16,
+    borderRadius: 24,
     alignItems: 'center',
     justifyContent: 'center',
     flexShrink: 0,
     backgroundColor: 'rgba(255,255,255,0.14)',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.22)',
+    borderColor: 'rgba(255,255,255,0.20)',
   },
-  eventTimelineHeaderCopy: {
+  progressLinkCopy: {
     flex: 1,
     minWidth: 0,
     gap: 3,
   },
-  eventTimelineEyebrow: {
+  progressLinkEyebrow: {
     fontFamily: theme.typography.fontFamily,
     fontSize: 9,
     fontWeight: theme.typography.weights.bold,
-    letterSpacing: 1,
-    color: '#F6DCE2',
+    letterSpacing: 1.2,
+    opacity: 0.78,
   },
-  eventTimelineTitle: {
+  progressLinkTitle: {
     fontFamily: theme.typography.fontFamilyDisplay,
     fontSize: theme.typography.semantic.body,
     fontWeight: theme.typography.weights.bold,
-    color: '#FFFFFF',
   },
-  eventTimelineSubtitle: {
+  progressLinkSubtitle: {
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.caption,
     lineHeight: 16,
-    color: '#F9EDEF',
+    opacity: 0.88,
   },
-  eventTimelineList: {
-    gap: 0,
-  },
-  eventTimelineRow: {
-    flexDirection: 'row',
-    alignItems: 'stretch',
-  },
-  eventTimelineMarkerColumn: {
+  progressLinkArrow: {
     width: 38,
-    alignItems: 'center',
-  },
-  eventTimelineMarker: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
-    borderWidth: 2,
+    height: 38,
+    borderRadius: 19,
     alignItems: 'center',
     justifyContent: 'center',
-    zIndex: 1,
-  },
-  eventTimelineCurrentDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  eventTimelineConnector: {
-    width: 2,
-    flex: 1,
-    minHeight: 62,
-  },
-  eventTimelineCard: {
-    flex: 1,
-    minWidth: 0,
-    borderWidth: 1,
-    borderRadius: 17,
-    padding: theme.spacing.md,
-    marginBottom: theme.spacing.md,
-    gap: 7,
-    ...theme.shadows.soft,
-  },
-  eventTimelineCardHeader: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: theme.spacing.sm,
-  },
-  eventTimelineStageTitle: {
-    flex: 1,
-    fontFamily: theme.typography.fontFamilyDisplay,
-    fontSize: theme.typography.compact.bodySm,
-    fontWeight: theme.typography.weights.bold,
-  },
-  eventTimelineStatus: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: 9,
-    fontWeight: theme.typography.weights.semibold,
-  },
-  eventTimelineDescription: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.caption,
-    lineHeight: theme.typography.compact.caption * 1.5,
+    flexShrink: 0,
+    backgroundColor: 'rgba(255,255,255,0.14)',
   },
 });

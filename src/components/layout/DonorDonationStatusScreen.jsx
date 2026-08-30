@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, Image, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, Alert, Image, Linking, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -18,7 +18,9 @@ import { DonivraLoadingOverlay } from '../ui/DonivraLoadingOverlay';
 import { DonorTabHeader } from '../donor/DonorTabHeader';
 import { donorDashboardNavItems } from '../../constants/dashboard';
 import { useAuth } from '../../providers/AuthProvider';
+import { useLanguage } from '../../providers/LanguageProvider';
 import { useNotifications } from '../../hooks/useNotifications';
+import { useOpenStreetMapAvailability } from '../../hooks/useOpenStreetMapAvailability';
 import { supabase } from '../../api/supabase/client';
 import {
   buildDonationTrackingQrPayload,
@@ -87,6 +89,24 @@ const LENGTH_UNIT_OPTIONS = [
 const DONATION_REALTIME_DEBOUNCE_MS = 420;
 let cachedDonorDonationModuleData = null;
 let cachedDonorDonationModuleUserId = '';
+
+const withOpacity = (color, opacity) => {
+  if (!color || typeof color !== 'string') return color;
+  if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(color)) {
+    const raw = color.slice(1);
+    const expanded = raw.length === 3
+      ? raw.split('').map((part) => part + part).join('')
+      : raw;
+    const red = parseInt(expanded.slice(0, 2), 16);
+    const green = parseInt(expanded.slice(2, 4), 16);
+    const blue = parseInt(expanded.slice(4, 6), 16);
+    return `rgba(${red}, ${green}, ${blue}, ${opacity})`;
+  }
+  if (color.startsWith('rgb(')) {
+    return color.replace('rgb(', 'rgba(').replace(')', `, ${opacity})`);
+  }
+  return color;
+};
 
 const DONATION_MAP_STYLE = {
   version: 8,
@@ -1382,6 +1402,12 @@ function LogisticsMapPreview({ roles, logisticsSettings }) {
     : address
       ? `geo:0,0?q=${encodeURIComponent(address)}`
       : '';
+  const {
+    isAvailable: isMapAvailable,
+    isChecking: isCheckingMap,
+    retry: retryMap,
+    markUnavailable: markMapUnavailable,
+  } = useOpenStreetMapAvailability({ enabled: Boolean(coordinate) });
 
   const handleOpenDirections = React.useCallback(() => {
     if (!directionsUrl) return;
@@ -1390,13 +1416,14 @@ function LogisticsMapPreview({ roles, logisticsSettings }) {
 
   return (
     <View style={[styles.logisticsNativeMapFrame, { backgroundColor: roles.supportCardBackground, borderColor: roles.defaultCardBorder }]}>
-      {coordinate ? (
+      {coordinate && isMapAvailable ? (
         <MapLibreMap
           style={styles.logisticsNativeMap}
           mapStyle={DONATION_MAP_STYLE}
           scrollEnabled={false}
           rotateEnabled={false}
           pitchEnabled={false}
+          onDidFailLoadingMap={markMapUnavailable}
         >
           <Camera initialViewState={{ center: coordinate, zoom: 14 }} />
           <Marker id="donation-send-off-location" lngLat={coordinate}>
@@ -1407,12 +1434,35 @@ function LogisticsMapPreview({ roles, logisticsSettings }) {
         </MapLibreMap>
       ) : (
         <View style={styles.logisticsMapEmpty}>
-          <MaterialCommunityIcons name="map-marker-alert-outline" size={30} color={roles.iconPrimaryColor} />
-          <Text style={[styles.logisticsMapEmptyTitle, { color: roles.headingText }]}>Location map coming soon</Text>
-          <Text style={[styles.logisticsMapEmptyText, { color: roles.metaText }]}>The organization has not added map coordinates yet.</Text>
+          {isCheckingMap ? (
+            <ActivityIndicator color={roles.primaryActionBackground} />
+          ) : (
+            <MaterialCommunityIcons name="map-marker-alert-outline" size={30} color={roles.iconPrimaryColor} />
+          )}
+          <Text style={[styles.logisticsMapEmptyTitle, { color: roles.headingText }]}>
+            {isCheckingMap ? 'Loading location map' : coordinate ? 'Map temporarily unavailable' : 'Location map coming soon'}
+          </Text>
+          <Text style={[styles.logisticsMapEmptyText, { color: roles.metaText }]}>
+            {isCheckingMap
+              ? 'Checking the map connection...'
+              : coordinate
+                ? 'The map service cannot be reached. Directions are still available.'
+                : 'The organization has not added map coordinates yet.'}
+          </Text>
+          {coordinate && !isCheckingMap ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Retry location map"
+              onPress={retryMap}
+              style={[styles.logisticsMapRetryButton, { borderColor: roles.primaryActionBackground }]}
+            >
+              <MaterialCommunityIcons name="reload" size={14} color={roles.primaryActionBackground} />
+              <Text style={[styles.logisticsMapRetryText, { color: roles.primaryActionBackground }]}>Retry map</Text>
+            </Pressable>
+          ) : null}
         </View>
       )}
-      {coordinate ? <Text style={styles.logisticsMapAttribution}>© OpenStreetMap</Text> : null}
+      {coordinate && isMapAvailable ? <Text style={styles.logisticsMapAttribution}>© OpenStreetMap</Text> : null}
       {directionsUrl ? (
         <Pressable
           accessibilityRole="button"
@@ -1520,6 +1570,68 @@ function LogisticsDonationSection({
   );
 }
 
+function DonationEventSearchControls({
+  roles,
+  searchQuery,
+  onChangeSearchQuery,
+  activeFilterCount = 0,
+  onOpenFilters,
+}) {
+  const { t } = useLanguage();
+  return (
+    <View style={styles.eventSearchControlRow}>
+      <View style={[
+        styles.eventSearchBar,
+        {
+          backgroundColor: roles.defaultCardBackground,
+          borderColor: withOpacity(roles.primaryActionBackground, 0.16),
+        },
+      ]}>
+        <MaterialCommunityIcons name="magnify" size={20} color={roles.primaryActionBackground} />
+        <TextInput
+          value={searchQuery}
+          onChangeText={onChangeSearchQuery}
+          placeholder={t('home.searchEvent')}
+          placeholderTextColor={roles.metaText}
+          returnKeyType="search"
+          style={[styles.eventSearchInput, { color: roles.headingText }]}
+        />
+        {searchQuery ? (
+          <Pressable accessibilityLabel="Clear event search" hitSlop={8} onPress={() => onChangeSearchQuery?.('')}>
+            <MaterialCommunityIcons name="close-circle" size={19} color={roles.metaText} />
+          </Pressable>
+        ) : null}
+      </View>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`Filter events${activeFilterCount ? `, ${activeFilterCount} active` : ''}`}
+        onPress={onOpenFilters}
+        style={({ pressed }) => [
+          styles.eventFilterButton,
+          {
+            backgroundColor: activeFilterCount ? roles.primaryActionBackground : roles.iconPrimarySurface,
+            borderColor: activeFilterCount
+              ? roles.primaryActionBackground
+              : withOpacity(roles.primaryActionBackground, 0.2),
+          },
+          pressed ? styles.eventFeedPressed : null,
+        ]}
+      >
+        <MaterialCommunityIcons
+          name="tune-variant"
+          size={20}
+          color={activeFilterCount ? roles.primaryActionText : roles.primaryActionBackground}
+        />
+        {activeFilterCount ? (
+          <View style={styles.eventFilterCountBadge}>
+            <Text style={styles.eventFilterCountText}>{activeFilterCount}</Text>
+          </View>
+        ) : null}
+      </Pressable>
+    </View>
+  );
+}
+
 function DonationHomeOverview({
   roles,
   drives = [],
@@ -1527,12 +1639,16 @@ function DonationHomeOverview({
   activeDonationCount = 0,
   onOpenDonationDetails,
   onOpenLogistics,
+  searchQuery = '',
+  eventSortOrder = 'soonest',
+  eventVisibilityFilter = 'all',
+  isFilterSheetOpen = false,
+  onChangeSort,
+  onChangeVisibility,
+  onResetFilters,
+  onCloseFilters,
 }) {
-  const [searchQuery, setSearchQuery] = React.useState('');
-  const [eventSortOrder, setEventSortOrder] = React.useState('soonest');
-  const [eventVisibilityFilter, setEventVisibilityFilter] = React.useState('all');
-  const [isFilterSheetOpen, setIsFilterSheetOpen] = React.useState(false);
-  const activeFilterCount = Number(eventSortOrder !== 'soonest') + Number(eventVisibilityFilter !== 'all');
+  const { language, t } = useLanguage();
   const allEventDrives = React.useMemo(() => {
     const byId = new Map();
     [...(drives || []), ...(registeredDrives || [])].filter(Boolean).forEach((drive) => {
@@ -1585,86 +1701,27 @@ function DonationHomeOverview({
   return (
     <View style={[styles.flowScreen, styles.donationEventBrowserScreen]}>
       <View style={styles.donationEventBrowserContent}>
-        <LinearGradient
-          colors={[theme.colors.palette.wine900, theme.colors.palette.wine700]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.donationExploreHero}
-        >
-          <View pointerEvents="none" style={styles.donationExploreGlow} />
-          <View style={styles.donationExploreIcon}>
-            <MaterialCommunityIcons name="hand-heart-outline" size={24} color="#FFFFFF" />
-          </View>
-          <View style={styles.donationExploreCopy}>
-            <Text style={styles.donationExploreTitle}>Find a donation event</Text>
-            <Text style={styles.donationExploreText}>Explore events and choose how you want to join.</Text>
-          </View>
-        </LinearGradient>
-
-        <View style={styles.eventSearchControlRow}>
-          <View style={[styles.eventSearchBar, { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder }]}>
-            <MaterialCommunityIcons name="magnify" size={21} color={roles.iconPrimaryColor} />
-            <TextInput
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              placeholder="Find an event..."
-              placeholderTextColor={roles.metaText}
-              returnKeyType="search"
-              style={[styles.eventSearchInput, { color: roles.headingText }]}
-            />
-            {searchQuery ? (
-              <Pressable accessibilityLabel="Clear event search" hitSlop={8} onPress={() => setSearchQuery('')}>
-                <MaterialCommunityIcons name="close-circle" size={19} color={roles.metaText} />
-              </Pressable>
-            ) : null}
-          </View>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Filter events${activeFilterCount ? `, ${activeFilterCount} active` : ''}`}
-            onPress={() => setIsFilterSheetOpen(true)}
-            style={({ pressed }) => [
-              styles.eventFilterButton,
-              {
-                backgroundColor: activeFilterCount ? roles.primaryActionBackground : roles.iconPrimarySurface,
-                borderColor: activeFilterCount ? roles.primaryActionBackground : roles.defaultCardBorder,
-              },
-              pressed ? styles.eventFeedPressed : null,
-            ]}
-          >
-            <MaterialCommunityIcons
-              name="tune-variant"
-              size={21}
-              color={activeFilterCount ? roles.primaryActionText : roles.iconPrimaryColor}
-            />
-            {activeFilterCount ? (
-              <View style={styles.eventFilterCountBadge}>
-                <Text style={styles.eventFilterCountText}>{activeFilterCount}</Text>
-              </View>
-            ) : null}
-          </Pressable>
-        </View>
-
         <DonationEventFilterSheet
           roles={roles}
           visible={isFilterSheetOpen}
           sortOrder={eventSortOrder}
           visibilityFilter={eventVisibilityFilter}
-          onChangeSort={setEventSortOrder}
-          onChangeVisibility={setEventVisibilityFilter}
-          onReset={() => {
-            setEventSortOrder('soonest');
-            setEventVisibilityFilter('all');
-          }}
-          onClose={() => setIsFilterSheetOpen(false)}
+          onChangeSort={onChangeSort}
+          onChangeVisibility={onChangeVisibility}
+          onReset={onResetFilters}
+          onClose={onCloseFilters}
         />
 
         <View style={styles.eventResultsHeading}>
           <View>
-            <Text style={[styles.sectionEyebrow, { color: roles.primaryActionBackground }]}>DONATION EVENTS</Text>
-            <Text style={[styles.sectionHeading, { color: roles.headingText }]}>Available events</Text>
+            <Text style={[styles.sectionEyebrow, { color: roles.primaryActionBackground }]}>{t('donate.eventsEyebrow')}</Text>
+            <Text style={[styles.sectionHeading, { color: roles.headingText }]}>{t('donate.availableEvents')}</Text>
           </View>
           <Text style={[styles.eventResultCount, { color: roles.metaText }]}>
-            {visibleEventDrives.length} {visibleEventDrives.length === 1 ? 'event' : 'events'}
+            {t('donate.eventCount', {
+              count: visibleEventDrives.length,
+              label: language === 'fil' || visibleEventDrives.length === 1 ? 'event' : 'events',
+            })}
           </Text>
         </View>
 
@@ -4707,6 +4764,12 @@ export function DonorDonationStatusScreen() {
   const [isRefreshing, setIsRefreshing] = React.useState(false);
   const [screenError, setScreenError] = React.useState('');
   const [moduleFeedback, setModuleFeedback] = React.useState({ message: '', variant: 'info' });
+  const [eventSearchQuery, setEventSearchQuery] = React.useState('');
+  const [eventSortOrder, setEventSortOrder] = React.useState('soonest');
+  const [eventVisibilityFilter, setEventVisibilityFilter] = React.useState('all');
+  const [isEventFilterSheetOpen, setIsEventFilterSheetOpen] = React.useState(false);
+  const activeEventFilterCount = Number(eventSortOrder !== 'soonest')
+    + Number(eventVisibilityFilter !== 'all');
 
   // â”€â”€ Manual form
   const [isManualModalOpen, setIsManualModalOpen] = React.useState(false);
@@ -6958,6 +7021,17 @@ export function DonorDonationStatusScreen() {
           roles={roles}
           drives={moduleData?.drives || []}
           registeredDrives={moduleData?.registeredDrives || []}
+          searchQuery={eventSearchQuery}
+          eventSortOrder={eventSortOrder}
+          eventVisibilityFilter={eventVisibilityFilter}
+          isFilterSheetOpen={isEventFilterSheetOpen}
+          onChangeSort={setEventSortOrder}
+          onChangeVisibility={setEventVisibilityFilter}
+          onResetFilters={() => {
+            setEventSortOrder('soonest');
+            setEventVisibilityFilter('all');
+          }}
+          onCloseFilters={() => setIsEventFilterSheetOpen(false)}
           activeDonationCount={myDonationItems.filter((item) => (
             item?.submission?.submission_id
             && !Number(item?.submission?.donation_drive_id)
@@ -7143,6 +7217,10 @@ export function DonorDonationStatusScreen() {
     );
   }, [
     effectiveDonationModuleScreen,
+    eventSearchQuery,
+    eventSortOrder,
+    eventVisibilityFilter,
+    isEventFilterSheetOpen,
     donationPreviewItems,
     donorProfileMeta,
     selectedFlowDrive,
@@ -7262,6 +7340,17 @@ export function DonorDonationStatusScreen() {
       refreshing={isRefreshing}
       onRefresh={handleRefreshModuleData}
       floatingOverlay={null}
+      pinnedContent={effectiveDonationModuleScreen === DONATION_MODULE_SCREEN.EVENTS ? (
+        <View style={styles.eventSearchPinnedHost}>
+          <DonationEventSearchControls
+            roles={roles}
+            searchQuery={eventSearchQuery}
+            onChangeSearchQuery={setEventSearchQuery}
+            activeFilterCount={activeEventFilterCount}
+            onOpenFilters={() => setIsEventFilterSheetOpen(true)}
+          />
+        </View>
+      ) : null}
       loadingOverlay={isLoading ? (
         <DonivraLoadingOverlay visible label="Loading donation details..." />
       ) : null}
@@ -7873,59 +7962,20 @@ const styles = StyleSheet.create({
   },
   donationEventBrowserContent: {
     gap: theme.spacing.lg,
+    paddingTop: 60,
     paddingBottom: theme.spacing.xl,
   },
-  donationExploreHero: {
-    minHeight: 112,
-    borderRadius: 22,
-    padding: theme.spacing.lg,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.md,
-    overflow: 'hidden',
-    ...theme.shadows.card,
-  },
-  donationExploreGlow: {
-    position: 'absolute',
-    width: 150,
-    height: 150,
-    borderRadius: 75,
-    right: -52,
-    top: -82,
-    backgroundColor: 'rgba(255,255,255,0.11)',
-  },
-  donationExploreIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(255,255,255,0.15)',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.22)',
-  },
-  donationExploreCopy: {
-    flex: 1,
-    minWidth: 0,
-    gap: 4,
-  },
-  donationExploreTitle: {
-    fontFamily: theme.typography.fontFamilyDisplay,
-    fontSize: theme.typography.semantic.titleSm,
-    fontWeight: theme.typography.weights.bold,
-    color: '#FFFFFF',
-  },
-  donationExploreText: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.bodySm,
-    lineHeight: 18,
-    color: '#F9EDEF',
+  eventSearchPinnedHost: {
+    zIndex: 20,
+    paddingTop: 2,
+    paddingBottom: theme.spacing.sm,
+    backgroundColor: 'transparent',
   },
   eventSearchBar: {
     flex: 1,
-    minHeight: 52,
+    minHeight: 48,
     borderWidth: 1,
-    borderRadius: 17,
+    borderRadius: theme.radius.md,
     paddingHorizontal: theme.spacing.md,
     flexDirection: 'row',
     alignItems: 'center',
@@ -7940,15 +7990,16 @@ const styles = StyleSheet.create({
   eventSearchInput: {
     flex: 1,
     minWidth: 0,
-    paddingVertical: theme.spacing.sm,
+    minHeight: 44,
+    paddingVertical: 0,
     fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.semantic.bodySm,
+    fontSize: theme.typography.compact.bodySm,
   },
   eventFilterButton: {
-    width: 52,
-    height: 52,
+    width: 48,
+    height: 48,
     borderWidth: 1,
-    borderRadius: 17,
+    borderRadius: theme.radius.md,
     alignItems: 'center',
     justifyContent: 'center',
     ...theme.shadows.soft,
@@ -10899,6 +10950,25 @@ const styles = StyleSheet.create({
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.caption,
     textAlign: 'center',
+  },
+  logisticsMapRetryButton: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    minHeight: 30,
+    borderWidth: 1,
+    borderRadius: theme.radius.pill,
+    paddingHorizontal: theme.spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.88)',
+  },
+  logisticsMapRetryText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    fontWeight: theme.typography.weights.bold,
   },
   logisticsMapAttribution: {
     position: 'absolute',

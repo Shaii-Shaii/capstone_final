@@ -8,10 +8,19 @@ import { isPasswordReuse, reusedPasswordMessage } from '../../../utils/passwordR
 import { logAppError, logAppEvent, writeAuditLog } from '../../../utils/appErrors';
 import { emptyResolvedTheme, theme } from '../../../design-system/theme';
 import { recordAcceptedLegalAgreements } from '../../donorCompliance.service';
+import { unregisterCurrentPushNotificationToken } from '../../../hooks/usePushNotifications';
+import {
+  hasMinimumSignupEmailLocalPart,
+  normalizeEmailAddress,
+  signupEmailLocalPartMessage,
+} from '../../../utils/emailRules';
 
 const isEmailConfirmed = (user) => Boolean(user?.email_confirmed_at || user?.confirmed_at);
 const loginErrorCodes = {
   invalidCredentials: 'INVALID_CREDENTIALS',
+  accountLocked: 'ACCOUNT_LOCKED',
+  rateLimited: 'RATE_LIMITED',
+  securityUnavailable: 'LOGIN_SECURITY_UNAVAILABLE',
   roleMismatch: 'ROLE_MISMATCH',
   emailNotConfirmed: 'EMAIL_NOT_CONFIRMED',
   accountDetailsMissing: 'ACCOUNT_DETAILS_MISSING',
@@ -72,9 +81,17 @@ const isNetworkErrorMessage = (message) => {
   );
 };
 
-const buildUserFacingLoginError = (message, code = loginErrorCodes.unexpected) => {
+const buildUserFacingLoginError = (message, code = loginErrorCodes.unexpected, sourceError = null) => {
   const error = new Error(message);
   error.code = code;
+  error.lockedUntil = sourceError?.lockedUntil || null;
+  error.retryAfterSeconds = Number(sourceError?.retryAfterSeconds) || 0;
+  error.failedAttempts = Number(sourceError?.failedAttempts) || 0;
+  error.attemptsRemaining = sourceError?.attemptsRemaining !== null
+    && sourceError?.attemptsRemaining !== undefined
+    && Number.isFinite(Number(sourceError.attemptsRemaining))
+    ? Number(sourceError.attemptsRemaining)
+    : null;
   return error;
 };
 
@@ -104,9 +121,39 @@ const isExpectedSignupFailure = (error) => [
 const getFriendlyAuthError = (error) => {
   const msg = String(error?.message || '').trim();
   const normalized = msg.toLowerCase();
+  const backendCode = String(error?.code || '').trim().toUpperCase();
+
+  if (backendCode === loginErrorCodes.accountLocked || normalized.includes('temporarily locked')) {
+    return buildUserFacingLoginError(
+      msg || 'Account temporarily locked. Try again in 15 minutes.',
+      loginErrorCodes.accountLocked,
+      error
+    );
+  }
+
+  if (backendCode === loginErrorCodes.securityUnavailable) {
+    return buildUserFacingLoginError(
+      msg || 'Secure login is temporarily unavailable. Please try again shortly.',
+      loginErrorCodes.securityUnavailable,
+      error
+    );
+  }
+
+  if (
+    backendCode === 'OVER_REQUEST_RATE_LIMIT'
+    || backendCode === 'RATE_LIMIT_EXCEEDED'
+    || normalized.includes('rate limit')
+    || normalized.includes('too many requests')
+  ) {
+    return buildUserFacingLoginError(
+      'Too many login requests. Please wait a few minutes before trying again.',
+      loginErrorCodes.rateLimited,
+      error
+    );
+  }
 
   if (normalized.includes('invalid login credentials') || normalized.includes('invalid credentials')) {
-    return buildUserFacingLoginError('Invalid Credentials', loginErrorCodes.invalidCredentials);
+    return buildUserFacingLoginError(msg || 'Invalid credentials.', loginErrorCodes.invalidCredentials, error);
   }
   if (normalized.includes('email not confirmed')) {
     return buildUserFacingLoginError('Please verify your email address before logging in.', loginErrorCodes.emailNotConfirmed);
@@ -306,6 +353,9 @@ const resolveRoleMismatchError = (actualRole) => (
 
 const expectedLoginErrorCodes = new Set([
   loginErrorCodes.invalidCredentials,
+  loginErrorCodes.accountLocked,
+  loginErrorCodes.rateLimited,
+  loginErrorCodes.securityUnavailable,
   loginErrorCodes.roleMismatch,
   loginErrorCodes.emailNotConfirmed,
   loginErrorCodes.accountDetailsMissing,
@@ -499,15 +549,36 @@ export const login = async (email, password, expectedRole) => {
         status: 'failed',
       });
     }
-    return { user: null, session: null, profile: null, role: null, error: error.message, errorCode: error.code };
+    return {
+      user: null,
+      session: null,
+      profile: null,
+      role: null,
+      error: error.message,
+      errorCode: error.code,
+      lockedUntil: error.lockedUntil || null,
+      retryAfterSeconds: Number(error.retryAfterSeconds) || 0,
+      failedAttempts: Number(error.failedAttempts) || 0,
+      attemptsRemaining: error.attemptsRemaining !== null
+        && error.attemptsRemaining !== undefined
+        && Number.isFinite(Number(error.attemptsRemaining))
+        ? Number(error.attemptsRemaining)
+        : null,
+    };
   }
 };
 
 
 export const register = async (email, password, additionalData = {}) => {
+  const normalizedEmail = normalizeEmailAddress(email);
+
   try {
+    if (!hasMinimumSignupEmailLocalPart(normalizedEmail)) {
+      throw buildUserFacingSignupError(signupEmailLocalPartMessage, signupErrorCodes.invalidEmail);
+    }
+
     logAppEvent('auth.signup', 'Signup attempt started.', {
-      email,
+      email: normalizedEmail,
       role: additionalData.role || null,
     });
 
@@ -515,7 +586,7 @@ export const register = async (email, password, additionalData = {}) => {
       role: additionalData.role,
     };
     
-    const { data, error } = await AuthAPI.registerWithEmail({ email, password, metadata });
+    const { data, error } = await AuthAPI.registerWithEmail({ email: normalizedEmail, password, metadata });
     if (error) throw getFriendlySignupError(error);
 
     if (data?.user && !data?.session && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
@@ -528,7 +599,7 @@ export const register = async (email, password, additionalData = {}) => {
     if (data?.user?.id && data?.session) {
       const ensureSystemUserResult = await ensureProfileInfrastructure({
         authUserId: data.user.id,
-        email: data.user.email || email,
+        email: data.user.email || normalizedEmail,
         role: additionalData.role || 'donor',
       });
 
@@ -546,7 +617,7 @@ export const register = async (email, password, additionalData = {}) => {
           logAppEvent('auth.signup.legal_agreement_skipped', 'Legal agreement save failed after signup. Continuing auth flow.', {
             authUserId: data.user.id,
             databaseUserId: ensureSystemUserResult.data.user_id,
-            email,
+            email: normalizedEmail,
             error: legalResult.error?.message || null,
           }, 'warn');
         }
@@ -562,7 +633,7 @@ export const register = async (email, password, additionalData = {}) => {
 
     await writeAuditLog({
       authUserId: data.user?.id,
-      userEmail: data.user?.email || email,
+      userEmail: data.user?.email || normalizedEmail,
       action: 'auth.signup',
       description: data?.session
         ? `Signup created for ${additionalData.role || 'account'} account.`
@@ -580,7 +651,7 @@ export const register = async (email, password, additionalData = {}) => {
 
   } catch (error) {
     const signupLogExtras = {
-      email,
+      email: normalizedEmail,
       role: additionalData.role || null,
       errorCode: error?.code || null,
       backendCode: error?.backendCode || null,
@@ -594,7 +665,7 @@ export const register = async (email, password, additionalData = {}) => {
     }
 
     await writeAuditLog({
-      userEmail: email,
+      userEmail: normalizedEmail,
       action: 'auth.signup',
       description: error.message || 'Signup failed.',
       resource: 'auth',
@@ -941,6 +1012,19 @@ export const logout = async () => {
   } catch (sessionError) {
     logAppEvent('auth.logout.session_lookup_skipped', 'Current session lookup failed before logout. Continuing sign-out.', {
       error: sessionError?.message || null,
+    }, 'warn');
+  }
+
+  try {
+    const pushResult = await unregisterCurrentPushNotificationToken();
+    if (pushResult?.error) {
+      logAppEvent('auth.logout.push_token_cleanup_skipped', 'The device push token could not be deactivated before logout.', {
+        error: pushResult.error?.message || String(pushResult.error),
+      }, 'warn');
+    }
+  } catch (pushError) {
+    logAppEvent('auth.logout.push_token_cleanup_exception', 'Push token cleanup failed unexpectedly before logout.', {
+      error: pushError?.message || null,
     }, 'warn');
   }
 

@@ -23,6 +23,7 @@ module.exports = {
     softwareKeyboardLayoutMode: 'resize',
     permissions: [
       'android.permission.CAMERA',
+      'android.permission.RECORD_AUDIO',
       'android.permission.POST_NOTIFICATIONS',
       'android.permission.READ_EXTERNAL_STORAGE',
       'android.permission.WRITE_EXTERNAL_STORAGE',
@@ -72,6 +73,14 @@ module.exports = {
       'react-native-vision-camera',
       {
         cameraPermissionText: 'Donivra needs camera access to scan your face and hair for donation screening.',
+      },
+    ],
+    [
+      'expo-speech-recognition',
+      {
+        microphonePermission: 'Allow Donivra to listen for the hands-free photo capture command.',
+        speechRecognitionPermission: 'Allow Donivra to recognize the word capture during guided hair photos.',
+        androidSpeechServicePackages: ['com.google.android.googlequicksearchbox'],
       },
     ],
     [

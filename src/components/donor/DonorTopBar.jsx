@@ -1,5 +1,5 @@
 import React from 'react';
-import { ActivityIndicator, Image, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Image, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { AppIcon } from '../ui/AppIcon';
 import { AppCard } from '../ui/AppCard';
@@ -17,18 +17,15 @@ export function DonorTopBar({
   showBack = false,
   showFeedbackAction,
   showNotificationsAction = true,
-  showRefreshAction = false,
   showTutorialAction = false,
   showLogoutAction = false,
   onBackPress,
   onFeedbackPress,
-  onRefreshPress,
   onTutorialPress,
   onProfilePress,
   onNotificationsPress,
   onLogoutPress,
   isLoggingOut = false,
-  isRefreshing = false,
   style,
 }) {
   const { resolvedTheme, profile } = useAuth();
@@ -166,27 +163,6 @@ export function DonorTopBar({
               style={({ pressed }) => [styles.headerIconButton, pressed && styles.headerIconButtonPressed]}
             >
               <AppIcon name="feedback" size="md" state="default" color={headerIconColor} />
-            </Pressable>
-          ) : null}
-
-          {showRefreshAction ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Refresh screen"
-              onPress={onRefreshPress}
-              disabled={!onRefreshPress || isRefreshing}
-              hitSlop={6}
-              style={({ pressed }) => [
-                styles.headerIconButton,
-                pressed && styles.headerIconButtonPressed,
-                (!onRefreshPress || isRefreshing) && styles.headerIconButtonDisabled,
-              ]}
-            >
-              {isRefreshing ? (
-                <ActivityIndicator size="small" color={headerIconColor} />
-              ) : (
-                <AppIcon name="refresh" size="md" state="default" color={headerIconColor} />
-              )}
             </Pressable>
           ) : null}
 

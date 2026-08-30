@@ -3,22 +3,21 @@ import { useRouter } from 'expo-router';
 import { DashboardHeaderSurface } from '../layout/DashboardHeaderSurface';
 import { DonorTopBar } from './DonorTopBar';
 import { useAuth } from '../../providers/AuthProvider';
+import { useLanguage } from '../../providers/LanguageProvider';
 
-const getGreeting = () => {
+const getGreetingKey = () => {
   const hour = new Date().getHours();
-  if (hour < 12) return 'Good morning';
-  if (hour < 18) return 'Good afternoon';
-  return 'Good evening';
+  if (hour < 12) return 'header.goodMorning';
+  if (hour < 18) return 'header.goodAfternoon';
+  return 'header.goodEvening';
 };
 
 export function DonorTabHeader({
   unreadCount = 0,
-  showRefreshAction = false,
-  onRefreshPress,
-  isRefreshing = false,
 }) {
   const router = useRouter();
   const { profile } = useAuth();
+  const { t } = useLanguage();
   const firstName = String(profile?.first_name || '').trim();
   const lastName = String(profile?.last_name || '').trim();
   const avatarInitials = [firstName?.[0], lastName?.[0]]
@@ -26,19 +25,16 @@ export function DonorTabHeader({
     .join('')
     .toUpperCase();
   const avatarUri = profile?.avatar_url || profile?.photo_path || '';
-  const greeting = React.useMemo(getGreeting, []);
+  const greetingKey = React.useMemo(getGreetingKey, []);
 
   return (
     <DashboardHeaderSurface>
       <DonorTopBar
-        title={greeting}
-        subtitle={`${firstName || 'Donor'} | Hair Donor`}
+        title={t(greetingKey)}
+        subtitle={`${firstName || 'Donor'} | ${t('header.hairDonor')}`}
         avatarInitials={avatarInitials}
         avatarUri={avatarUri}
         unreadCount={unreadCount}
-        showRefreshAction={showRefreshAction}
-        onRefreshPress={onRefreshPress}
-        isRefreshing={isRefreshing}
         onNotificationsPress={() => router.navigate('/donor/notifications')}
         onProfilePress={() => router.navigate('/profile')}
       />

@@ -45,7 +45,7 @@ const resolvePdfViewer = () => {
 
 const Pdf = resolvePdfViewer();
 
-function LegalDetailsModal({ visible, onClose, roles, document, error, isLoading, onOpenPdf }) {
+function LegalDetailsModal({ visible, onClose, onAccept, roles, document, error, isLoading, onOpenPdf }) {
   const title = document?.title || termsLabel;
   const pdfUrl = document?.pdf_url || '';
   const hasPdfFile = Boolean(document?.file_path || pdfUrl);
@@ -59,7 +59,7 @@ function LegalDetailsModal({ visible, onClose, roles, document, error, isLoading
   }, [visible, pdfUrl, document?.legal_document_id]);
 
   return (
-    <Modal transparent visible={visible} animationType="fade" onRequestClose={onClose}>
+    <Modal transparent visible={visible} animationType="slide" onRequestClose={onClose} statusBarTranslucent>
       <View style={styles.modalBackdrop}>
         <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
         <View
@@ -197,6 +197,19 @@ function LegalDetailsModal({ visible, onClose, roles, document, error, isLoading
             )}
           </View>
 
+          <View style={styles.modalActions}>
+            <AppButton
+              title="Accept"
+              onPress={onAccept}
+              fullWidth
+              size="lg"
+              backgroundColorOverride={roles.primaryActionBackground}
+              borderColorOverride={roles.primaryActionBackground}
+              textColorOverride={roles.primaryActionText}
+              leading={<MaterialCommunityIcons name="check-circle-outline" size={20} color={roles.primaryActionText} allowFontScaling={false} />}
+              style={styles.modalAcceptButton}
+            />
+          </View>
         </View>
       </View>
     </Modal>
@@ -236,6 +249,16 @@ export const SignupForm = ({
   const [termsDocument, setTermsDocument] = React.useState(null);
   const [termsError, setTermsError] = React.useState('');
   const [isLoadingTerms, setIsLoadingTerms] = React.useState(false);
+
+  const acceptLegalDocuments = React.useCallback(() => {
+    setValue('acceptedLegal', true, {
+      shouldDirty: true,
+      shouldTouch: true,
+      shouldValidate: true,
+    });
+    onFieldEdit?.();
+    setIsLegalModalOpen(false);
+  }, [onFieldEdit, setValue]);
 
   React.useEffect(() => {
     if (!autofillEmail) return;
@@ -410,51 +433,64 @@ export const SignupForm = ({
         name="acceptedLegal"
         render={({ field: { onChange, value } }) => (
           <View style={styles.legalBlock}>
-            <View style={styles.legalRow}>
-              <Pressable
-                accessibilityRole="checkbox"
-                accessibilityState={{ checked: Boolean(value), disabled: isLoading }}
-                disabled={isLoading}
-                onPress={() => {
-                  onFieldEdit?.();
-                  onChange(!value);
-                }}
-                style={({ pressed }) => [
-                  styles.checkbox,
-                  {
-                    borderColor: value ? roles.primaryActionBackground : roles.defaultCardBorder,
-                    backgroundColor: value ? roles.primaryActionBackground : roles.defaultCardBackground,
-                    opacity: pressed ? 0.75 : 1,
-                  },
-                ]}
-              >
-                {value ? (
+            <Pressable
+              accessibilityRole="checkbox"
+              accessibilityLabel="Agree to the Terms of Service and Privacy Policy"
+              accessibilityState={{ checked: Boolean(value), disabled: isLoading }}
+              disabled={isLoading}
+              onPress={() => {
+                onFieldEdit?.();
+                onChange(!value);
+              }}
+              style={({ pressed }) => [
+                styles.legalConsentCard,
+                {
+                  borderColor: value ? roles.primaryActionBackground : roles.defaultCardBorder,
+                  backgroundColor: value ? roles.iconPrimarySurface : theme.colors.surfaceCard,
+                },
+                pressed ? styles.legalConsentCardPressed : null,
+                isLoading ? styles.legalConsentCardDisabled : null,
+              ]}
+            >
+              <View pointerEvents="none" style={styles.legalConsentRow}>
+                <View style={styles.checkbox}>
                   <MaterialCommunityIcons
-                    name="check-bold"
-                    size={13}
-                    color={theme.colors.textInverse}
+                    name={value ? 'checkbox-marked' : 'checkbox-blank-outline'}
+                    size={30}
+                    color={roles.primaryActionBackground}
+                    allowFontScaling={false}
                   />
-                ) : null}
+                </View>
+                <Text numberOfLines={2} style={[styles.legalTitle, { color: roles.headingText }]}>I agree to the terms and privacy policy</Text>
+              </View>
+            </Pressable>
+
+            <View style={styles.legalLinksRow}>
+              <Pressable
+                accessibilityRole="link"
+                accessibilityLabel="Read Terms of Service"
+                hitSlop={6}
+                onPress={openTermsModal}
+                style={({ pressed }) => [styles.legalLinkButton, pressed ? styles.pressed : null]}
+              >
+                <View style={styles.legalLinkIconWrap}>
+                  <MaterialCommunityIcons name="file-document-outline" size={16} color={roles.primaryActionBackground} allowFontScaling={false} />
+                </View>
+                <Text numberOfLines={1} maxFontSizeMultiplier={1.2} style={[styles.legalInlineLink, { color: roles.primaryActionBackground }]}>Terms of Service</Text>
               </Pressable>
-              <Text style={[styles.legalText, { color: roles.headingText }]}>
-                I agree to the{' '}
-                <Text
-                  accessibilityRole="link"
-                  onPress={openTermsModal}
-                  style={[styles.legalInlineLink, { color: roles.primaryActionBackground }]}
-                >
-                  Terms of Service
-                </Text>
-                {' '}and{' '}
-                <Text
-                  accessibilityRole="link"
-                  onPress={openTermsModal}
-                  style={[styles.legalInlineLink, { color: roles.primaryActionBackground }]}
-                >
-                  Privacy Policy
-                </Text>
-                .
-              </Text>
+              <View style={[styles.legalLinkDivider, { backgroundColor: roles.defaultCardBorder }]} />
+              <Pressable
+                accessibilityRole="link"
+                accessibilityLabel="Read Privacy Policy"
+                hitSlop={6}
+                onPress={openTermsModal}
+                style={({ pressed }) => [styles.legalLinkButton, pressed ? styles.pressed : null]}
+              >
+                <View style={styles.legalLinkIconWrap}>
+                  <MaterialCommunityIcons name="shield-lock-outline" size={16} color={roles.primaryActionBackground} allowFontScaling={false} />
+                </View>
+                <Text numberOfLines={1} maxFontSizeMultiplier={1.2} style={[styles.legalInlineLink, { color: roles.primaryActionBackground }]}>Privacy Policy</Text>
+              </Pressable>
             </View>
             {errors.acceptedLegal?.message ? (
               <Text style={styles.legalErrorText}>{errors.acceptedLegal.message}</Text>
@@ -466,6 +502,7 @@ export const SignupForm = ({
       <LegalDetailsModal
         visible={isLegalModalOpen}
         onClose={() => setIsLegalModalOpen(false)}
+        onAccept={acceptLegalDocuments}
         roles={roles}
         document={termsDocument}
         error={termsError}
@@ -542,37 +579,91 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.compact.caption,
   },
   legalBlock: {
-    marginTop: 2,
-    marginBottom: theme.spacing.sm,
+    marginTop: theme.spacing.xs,
+    marginBottom: theme.spacing.md,
+    gap: theme.spacing.sm,
   },
-  legalRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-  },
-  checkbox: {
-    width: 20,
-    height: 20,
-    borderRadius: 5,
-    borderWidth: 1.6,
+  legalConsentCard: {
+    width: '100%',
+    minHeight: 60,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 0,
+    borderWidth: 1.5,
+    borderRadius: 16,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.md,
   },
-  legalText: {
-    flex: 1,
+  legalConsentRow: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.xs,
+  },
+  legalConsentCardPressed: {
+    opacity: 0.78,
+    transform: [{ scale: 0.99 }],
+  },
+  legalConsentCardDisabled: {
+    opacity: 0.55,
+  },
+  checkbox: {
+    width: 30,
+    height: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  legalTitle: {
+    flexShrink: 1,
     fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.bodySm,
-    lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.normal,
+    fontSize: theme.typography.semantic.bodySm,
+    lineHeight: 19,
+    fontWeight: theme.typography.weights.semibold,
+    textAlign: 'left',
+  },
+  legalLinksRow: {
+    minHeight: 36,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.md,
+    paddingHorizontal: theme.spacing.xs,
+  },
+  legalLinkButton: {
+    minHeight: 36,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    flexShrink: 1,
+    paddingHorizontal: theme.spacing.xs,
+  },
+  legalLinkIconWrap: {
+    width: 20,
+    height: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  legalLinkDivider: {
+    width: 1,
+    height: 18,
   },
   legalInlineLink: {
     fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.caption,
     fontWeight: theme.typography.weights.semibold,
+    textDecorationLine: 'underline',
+    textAlign: 'center',
+    flexShrink: 1,
   },
   legalErrorText: {
-    marginTop: theme.spacing.xs,
+    marginTop: 0,
+    paddingHorizontal: theme.spacing.xs,
     fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.caption,
+    fontSize: theme.typography.semantic.caption,
     color: theme.colors.textError,
   },
   submitErrorText: {
@@ -626,13 +717,14 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(18, 12, 14, 0.42)',
   },
   modalSheet: {
-    maxHeight: '78%',
-    borderTopLeftRadius: 18,
-    borderTopRightRadius: 18,
+    width: '100%',
+    maxHeight: '88%',
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
     borderWidth: 1,
     paddingHorizontal: theme.spacing.lg,
     paddingTop: theme.spacing.sm,
-    paddingBottom: theme.spacing.lg,
+    paddingBottom: theme.spacing.md,
     shadowColor: theme.colors.shadow,
     shadowOpacity: 0.14,
     shadowRadius: 24,
@@ -676,8 +768,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   pdfContainer: {
-    height: 380,
-    borderRadius: 14,
+    height: 430,
+    minHeight: 280,
+    borderRadius: 18,
     overflow: 'hidden',
     borderWidth: 1,
   },
@@ -734,5 +827,13 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     marginTop: theme.spacing.sm,
     minWidth: 140,
+  },
+  modalActions: {
+    width: '100%',
+    paddingTop: theme.spacing.md,
+  },
+  modalAcceptButton: {
+    minHeight: 52,
+    borderRadius: 16,
   },
 });

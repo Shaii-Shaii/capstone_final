@@ -17,7 +17,7 @@ export const useAuthActions = () => {
       const result = await actionFunction(...args);
       if (result.error) {
         setError(result.error);
-        return { success: false, error: result.error, errorCode: result.errorCode };
+        return { success: false, ...result };
       }
       return { success: true, ...result };
     } catch (err) {

@@ -82,10 +82,10 @@ export const hairAnalysisRequiredViews = [
     key: hairSubmissionImageTypes.backHair,
     label: 'Back Hair Photo',
     helperText: 'Show the back of your hair from behind with the lower cheek or neck area down to the lowest visible ends.',
-    displayTip: 'Ask someone to capture the back of your head.',
+    displayTip: 'Face away, keep your hair centered, then say "capture".',
     tutorialTitle: 'Back hair',
     tutorialTips: [
-      'Ask for help.',
+      'Enable voice capture.',
       'Face away from camera.',
       'Show neck to hair ends.',
     ],

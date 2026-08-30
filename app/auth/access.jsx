@@ -132,6 +132,8 @@ export default function AccessScreen() {
     isLoading,
     activeAuthAction,
     loginError,
+    loginErrorCode,
+    isLoginLocked,
     clearLoginError,
     resolvedTheme,
   } = useRoleAuthFlow('access');
@@ -218,6 +220,8 @@ export default function AccessScreen() {
             onForgotPassword={() => router.push('/auth/forgot-password')}
             buttonText="Log In"
             submitError={loginError}
+            submitErrorCode={loginErrorCode}
+            isLoginLocked={isLoginLocked}
             onFieldEdit={clearLoginError}
             onFieldFocus={() => {}}
             resolvedTheme={resolvedTheme}

@@ -8,6 +8,8 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as NavigationBar from 'expo-navigation-bar';
 import { LinearGradient } from 'expo-linear-gradient';
 import { AuthProvider, useAuth } from '../src/providers/AuthProvider';
+import { LanguageProvider } from '../src/providers/LanguageProvider';
+import { TextSizeProvider } from '../src/providers/TextSizeProvider';
 import { usePushNotifications } from '../src/hooks/usePushNotifications';
 import { useRoleRedirect } from '../src/hooks/useRoleRedirect';
 import { bundledBrandLogoSource, normalizeResolvedTheme, resolveBrandLogoSource } from '../src/design-system/theme';
@@ -515,9 +517,13 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <StatusBar style="light" translucent backgroundColor="transparent" />
       <GluestackUIProvider mode="light">
-        <AuthProvider>
-          <RootLayoutNav />
-        </AuthProvider>
+        <TextSizeProvider>
+          <LanguageProvider>
+            <AuthProvider>
+              <RootLayoutNav />
+            </AuthProvider>
+          </LanguageProvider>
+        </TextSizeProvider>
       </GluestackUIProvider>
     </GestureHandlerRootView>
   );

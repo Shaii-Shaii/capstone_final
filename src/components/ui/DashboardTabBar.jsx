@@ -15,6 +15,7 @@ import Svg, { Path } from 'react-native-svg';
 import { AppIcon } from './AppIcon';
 import { theme, resolveThemeRoles } from '../../design-system/theme';
 import { useAuth } from '../../providers/AuthProvider';
+import { useLanguage } from '../../providers/LanguageProvider';
 import { donorDashboardNavItems } from '../../constants/dashboard';
 
 export const DASHBOARD_TAB_BAR_HEIGHT = 72;
@@ -230,6 +231,7 @@ function FloatingActiveBubble({ item, activeCenterX }) {
 
 function DashboardTabBarComponent({ items, activeKey, onPress, variant = 'donor' }) {
   const { resolvedTheme } = useAuth();
+  const { t } = useLanguage();
   const roles = resolveThemeRoles(resolvedTheme);
   const insets = useSafeAreaInsets();
   const { width: screenWidth } = useWindowDimensions();
@@ -237,12 +239,24 @@ function DashboardTabBarComponent({ items, activeKey, onPress, variant = 'donor'
   const [measuredWidth, setMeasuredWidth] = React.useState(0);
 
   const displayItems = React.useMemo(() => {
-    if (variant !== 'donor') return items;
-    return donorDashboardNavItems.map((navItem) => ({
-      ...navItem,
-      badge: items.find((i) => i.key === navItem.key)?.badge,
+    const sourceItems = variant !== 'donor'
+      ? items
+      : donorDashboardNavItems.map((navItem) => ({
+        ...navItem,
+        badge: items.find((i) => i.key === navItem.key)?.badge,
+      }));
+    const labelKeys = {
+      home: 'nav.home',
+      checkhair: 'nav.analysis',
+      donations: 'nav.donate',
+      requests: 'nav.wig',
+      profile: 'nav.profile',
+    };
+    return sourceItems.map((item) => ({
+      ...item,
+      label: labelKeys[item.key] ? t(labelKeys[item.key]) : item.label,
     }));
-  }, [items, variant]);
+  }, [items, t, variant]);
 
   const numTabs = displayItems.length;
   const pillWidth = measuredWidth || Math.max(0, screenWidth - PILL_MARGIN * 2);
