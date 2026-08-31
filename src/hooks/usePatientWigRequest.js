@@ -34,6 +34,7 @@ const isOngoingWigRequest = (request) => {
 const mapPatientWigRequestError = (type, error) => {
   const resolvedMessage = getErrorMessage(error);
   const message = resolvedMessage.toLowerCase();
+  const code = String(error?.code || '').trim().toLowerCase();
 
   if (type === 'context') {
     if (message.includes('session has expired') || message.includes('session changed') || message.includes('sign in again')) {
@@ -78,37 +79,65 @@ const mapPatientWigRequestError = (type, error) => {
   }
 
   if (type === 'preview') {
-    if (message.includes('front photo')) {
+    if (code === 'photo_required' || message.includes('front photo')) {
       return createAppError(
-        'Front Photo Required',
-        'Please upload a clear front photo first.'
+        'Photo Needed',
+        'Take a clear front-facing photo before creating your wig previews.'
       );
     }
 
-    if (message.includes('sign in again') || message.includes('session has expired')) {
+    if (code === 'session_expired' || message.includes('sign in again') || message.includes('session has expired')) {
       return createAppError(
         'Session Expired',
-        'Please sign in again to continue the wig preview.'
+        'Please sign in again, then return to create your wig previews.'
       );
     }
 
-    if (message.includes('not configured') || message.includes('api key')) {
+    if (code === 'service_busy' || message.includes('preview service is busy')) {
       return createAppError(
-        'AI Configuration Required',
-        'The OpenAI wig preview service is not configured correctly on the server.'
+        'Preview Service Is Busy',
+        'Many previews are being created right now. Please wait a moment and try again.'
       );
     }
 
-    if (message.includes('three active wigs') || message.includes('valid reference images')) {
+    if (code === 'connection_error' || message.includes('connection')) {
       return createAppError(
-        'Wigs Unavailable',
-        'At least three active wigs with valid reference images are required.'
+        'Connection Problem',
+        'We could not reach the preview service. Check your connection and try again.'
+      );
+    }
+
+    if (code === 'photo_rejected') {
+      return createAppError(
+        'Try Another Photo',
+        'We could not use this photo. Retake it with your face and full head clearly visible.'
+      );
+    }
+
+    if (code === 'wig_inventory_unavailable' || message.includes('not enough preview-ready wig styles')) {
+      return createAppError(
+        'Wig Previews Unavailable',
+        'There are not enough preview-ready wig styles available right now. Please try again later.'
+      );
+    }
+
+    if (
+      code === 'service_unavailable'
+      || message.includes('credits')
+      || message.includes('billing')
+      || message.includes('quota')
+      || message.includes('api key')
+      || message.includes('not configured')
+    ) {
+      return createAppError(
+        'Preview Temporarily Unavailable',
+        'Wig previews are temporarily unavailable. Your photo is still saved, so please try again later.'
       );
     }
 
     return createAppError(
-      'AI Preview Error',
-      resolvedMessage || 'Preview could not be generated right now.'
+      'Preview Could Not Be Created',
+      'Something interrupted the preview. Your photo is still saved—please try again.'
     );
   }
 
@@ -305,6 +334,7 @@ export const usePatientWigRequest = ({ userId }) => {
   const [error, setError] = useState(null);
   const [successMessage, setSuccessMessage] = useState('');
   const [isLoadingContext, setIsLoadingContext] = useState(false);
+  const [hasLoadedContext, setHasLoadedContext] = useState(false);
   const [isPickingReference, setIsPickingReference] = useState(false);
   const [isGeneratingPreview, setIsGeneratingPreview] = useState(false);
   const [isSavingRequest, setIsSavingRequest] = useState(false);
@@ -353,6 +383,7 @@ export const usePatientWigRequest = ({ userId }) => {
       latestReleaseSchedule: result.latestReleaseSchedule,
       safetyAssessment: result.safetyAssessment,
     });
+    setHasLoadedContext(true);
 
     if (isOngoingWigRequest(result.latestWigRequest) && result.latestWigSpecification?.patient_picture) {
       const storedFrontPhoto = buildStoredFrontPhoto(
@@ -551,9 +582,17 @@ export const usePatientWigRequest = ({ userId }) => {
     setIsGeneratingPreview(false);
 
     if (result.error || !result.preview) {
-      const mappedError = mapPatientWigRequestError('preview', new Error(result.error || 'Preview could not be generated.'));
+      const mappedError = mapPatientWigRequestError('preview', {
+        code: result.errorCode || 'preview_failed',
+        message: result.error || 'Preview could not be generated.',
+      });
       setError(mappedError);
-      return { success: false, error: mappedError.message };
+      return {
+        success: false,
+        error: mappedError.message,
+        title: result.errorTitle || mappedError.title,
+        errorCode: result.errorCode || 'preview_failed',
+      };
     }
 
     setPreview(result.preview);
@@ -679,6 +718,7 @@ export const usePatientWigRequest = ({ userId }) => {
     error,
     successMessage,
     isLoadingContext,
+    hasLoadedContext,
     isPickingReference,
     isGeneratingPreview,
     isSavingRequest,

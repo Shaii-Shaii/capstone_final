@@ -1,5 +1,5 @@
 import { invokeEdgeFunction } from '../api/supabase/client';
-import { getErrorMessage, logAppError, logAppEvent } from '../utils/appErrors';
+import { getErrorMessage, logAppEvent } from '../utils/appErrors';
 import { wigGenerationFunctionName } from './wigRequest.constants';
 
 const getRecommendationLabel = (index) => (
@@ -110,6 +110,97 @@ const getEdgeFunctionErrorMessage = async (error) => {
   }
 };
 
+const includesAny = (message, tokens) => tokens.some((token) => message.includes(token));
+
+const resolveWigGenerationFailure = (technicalMessage = '') => {
+  const message = String(technicalMessage || '').toLowerCase();
+
+  if (message.includes('front photo')) {
+    return {
+      code: 'photo_required',
+      title: 'Photo Needed',
+      message: 'Take a clear front-facing photo before creating your wig previews.',
+    };
+  }
+
+  if (includesAny(message, ['invalid jwt', 'session is not authorized', 'session has expired', 'sign in again'])) {
+    return {
+      code: 'session_expired',
+      title: 'Session Expired',
+      message: 'Please sign in again, then return to create your wig previews.',
+    };
+  }
+
+  if (includesAny(message, [
+    'no credits',
+    'credits remaining',
+    'insufficient_quota',
+    'insufficient quota',
+    'billing',
+    'payment required',
+    'exceeded your current quota',
+    'usage limit',
+  ])) {
+    return {
+      code: 'service_unavailable',
+      title: 'Preview Temporarily Unavailable',
+      message: 'Wig previews are temporarily unavailable. Your photo is still saved, so please try again later.',
+    };
+  }
+
+  if (includesAny(message, ['rate limit', 'too many requests', 'overloaded', 'temporarily busy', 'status 429', ' 429'])) {
+    return {
+      code: 'service_busy',
+      title: 'Preview Service Is Busy',
+      message: 'Many previews are being created right now. Please wait a moment and try again.',
+    };
+  }
+
+  if (includesAny(message, ['network request failed', 'failed to fetch', 'network error', 'timeout', 'timed out', 'offline'])) {
+    return {
+      code: 'connection_error',
+      title: 'Connection Problem',
+      message: 'We could not reach the preview service. Check your connection and try again.',
+    };
+  }
+
+  if (includesAny(message, ['content policy', 'safety policy', 'image could not be processed', 'invalid image', 'unsupported image'])) {
+    return {
+      code: 'photo_rejected',
+      title: 'Try Another Photo',
+      message: 'We could not use this photo. Retake it with your face and full head clearly visible.',
+    };
+  }
+
+  if (includesAny(message, ['three active wigs', 'valid reference images', 'reference image'])) {
+    return {
+      code: 'wig_inventory_unavailable',
+      title: 'Wig Previews Unavailable',
+      message: 'There are not enough preview-ready wig styles available right now. Please try again later.',
+    };
+  }
+
+  if (includesAny(message, [
+    'not configured',
+    'openai api key',
+    'requested function was not found',
+    'not_found',
+    'incomplete set',
+  ])) {
+    return {
+      code: 'service_unavailable',
+      title: 'Preview Temporarily Unavailable',
+      message: 'We cannot create wig previews right now. Your photo is still saved, so please try again later.',
+    };
+  }
+
+  return {
+    code: 'preview_failed',
+    title: 'Preview Could Not Be Created',
+    message: 'Something interrupted the preview. Your photo is still saved—please try again.',
+  };
+};
+
 export const generatePatientWigPreview = async ({
   preferences,
   referenceImage,
@@ -163,25 +254,21 @@ export const generatePatientWigPreview = async ({
     return { preview, previews: preview.options, error: null };
   } catch (error) {
     const resolvedMessage = getErrorMessage(error);
-    const technicalMessage = resolvedMessage.toLowerCase();
-    if (!technicalMessage.includes('not_found') && !technicalMessage.includes('invalid jwt')) {
-      logAppError('wigGeneration.generatePatientWigPreview', error, {
-        hasReferenceImage: Boolean(referenceImage?.uri || referenceImage?.dataUrl),
-      });
-    }
+    const failure = resolveWigGenerationFailure(resolvedMessage);
 
-    const userMessage = technicalMessage.includes('front photo')
-      ? 'Please upload a clear front photo first.'
-      : technicalMessage.includes('invalid jwt') || technicalMessage.includes('session is not authorized')
-        ? 'Your session has expired. Please sign in again, then retry the wig preview.'
-        : technicalMessage.includes('not configured') || technicalMessage.includes('openai api key')
-          ? 'Wig preview is not configured on the server. Please try again later.'
-          : technicalMessage.includes('requested function was not found') || technicalMessage.includes('not_found')
-            ? 'Wig preview is still being connected on the server. Please try again in a moment.'
-            : technicalMessage.includes('three active wigs') || technicalMessage.includes('reference image')
-              ? 'At least three wigs with valid reference images are needed for AI recommendations.'
-              : resolvedMessage || "We couldn't generate all three wig previews. Please try again or choose another photo.";
+    // This failure is handled in the UI. Keep diagnostics in opt-in app logs
+    // without triggering a development error overlay for the patient.
+    logAppEvent('wigGeneration.generatePatientWigPreview.failed', 'Wig preview generation failed.', {
+      category: failure.code,
+      technicalMessage: resolvedMessage,
+      hasReferenceImage: Boolean(referenceImage?.uri || referenceImage?.dataUrl),
+    }, 'info');
 
-    return { preview: null, error: userMessage };
+    return {
+      preview: null,
+      error: failure.message,
+      errorCode: failure.code,
+      errorTitle: failure.title,
+    };
   }
 };

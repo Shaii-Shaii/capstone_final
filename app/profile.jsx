@@ -1,11 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { View, StyleSheet, Text, Pressable, Alert, ScrollView, Modal, KeyboardAvoidingView, Platform, useWindowDimensions, Image, Linking, ActivityIndicator } from 'react-native';
+import { View, StyleSheet, Text, Pressable, Alert, ScrollView, Modal, KeyboardAvoidingView, Platform, useWindowDimensions, Image, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
-import Constants from 'expo-constants';
-import * as FileSystem from 'expo-file-system/legacy';
 import { Controller, useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
@@ -15,14 +12,13 @@ import { AppCard } from '../src/components/ui/AppCard';
 import { AppInput } from '../src/components/ui/AppInput';
 import { PasswordInput } from '../src/components/ui/PasswordInput';
 import { AppButton } from '../src/components/ui/AppButton';
-import { AppTextLink } from '../src/components/ui/AppTextLink';
 import { AppIcon } from '../src/components/ui/AppIcon';
 import { DatePickerField } from '../src/components/ui/DatePickerField';
 import { StatusBanner } from '../src/components/ui/StatusBanner';
-import { SectionTitleRow } from '../src/components/ui/SectionTitleRow';
 import { DashboardSectionHeader } from '../src/components/ui/DashboardSectionHeader';
 import { AddressOptionSheet, AddressSelectField, SignupAddressSection } from '../src/components/auth/SignupAddressSection';
 import { DonorTopBar } from '../src/components/donor/DonorTopBar';
+import { LegalDocumentPreview } from '../src/components/legal/LegalDocumentPreview';
 import { useProfileActions } from '../src/hooks/useProfileActions';
 import { useNotifications } from '../src/hooks/useNotifications';
 import { useAuth } from '../src/providers/AuthProvider';
@@ -48,6 +44,7 @@ import {
 } from '../src/features/hairSubmission.api';
 import {
   fetchActiveGuardianConsent,
+  fetchActiveMinorConsentDocument,
   getDonorProfileBadge,
   GUARDIAN_CONSENT_TEXT,
   saveGuardianConsent,
@@ -57,144 +54,10 @@ const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 const MINIMUM_BIRTHDATE = new Date(1900, 0, 1);
 const REQUIRED_PROFILE_FIELDS = new Set(['firstName', 'lastName', 'birthdate', 'gender', 'phone']);
 const APP_VERSION_LABEL = 'Donivra v1.0.0';
-const PROFILE_ACTION_BORDER_GRAD = ['#5f2f12', '#8e4f24', '#c8864f', '#ffe7ac', '#c8864f', '#8e4f24', '#5f2f12'];
-const PROFILE_ACTION_FILL_GRAD = ['#8a111d', '#740c15', '#5c0910'];
-const PROFILE_ACTION_MUTED_FILL_GRAD = ['#f7f2eb', '#f1ebe4'];
+const PROFILE_ACTION_BORDER_GRAD = ['#4b1020', '#7f2039', '#f4d8de', '#7f2039', '#4b1020'];
+const PROFILE_ACTION_FILL_GRAD = ['#92294a', '#681a2e', '#4b1020'];
+const PROFILE_ACTION_MUTED_FILL_GRAD = ['#fffaf7', '#faedf0'];
 
-const resolvePdfViewer = () => {
-  if (Constants?.appOwnership === 'expo') return null;
-  try {
-    const pdfModule = require('react-native-pdf');
-    return pdfModule?.default || pdfModule;
-  } catch (_error) {
-    return null;
-  }
-};
-
-const Pdf = resolvePdfViewer();
-
-const getDocumentUri = (value) => {
-  if (typeof value === 'string') return value.trim();
-  if (!value || typeof value !== 'object') return '';
-  return String(value.publicUrl || value.url || value.uri || value.previewUri || '').trim();
-};
-
-const isPdfDocument = (value, uri) => (
-  String(value?.contentType || value?.mimeType || '').toLowerCase().includes('pdf')
-  || /\.pdf(?:$|[?#])/i.test(uri)
-);
-
-const getDocumentFileName = (value, uri) => {
-  const suppliedName = typeof value === 'object' ? value.fileName || value.name : '';
-  if (suppliedName) return String(suppliedName).replace(/[^a-z0-9._-]/gi, '_');
-  const pathName = uri.split('?')[0].split('/').pop();
-  return pathName || `donivra-medical-document.${isPdfDocument(value, uri) ? 'pdf' : 'jpg'}`;
-};
-
-function PatientMedicalDocumentModal({ visible, onClose, documentValue, roles }) {
-  const [isDownloading, setIsDownloading] = useState(false);
-  const uri = getDocumentUri(documentValue);
-  const isPdf = isPdfDocument(documentValue, uri);
-
-  useEffect(() => {
-    if (!visible) setIsDownloading(false);
-  }, [visible]);
-
-  const handleDownload = async () => {
-    if (!uri || isDownloading) return;
-    setIsDownloading(true);
-    let temporaryUri = '';
-    try {
-      if (!FileSystem.documentDirectory) throw new Error('Device storage is not available right now.');
-      const fileName = `${Date.now()}-${getDocumentFileName(documentValue, uri)}`;
-
-      if (Platform.OS === 'android') {
-        // Android's app document directory is private and does not appear in
-        // the user's Downloads app. SAF lets the user grant access to a public
-        // folder (normally Downloads) and writes the file there.
-        const saf = FileSystem.StorageAccessFramework;
-        if (!saf?.requestDirectoryPermissionsAsync || !saf?.createFileAsync) {
-          throw new Error('Public device storage is not available in this build.');
-        }
-
-        const initialFolder = saf.getUriForDirectoryInRoot?.('Download') || null;
-        const permission = await saf.requestDirectoryPermissionsAsync(initialFolder);
-        if (!permission?.granted || !permission.directoryUri) return;
-
-        temporaryUri = `${FileSystem.cacheDirectory || FileSystem.documentDirectory}donivra-${fileName}`;
-        const result = await FileSystem.downloadAsync(uri, temporaryUri);
-        const base64 = await FileSystem.readAsStringAsync(result.uri, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
-        const mimeType = isPdf
-          ? 'application/pdf'
-          : String(documentValue?.contentType || documentValue?.mimeType || 'image/jpeg');
-        const savedUri = await saf.createFileAsync(permission.directoryUri, fileName, mimeType);
-        await saf.writeAsStringAsync(savedUri, base64, { encoding: FileSystem.EncodingType.Base64 });
-        Alert.alert('Download complete', 'The medical document was saved to the folder you selected. Choose Downloads to find it in your device storage.');
-      } else {
-        const directoryUri = `${FileSystem.documentDirectory}medical-documents/`;
-        const targetUri = `${directoryUri}${fileName}`;
-        await FileSystem.makeDirectoryAsync(directoryUri, { intermediates: true }).catch(() => {});
-        const result = await FileSystem.downloadAsync(uri, targetUri);
-        const fileInfo = await FileSystem.getInfoAsync(result.uri);
-        if (!fileInfo.exists) throw new Error('The document could not be saved locally.');
-        Alert.alert('Download complete', 'The medical document was saved to Donivra local storage.');
-      }
-    } catch (error) {
-      Alert.alert('Download failed', error?.message || 'Unable to download the medical document.');
-    } finally {
-      if (temporaryUri) await FileSystem.deleteAsync(temporaryUri, { idempotent: true }).catch(() => {});
-      setIsDownloading(false);
-    }
-  };
-
-  const handleOpenExternally = async () => {
-    if (!uri) return;
-    try {
-      if (await Linking.canOpenURL(uri)) await Linking.openURL(uri);
-      else Alert.alert('Cannot open file', 'This document cannot be opened on this device.');
-    } catch (error) {
-      Alert.alert('Cannot open file', error?.message || 'Unable to open the medical document.');
-    }
-  };
-
-  return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
-      <SafeAreaView style={[styles.documentModal, { backgroundColor: roles.pageBackground }]} edges={['top', 'bottom']}>
-        <View style={[styles.documentModalHeader, { backgroundColor: roles.primaryActionBackground }]}>
-          <Text style={styles.documentModalTitle}>Medical Document</Text>
-          <Pressable accessibilityLabel="Close medical document" onPress={onClose} style={styles.documentModalClose}>
-            <AppIcon name="close" state="default" color="#fff" />
-          </Pressable>
-        </View>
-        <View style={styles.documentModalContent}>
-          {isPdf && Pdf ? (
-            <Pdf source={{ uri, cache: true }} style={styles.documentPdf} trustAllCerts={false} />
-          ) : !isPdf ? (
-            <Image source={{ uri }} style={styles.documentImage} resizeMode="contain" />
-          ) : (
-            <View style={styles.documentUnavailable}>
-              <AppIcon name="file-pdf-box" state="default" color={roles.primaryActionBackground} size="xl" />
-              <Text style={[styles.documentUnavailableTitle, { color: roles.headingText }]}>PDF preview unavailable</Text>
-              <Text style={[styles.documentUnavailableText, { color: roles.bodyText }]}>Open the file externally to view it.</Text>
-              <AppButton title="Open externally" onPress={handleOpenExternally} />
-            </View>
-          )}
-        </View>
-        <View style={styles.documentModalActions}>
-          <AppButton
-            title={isDownloading ? 'Preparing file...' : 'Download document'}
-            leading={<AppIcon name="download" state="default" color="#fff" />}
-            onPress={handleDownload}
-            loading={isDownloading}
-            disabled={!uri || isDownloading}
-          />
-        </View>
-      </SafeAreaView>
-    </Modal>
-  );
-}
 const formatPhilippineMobileInput = (value) => String(value || '').replace(/\D/g, '').slice(0, 11);
 
 const getMaximumBirthdate = () => {
@@ -279,7 +142,10 @@ function ProfileMenuRow({ icon, title, subtitle = '', badge, danger = false, isL
       }}
       style={[
         styles.profileMenuRow,
-        rowRoles ? { borderBottomColor: rowRoles.defaultCardBorder } : null,
+        rowRoles ? {
+          backgroundColor: rowRoles.defaultCardBackground,
+          borderColor: rowRoles.defaultCardBorder,
+        } : null,
         isLast ? styles.profileRowLast : null,
         animatedStyle,
       ]}
@@ -326,7 +192,10 @@ function ProfileMoreRow({ icon, title, subtitle, badge = null, isLast = false, o
     >
       <View style={[
         styles.profileMoreRow,
-        rowRoles ? { borderBottomColor: rowRoles.defaultCardBorder } : null,
+        rowRoles ? {
+          backgroundColor: rowRoles.defaultCardBackground,
+          borderColor: rowRoles.defaultCardBorder,
+        } : null,
         isLast ? styles.profileRowLast : null,
       ]}>
         <View style={[
@@ -356,6 +225,22 @@ function ProfileMoreRow({ icon, title, subtitle, badge = null, isLast = false, o
   );
 }
 
+function ProfileSectionHeading({ icon, title, roles, textColor }) {
+  return (
+    <View style={styles.profileSectionHeadingRow}>
+      <LinearGradient
+        colors={[theme.colors.palette.wine700, theme.colors.palette.wine900]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.profileSectionHeadingIcon}
+      >
+        <AppIcon name={icon} size="sm" color={roles.primaryActionText} />
+      </LinearGradient>
+      <Text style={[styles.profileSectionHeadingText, { color: textColor || roles.headingText }]}>{title}</Text>
+    </View>
+  );
+}
+
 function ProfileModalActionButton({
   title,
   icon,
@@ -367,7 +252,7 @@ function ProfileModalActionButton({
 }) {
   const isPrimary = variant === 'primary';
   const isInactive = loading || disabled;
-  const foregroundColor = isPrimary ? roles.primaryActionText : roles.headingText;
+  const foregroundColor = isPrimary ? roles.primaryActionText : roles.primaryActionBackground;
 
   return (
     <View style={styles.editModalActionSlot}>
@@ -385,79 +270,30 @@ function ProfileModalActionButton({
           },
         ]}
       >
-        <View
+        <LinearGradient
           pointerEvents="none"
-          style={[
-            styles.editModalActionContent,
-            {
-              backgroundColor: isPrimary ? roles.primaryActionBackground : roles.pageBackground,
-              borderColor: isPrimary ? roles.primaryActionBackground : roles.defaultCardBorder,
-            },
-          ]}
+          colors={PROFILE_ACTION_BORDER_GRAD}
+          start={{ x: 0, y: 0.5 }}
+          end={{ x: 1, y: 0.5 }}
+          style={styles.editModalActionGradientBorder}
         >
-          {loading ? (
-            <ActivityIndicator size="small" color={foregroundColor} />
-          ) : (
-            <AppIcon name={icon} size="sm" color={foregroundColor} />
-          )}
-          <Text numberOfLines={1} style={[styles.editModalActionText, { color: foregroundColor }]}>{title}</Text>
-        </View>
+          <LinearGradient
+            colors={isPrimary ? PROFILE_ACTION_FILL_GRAD : PROFILE_ACTION_MUTED_FILL_GRAD}
+            start={{ x: 0.15, y: 0 }}
+            end={{ x: 0.85, y: 1 }}
+            style={styles.editModalActionContent}
+          >
+            {isPrimary ? <View style={styles.editModalActionShine} /> : null}
+            {loading ? (
+              <ActivityIndicator size="small" color={foregroundColor} />
+            ) : (
+              <AppIcon name={icon} size="sm" color={foregroundColor} />
+            )}
+            <Text numberOfLines={1} style={[styles.editModalActionText, { color: foregroundColor }]}>{title}</Text>
+          </LinearGradient>
+        </LinearGradient>
       </Pressable>
     </View>
-  );
-}
-
-function PatientProfileRow({ icon, title, value, badge, onPress, danger = false, roles = null, textColor = null }) {
-  const disabled = !onPress;
-  const rowRoles = roles || {};
-
-  return (
-    <Pressable
-      disabled={disabled}
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.patientProfileRow,
-        {
-          opacity: pressed ? 0.72 : 1,
-          borderBottomColor: rowRoles.supportCardBorder || theme.colors.borderSubtle,
-        },
-      ]}
-    >
-      <View
-        style={[
-          styles.patientProfileRowIcon,
-          { backgroundColor: danger ? theme.colors.surfaceSoft : rowRoles.iconPrimarySurface || theme.colors.brandPrimaryMuted },
-        ]}
-      >
-        <AppIcon
-          name={icon}
-          size="md"
-          color={danger ? theme.colors.textError : rowRoles.iconPrimaryColor || theme.colors.brandPrimary}
-        />
-      </View>
-      <View style={styles.patientProfileRowCopy}>
-        <Text
-          numberOfLines={1}
-          style={[
-            styles.patientProfileRowTitle,
-            { color: danger ? theme.colors.textError : textColor || rowRoles.headingText || theme.colors.textPrimary },
-          ]}
-        >
-          {title}
-        </Text>
-        {value ? (
-          <Text numberOfLines={1} style={[styles.patientProfileRowValue, { color: textColor || rowRoles.bodyText || theme.colors.textSecondary }]}>
-            {value}
-          </Text>
-        ) : null}
-      </View>
-      {badge ? (
-        <View style={[styles.patientProfileRowBadge, { backgroundColor: rowRoles.badgeBackground || theme.colors.brandPrimaryMuted }]}>
-          <Text style={[styles.patientProfileRowBadgeText, { color: rowRoles.badgeText || theme.colors.brandPrimary }]}>{badge}</Text>
-        </View>
-      ) : null}
-      {!disabled ? <AppIcon name="chevronRight" state="muted" color={rowRoles.metaText} /> : null}
-    </Pressable>
   );
 }
 
@@ -473,7 +309,6 @@ export default function ProfileScreen() {
     user,
     profile,
     patientProfile,
-    hospitalProfile,
     defaultValues,
     isSavingProfile,
     isChangingPassword,
@@ -500,8 +335,10 @@ export default function ProfileScreen() {
   const [activeProfilePicker, setActiveProfilePicker] = useState('');
   const [guardianConsent, setGuardianConsent] = useState(null);
   const [isGuardianConsentModalOpen, setIsGuardianConsentModalOpen] = useState(false);
-  const [isMedicalDocumentModalOpen, setIsMedicalDocumentModalOpen] = useState(false);
   const [isSavingGuardianConsent, setIsSavingGuardianConsent] = useState(false);
+  const [guardianConsentDocument, setGuardianConsentDocument] = useState(null);
+  const [isLoadingGuardianConsentDocument, setIsLoadingGuardianConsentDocument] = useState(false);
+  const [guardianConsentDocumentError, setGuardianConsentDocumentError] = useState('');
   const [guardianConsentForm, setGuardianConsentForm] = useState({
     guardianFullName: '',
     guardianRelationship: '',
@@ -516,6 +353,7 @@ export default function ProfileScreen() {
   });
   const successTimerRef = useRef(null);
   const logoutRequestRef = useRef(false);
+  const guardianConsentPromptedBirthdateRef = useRef('');
 
   const profileForm = useForm({
     resolver: zodResolver(profileUpdateSchema),
@@ -663,6 +501,10 @@ export default function ProfileScreen() {
     helperTextStyle: profileEditFieldHelper,
     errorTextStyle: profileEditFieldError,
     leftIconColor: roles.primaryActionBackground,
+    leftIconContainerStyle: [
+      styles.profileEditInputIconSurface,
+      { backgroundColor: roles.iconPrimarySurface },
+    ],
   };
   const profileEditSelectProps = {
     labelStyle: profileEditFieldLabel,
@@ -672,7 +514,15 @@ export default function ProfileScreen() {
     helperTextStyle: profileEditFieldHelper,
     errorTextStyle: profileEditFieldError,
     leftIconColor: roles.primaryActionBackground,
-    rightIconColor: roles.headingText,
+    rightIconColor: roles.primaryActionBackground,
+    leftIconContainerStyle: [
+      styles.profileEditFieldIconSurface,
+      { backgroundColor: roles.iconPrimarySurface },
+    ],
+    rightIconContainerStyle: [
+      styles.profileEditFieldActionSurface,
+      { backgroundColor: roles.iconPrimarySurface },
+    ],
   };
   const profileEditDateProps = {
     containerStyle: styles.profileEditFieldContainer,
@@ -683,11 +533,17 @@ export default function ProfileScreen() {
     helperTextStyle: profileEditFieldHelper,
     errorTextStyle: profileEditFieldError,
     leftIconColor: roles.primaryActionBackground,
-    rightIconColor: roles.headingText,
+    rightIconColor: roles.primaryActionBackground,
+    leftIconContainerStyle: [
+      styles.profileEditFieldIconSurface,
+      { backgroundColor: roles.iconPrimarySurface },
+    ],
+    rightIconContainerStyle: [
+      styles.profileEditFieldActionSurface,
+      { backgroundColor: roles.iconPrimarySurface },
+    ],
   };
   const watchedNewPassword = passwordForm.watch('newPassword');
-  const patientHospitalName = hospitalProfile?.hospital_name || patientProfile?.hospital_name || '';
-  const patientMedicalDocument = patientProfile?.medical_document || patientProfile?.medical_document_url || '';
   const watchedGender = useWatch({ control: profileForm.control, name: 'gender' });
   const watchedBirthdate = useWatch({ control: profileForm.control, name: 'birthdate' });
   const setupDonorAgeBadge = useMemo(() => (
@@ -696,8 +552,15 @@ export default function ProfileScreen() {
   const isMinorProfileDraft = setupDonorAgeBadge && setupDonorAgeBadge.category !== 'Adult';
   const isAdultDonorBadge = setupDonorAgeBadge?.category === 'Adult';
   const hasActiveGuardianConsent = Boolean(guardianConsent?.guardian_consent_id || guardianConsent?.Guardian_Consent_ID);
-  const guardianConsentText = guardianConsent?.consent_text_snapshot
-    || GUARDIAN_CONSENT_TEXT;
+  const guardianConsentText = String(
+    guardianConsentDocument?.content
+    || guardianConsent?.consent_text_snapshot
+    || GUARDIAN_CONSENT_TEXT
+  ).trim();
+  const hasCurrentGuardianConsentDocument = Boolean(
+    guardianConsentDocument?.legal_document_id
+    && String(guardianConsentDocument?.content || '').trim()
+  );
   const passwordStrengthMessage = getPasswordStrengthMessage(watchedNewPassword);
   const passwordStrengthVariant = watchedNewPassword
     ? passwordStrengthMessage === 'Strong password'
@@ -749,10 +612,60 @@ export default function ProfileScreen() {
     setIsGuardianConsentModalOpen(true);
   }, []);
 
+  const loadGuardianConsentDocument = useCallback(async () => {
+    setIsLoadingGuardianConsentDocument(true);
+    setGuardianConsentDocumentError('');
+    setGuardianConsentForm((current) => ({
+      ...current,
+      guardianAgreementAccepted: false,
+    }));
+
+    const result = await fetchActiveMinorConsentDocument();
+    if (result.error || !result.data) {
+      setGuardianConsentDocument(null);
+      setGuardianConsentDocumentError(
+        result.error?.message || 'Guardian consent could not be loaded. Please try again.'
+      );
+    } else {
+      setGuardianConsentDocument(result.data);
+    }
+
+    setIsLoadingGuardianConsentDocument(false);
+  }, []);
+
+  useEffect(() => {
+    if (!isGuardianConsentModalOpen) return;
+    loadGuardianConsentDocument();
+  }, [isGuardianConsentModalOpen, loadGuardianConsentDocument]);
+
+  useEffect(() => {
+    if (mode !== 'edit' || role !== 'donor' || hasActiveGuardianConsent) {
+      if (mode !== 'edit') guardianConsentPromptedBirthdateRef.current = '';
+      return undefined;
+    }
+
+    const birthdateKey = String(watchedBirthdate || '').trim();
+    if (!isMinorProfileDraft || !birthdateKey) {
+      guardianConsentPromptedBirthdateRef.current = '';
+      return undefined;
+    }
+
+    if (guardianConsentPromptedBirthdateRef.current === birthdateKey) return undefined;
+    guardianConsentPromptedBirthdateRef.current = birthdateKey;
+    const promptTimer = setTimeout(() => setIsGuardianConsentModalOpen(true), 260);
+    return () => clearTimeout(promptTimer);
+  }, [hasActiveGuardianConsent, isMinorProfileDraft, mode, role, watchedBirthdate]);
+
   const submitGuardianConsent = useCallback(async () => {
     await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     if (!profile?.user_id) {
       setFloatingFeedback('error', 'Profile Not Ready', 'Please save your donor account first, then complete guardian consent.');
+      return;
+    }
+
+    if (!hasCurrentGuardianConsentDocument) {
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setGuardianConsentDocumentError('Load the current guardian consent before continuing.');
       return;
     }
 
@@ -791,7 +704,7 @@ export default function ProfileScreen() {
     });
     setIsGuardianConsentModalOpen(false);
     setFloatingFeedback('success', 'Consent Completed', 'Guardian consent is now saved for this donor account.');
-  }, [guardianConsentForm, guardianConsentText, profile?.user_id, setFloatingFeedback, validateGuardianConsentForm]);
+  }, [guardianConsentForm, guardianConsentText, hasCurrentGuardianConsentDocument, profile?.user_id, setFloatingFeedback, validateGuardianConsentForm]);
 
   const closeEditModal = useCallback(() => {
     profileForm.reset(defaultValues);
@@ -857,19 +770,6 @@ export default function ProfileScreen() {
     }
     router.replace(item.route);
   };
-
-  const handleOpenMedicalDocument = useCallback(async () => {
-    if (!patientMedicalDocument) {
-      setFloatingFeedback('info', 'No Document', 'No medical document is linked yet.');
-      return;
-    }
-
-    try {
-      setIsMedicalDocumentModalOpen(true);
-    } catch (error) {
-      setFloatingFeedback('error', 'Cannot Open File', error?.message || 'Unable to open the medical document.');
-    }
-  }, [patientMedicalDocument, setFloatingFeedback]);
 
   const handleLogoutPress = useCallback(async () => {
     if (logoutRequestRef.current) return;
@@ -979,45 +879,63 @@ export default function ProfileScreen() {
     }
   }, [defaultValues, mode, passwordForm, profileForm]);
 
-  const renderDonorProfileContent = () => (
-    <View style={styles.profileMainShell}>
-      <View style={styles.profileHeroPanel}>
-        <Pressable
-          onPress={() => handlePhotoPress()}
-          disabled={isUploadingAvatar}
-          style={({ pressed }) => [styles.profileHeroPhotoButton, { opacity: pressed ? 0.86 : 1 }]}
-        >
-          <View style={[styles.profileHeroPhoto, { borderColor: roles.pageBackground }]}>
-            {avatarUri ? (
-              <Image source={{ uri: avatarUri }} style={styles.profileHeroAvatarImage} resizeMode="cover" />
-            ) : (
-              <Text style={[styles.profileHeroAvatarText, { color: roles.primaryActionBackground }]}>
-                {(avatarInitials || 'DN').toUpperCase().slice(0, 2)}
-              </Text>
-            )}
-          </View>
-        </Pressable>
+  const renderDonorProfileHero = () => (
+    <LinearGradient
+        colors={[theme.colors.palette.wine900, theme.colors.palette.wine700, '#9E3652']}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.profileHeroPanel}
+      >
+        <View pointerEvents="none" style={styles.profileHeroGlowLarge} />
+        <View pointerEvents="none" style={styles.profileHeroGlowSmall} />
 
-        <View style={styles.profileHeroCopyCentered}>
-        <Text numberOfLines={2} style={[styles.profileHeroDisplayName, { color: primaryTextColor }]}>
-          {fullName || 'Profile'}
-        </Text>
-        <View style={styles.profileHeroContactRow}>
-          <View style={styles.profileHeroContactItem}>
-            <AppIcon name="email" size="sm" color={roles.primaryActionBackground} />
-            <Text numberOfLines={1} style={[styles.profileHeroContactText, { color: primaryTextColor }]}>
-              {user?.email || 'No email linked'}
-            </Text>
-          </View>
-          {profileLocation ? (
-            <View style={styles.profileHeroContactItem}>
-              <AppIcon name="location" size="sm" color={roles.primaryActionBackground} />
-              <Text numberOfLines={1} style={[styles.profileHeroContactText, { color: primaryTextColor }]}>
-                {profileLocation}
-              </Text>
+        <View style={styles.profileHeroIdentityRow}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={isUploadingAvatar ? 'Updating profile photo' : 'Change profile photo'}
+            onPress={() => handlePhotoPress()}
+            disabled={isUploadingAvatar}
+            style={({ pressed }) => [styles.profileHeroPhotoButton, { opacity: pressed ? 0.86 : 1 }]}
+          >
+            <View style={styles.profileHeroPhoto}>
+              {avatarUri ? (
+                <Image source={{ uri: avatarUri }} style={styles.profileHeroAvatarImage} resizeMode="cover" />
+              ) : (
+                <Text style={styles.profileHeroAvatarText}>
+                  {(avatarInitials || 'DN').toUpperCase().slice(0, 2)}
+                </Text>
+              )}
             </View>
-          ) : null}
-        </View>
+            <View style={styles.profileHeroPhotoBadge}>
+              {isUploadingAvatar ? (
+                <ActivityIndicator size="small" color={theme.colors.palette.wine900} />
+              ) : (
+                <AppIcon name="camera" size="sm" color={theme.colors.palette.wine900} />
+              )}
+            </View>
+          </Pressable>
+
+          <View style={styles.profileHeroCopyCentered}>
+            <Text numberOfLines={2} style={styles.profileHeroDisplayName}>
+              {fullName || 'Profile'}
+            </Text>
+            <View style={styles.profileHeroContactRow}>
+              <View style={styles.profileHeroContactItem}>
+                <AppIcon name="email" size="sm" color="#F7DDE4" />
+                <Text numberOfLines={1} style={styles.profileHeroContactText}>
+                  {user?.email || 'No email linked'}
+                </Text>
+              </View>
+              {profileLocation ? (
+                <View style={styles.profileHeroContactItem}>
+                  <AppIcon name="location" size="sm" color="#F7DDE4" />
+                  <Text numberOfLines={1} style={styles.profileHeroContactText}>
+                    {profileLocation}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+          </View>
         </View>
 
         <View style={styles.profileHeroMetricsRow}>
@@ -1026,45 +944,81 @@ export default function ProfileScreen() {
               key: 'donations',
               label: t('profile.donations'),
               value: donorStats.donations,
-              valueColor: primaryTextColor,
-              labelColor: primaryTextColor,
+              icon: 'donations',
+              route: '/donor/donation-history',
+              emphasized: false,
             },
             {
               key: 'achievements',
               label: t('profile.achievements'),
               value: donorStats.achievements,
-              valueColor: primaryTextColor,
-              labelColor: primaryTextColor,
+              icon: 'sparkle',
+              route: '/donor/achievements',
+              emphasized: true,
             },
           ].map((item) => (
-            <View
+            <Pressable
               key={item.key}
-              style={[
-                styles.profileHeroMetricCard,
-                { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder },
-              ]}
+              accessibilityRole="button"
+              accessibilityLabel={`${item.value} ${item.label}`}
+              onPress={() => router.navigate(item.route)}
+              style={({ pressed }) => [styles.profileHeroMetricPressable, pressed ? styles.profileHeroMetricCardPressed : null]}
             >
-              <Text style={[styles.profileHeroMetricValue, { color: item.valueColor || primaryTextColor }]}>
-                {item.value}
-              </Text>
-              <Text style={[styles.profileHeroMetricLabel, { color: item.labelColor || primaryTextColor }]}>
-                {item.label}
-              </Text>
-            </View>
+              <LinearGradient
+                colors={item.emphasized
+                  ? [theme.colors.palette.wine600, theme.colors.palette.wine700, theme.colors.palette.wine900]
+                  : ['#FFF9FA', '#F6E6EA', '#F1D8DF']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.profileHeroMetricCard}
+              >
+                <View style={[
+                  styles.profileHeroMetricIcon,
+                  item.emphasized ? styles.profileHeroMetricIconEmphasized : null,
+                ]}>
+                  <AppIcon
+                    name={item.icon}
+                    size="sm"
+                    color={item.emphasized ? '#FFFFFF' : theme.colors.palette.wine700}
+                  />
+                </View>
+                <Text
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.82}
+                  style={[
+                    styles.profileHeroMetricTitle,
+                    item.emphasized ? styles.profileHeroMetricTitleEmphasized : null,
+                  ]}
+                >
+                  {item.label}
+                </Text>
+                <View style={[
+                  styles.profileHeroMetricCount,
+                  item.emphasized ? styles.profileHeroMetricCountEmphasized : null,
+                ]}>
+                  <Text style={[
+                    styles.profileHeroMetricCountText,
+                    item.emphasized ? styles.profileHeroMetricCountTextEmphasized : null,
+                  ]}>{item.value}</Text>
+                </View>
+              </LinearGradient>
+            </Pressable>
           ))}
         </View>
-      </View>
+    </LinearGradient>
+  );
 
+  const renderDonorProfileContent = () => (
+    <View style={styles.profileMainShell}>
       <View style={styles.profileSection}>
-        <SectionTitleRow
+        <ProfileSectionHeading
           title={t('profile.account')}
           icon="profile"
-          color={primaryTextColor}
-          iconColor={roles.primaryActionBackground}
-          accentColor={roles.primaryActionBackground}
-          style={styles.profileSectionHeader}
+          roles={roles}
+          textColor={primaryTextColor}
         />
-        <View style={[styles.profileSectionShell, { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder }]}>
+        <View style={styles.profileDonorSectionShell}>
           <ProfileMenuRow
             roles={roles}
             icon="editProfile"
@@ -1104,15 +1058,13 @@ export default function ProfileScreen() {
       </View>
 
       <View style={styles.profileSection}>
-        <SectionTitleRow
+        <ProfileSectionHeading
           title={t('profile.preferences')}
           icon="quickActions"
-          color={primaryTextColor}
-          iconColor={roles.primaryActionBackground}
-          accentColor={roles.primaryActionBackground}
-          style={styles.profileSectionHeader}
+          roles={roles}
+          textColor={primaryTextColor}
         />
-        <View style={[styles.profileSectionShell, { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder }]}>
+        <View style={styles.profileDonorSectionShell}>
           <ProfileMoreRow
             roles={roles}
             icon="translate"
@@ -1174,153 +1126,151 @@ export default function ProfileScreen() {
     </View>
   );
 
-  const renderPatientProfileContent = () => (
-    <View style={styles.patientProfileShell}>
-      <View style={styles.patientProfileHero}>
+  const renderPatientProfileHero = () => (
+    <LinearGradient
+      colors={[theme.colors.palette.wine900, theme.colors.palette.wine700, theme.colors.palette.wine600]}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={styles.patientProfileHero}
+    >
+      <View pointerEvents="none" style={styles.patientProfileHeroGlow} />
+      <View style={styles.patientProfileIdentityRow}>
         <Pressable
+          accessibilityRole="button"
           accessibilityLabel="Change profile photo"
           onPress={() => handlePhotoPress()}
           disabled={isUploadingAvatar}
           style={({ pressed }) => [styles.patientProfileAvatarButton, { opacity: pressed ? 0.86 : 1 }]}
         >
-          <View
-            style={[
-              styles.patientProfileAvatar,
-              {
-                backgroundColor: roles.supportCardBackground,
-                borderColor: roles.supportCardBorder,
-              },
-            ]}
-          >
+          <View style={styles.patientProfileAvatar}>
             {avatarUri ? (
               <Image source={{ uri: avatarUri }} style={styles.profileHeroAvatarImage} resizeMode="cover" />
             ) : (
-              <Text style={[styles.patientProfileAvatarText, { color: primaryTextColor }]}>
+              <Text style={styles.patientProfileAvatarText}>
                 {(avatarInitials || 'PT').toUpperCase().slice(0, 2)}
               </Text>
             )}
           </View>
-          <View
-            style={[
-              styles.patientProfileVerifiedBadge,
-              {
-                backgroundColor: roles.primaryActionBackground,
-                borderColor: roles.pageBackground,
-              },
-            ]}
-          >
-            <AppIcon name="check-decagram" size="sm" color={roles.primaryActionText} />
+          <View style={styles.patientProfileCameraBadge}>
+            {isUploadingAvatar ? (
+              <ActivityIndicator size="small" color={theme.colors.palette.wine900} />
+            ) : (
+              <AppIcon name="camera" size="sm" color={theme.colors.palette.wine900} />
+            )}
           </View>
         </Pressable>
 
-        <Text numberOfLines={2} style={[styles.patientProfileName, { color: primaryTextColor }]}>
-          {fullName || 'Patient account'}
-        </Text>
-        <View style={[styles.patientProfileStatusPill, { backgroundColor: roles.badgeStrongBackground }]}>
-          <AppIcon name="checkmarkCircle" size="sm" color={roles.badgeStrongText} />
-          <Text style={[styles.patientProfileStatusText, { color: primaryTextColor }]}>Verified Patient</Text>
-        </View>
-        {patientProfile?.patient_code ? (
-          <Text numberOfLines={1} style={[styles.patientProfileCode, { color: primaryTextColor }]}>
-            {patientProfile.patient_code}
+        <View style={styles.patientProfileIdentityCopy}>
+          <Text numberOfLines={2} style={styles.patientProfileName}>
+            {fullName || 'Patient account'}
           </Text>
-        ) : null}
+          <View style={styles.patientProfileStatusPill}>
+            <AppIcon name="checkmarkCircle" size="sm" color="#FFFFFF" />
+            <Text style={styles.patientProfileStatusText}>Verified patient</Text>
+          </View>
+          {patientProfile?.patient_code ? (
+            <Text numberOfLines={1} style={styles.patientProfileCode}>
+              Patient ID: {patientProfile.patient_code}
+            </Text>
+          ) : null}
+        </View>
       </View>
+    </LinearGradient>
+  );
 
+  const renderPatientProfileContent = () => (
+    <View style={styles.patientProfileShell}>
       <View style={styles.patientProfileGrid}>
         <View style={styles.profileSection}>
-          <SectionTitleRow
-            title={t('profile.medicalInformation')}
+          <ProfileSectionHeading
+            title="Private health record"
             icon="shield"
-            color={primaryTextColor}
-            iconColor={roles.primaryActionBackground}
-            accentColor={roles.primaryActionBackground}
-            style={styles.profileSectionHeader}
+            roles={roles}
+            textColor={primaryTextColor}
           />
-          <View style={[styles.profileSectionShell, { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder }]}>
-            <PatientProfileRow
-              icon="hospital-building"
-              title="Clinic / Hospital"
-              value={patientHospitalName || 'Not linked'}
-              roles={roles}
-              textColor={primaryTextColor}
-            />
-            <PatientProfileRow
-              icon="clipboard-pulse-outline"
-              title="Condition"
-              value={patientProfile?.medical_condition || 'Not provided'}
-              roles={roles}
-              textColor={primaryTextColor}
-            />
-            <PatientProfileRow
-              icon="account-heart-outline"
-              title="Guardian"
-              value={patientProfile?.guardian || 'Not provided'}
-              roles={roles}
-              textColor={primaryTextColor}
-            />
-            <PatientProfileRow
-              icon="folder-account-outline"
-              title="Medical Document"
-              value={patientMedicalDocument ? 'View file' : 'No file'}
-              onPress={patientMedicalDocument ? handleOpenMedicalDocument : undefined}
-              roles={roles}
-              textColor={primaryTextColor}
-            />
-          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Open medical information"
+            accessibilityHint="Opens your protected medical record and document preview"
+            onPress={() => router.navigate('/patient/medical-information')}
+            style={({ pressed }) => [
+              styles.patientMedicalAccessButton,
+              pressed ? styles.patientMedicalAccessButtonPressed : null,
+            ]}
+          >
+            <LinearGradient
+              colors={[roles.defaultCardBackground, roles.supportCardBackground]}
+              start={{ x: 0.08, y: 0 }}
+              end={{ x: 0.92, y: 1 }}
+              style={[
+                styles.patientMedicalAccessCard,
+                { borderColor: roles.defaultCardBorder },
+              ]}
+            >
+              <View style={[styles.patientMedicalAccessIcon, { backgroundColor: roles.iconPrimarySurface }]}>
+                <AppIcon name="folder-account-outline" size="lg" color={roles.primaryActionBackground} />
+              </View>
+              <View style={styles.patientMedicalAccessCopy}>
+                <Text style={[styles.patientMedicalAccessTitle, { color: primaryTextColor }]}>Medical information</Text>
+                <Text style={[styles.patientMedicalAccessText, { color: roles.bodyText }]}>
+                  View your care details and medical certificate securely.
+                </Text>
+                <View style={[styles.patientMedicalAccessBadge, { backgroundColor: roles.iconPrimarySurface }]}>
+                  <AppIcon name="lock-outline" size="sm" color={roles.primaryActionBackground} />
+                  <Text style={[styles.patientMedicalAccessBadgeText, { color: roles.primaryActionBackground }]}>Private record</Text>
+                </View>
+              </View>
+              <View style={[styles.patientMedicalAccessArrow, { backgroundColor: roles.primaryActionBackground }]}>
+                <AppIcon name="chevronRight" size="sm" color={roles.primaryActionText} />
+              </View>
+            </LinearGradient>
+          </Pressable>
         </View>
 
-        <PatientMedicalDocumentModal
-          visible={isMedicalDocumentModalOpen}
-          onClose={() => setIsMedicalDocumentModalOpen(false)}
-          documentValue={patientMedicalDocument}
-          roles={roles}
-        />
-
         <View style={styles.profileSection}>
-          <SectionTitleRow
+          <ProfileSectionHeading
             title={t('profile.accountSettings')}
             icon="settings"
-            color={primaryTextColor}
-            iconColor={roles.primaryActionBackground}
-            accentColor={roles.primaryActionBackground}
-            style={styles.profileSectionHeader}
+            roles={roles}
+            textColor={primaryTextColor}
           />
-          <View style={[styles.profileSectionShell, { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder }]}>
-            <PatientProfileRow
-              icon="profile"
+          <View style={styles.patientSettingsList}>
+            <ProfileMenuRow
+              icon="editProfile"
               title={t('profile.personalInformation')}
+              subtitle="Update your name, contact details, and address."
               onPress={() => setMode('edit')}
               roles={roles}
               textColor={primaryTextColor}
             />
-            <PatientProfileRow
+            <ProfileMenuRow
               icon="feedback"
               title={t('profile.feedback')}
+              subtitle="Share feedback about your Donivra experience."
               onPress={() => router.navigate('/patient/feedback')}
               roles={roles}
               textColor={primaryTextColor}
             />
-            <PatientProfileRow
+            <ProfileMenuRow
               icon="translate"
               title={t('profile.language')}
-              value={language === 'fil' ? 'Filipino' : 'English'}
+              subtitle={language === 'fil' ? 'Filipino' : 'English'}
               onPress={() => setIsLanguageModalOpen(true)}
               roles={roles}
               textColor={primaryTextColor}
             />
-            <PatientProfileRow
+            <ProfileMenuRow
               icon="format-size"
               title={t('profile.textSize')}
-              value={t(`textSize.${textSize}`)}
+              subtitle={t(`textSize.${textSize}`)}
               onPress={() => setIsTextSizeModalOpen(true)}
               roles={roles}
               textColor={primaryTextColor}
             />
-            <PatientProfileRow
+            <ProfileMenuRow
               icon="help-circle-outline"
               title={t('profile.helpGuide')}
-              value={t('profile.helpGuideSubtitle')}
+              subtitle={t('profile.helpGuideSubtitle')}
               onPress={() => router.navigate('/help')}
               roles={roles}
               textColor={primaryTextColor}
@@ -1333,7 +1283,7 @@ export default function ProfileScreen() {
         <AppButton
           title={t('profile.logout')}
           variant="outline"
-          fullWidth={false}
+          fullWidth
           onPress={handleLogoutPress}
           leading={<AppIcon name="signOut" state="danger" />}
           style={styles.patientProfileLogoutButton}
@@ -1353,16 +1303,24 @@ export default function ProfileScreen() {
         activeNavKey="profile"
         navVariant={role === 'donor' ? 'donor' : 'patient'}
         onNavPress={handleNavPress}
+        stickyContent={role === 'donor' ? (
+          <View style={[styles.profileStickyHeroHost, { backgroundColor: roles.pageBackground }]}>
+            {renderDonorProfileHero()}
+          </View>
+        ) : (
+          <View style={[styles.profileStickyHeroHost, styles.patientStickyHeroHost, { backgroundColor: roles.pageBackground }]}>
+            {renderPatientProfileHero()}
+          </View>
+        )}
         header={(
           <DashboardHeaderSurface>
             <DonorTopBar
               title={t('profile.title')}
               subtitle={t('profile.subtitle')}
               showBack
-              unreadCount={unreadCount}
+              showNotificationsAction={false}
               showLogoutAction={false}
               onBackPress={() => router.replace(role === 'donor' ? '/donor/home' : '/patient/home')}
-              onNotificationsPress={() => router.navigate(role === 'donor' ? '/donor/notifications' : '/patient/notifications')}
             />
           </DashboardHeaderSurface>
         )}
@@ -1536,7 +1494,11 @@ export default function ProfileScreen() {
                                       {...profileEditDateProps}
                                     />
                                     {setupDonorAgeBadge ? (
-                                      <View
+                                      <Pressable
+                                        accessibilityRole={isAdultDonorBadge || hasActiveGuardianConsent ? undefined : 'button'}
+                                        accessibilityLabel="Open guardian consent"
+                                        disabled={isAdultDonorBadge || hasActiveGuardianConsent}
+                                        onPress={openGuardianConsentModal}
                                         style={[
                                           styles.setupAgeBadge,
                                           setupDonorAgeBadge.tone === 'success'
@@ -1566,11 +1528,16 @@ export default function ProfileScreen() {
                                           </Text>
                                           {setupDonorAgeBadge.category !== 'Adult' ? (
                                             <Text style={styles.setupAgeBadgeHint}>
-                                              Complete guardian consent now so donation features are ready after account setup.
+                                              Guardian consent is required before this account can join donation events.
                                             </Text>
                                           ) : null}
                                         </View>
-                                      </View>
+                                        {!isAdultDonorBadge && !hasActiveGuardianConsent ? (
+                                          <View style={styles.setupAgeBadgeAction}>
+                                            <AppIcon name="chevronRight" size="sm" color="#8A5A00" />
+                                          </View>
+                                        ) : null}
+                                      </Pressable>
                                     ) : null}
                                   </View>
                                 );
@@ -1676,42 +1643,6 @@ export default function ProfileScreen() {
                         );
                       })}
 
-                      {isMinorProfileDraft ? (
-                        <Pressable
-                          onPress={async () => {
-                            await Haptics.selectionAsync();
-                            if (hasActiveGuardianConsent) return;
-                            openGuardianConsentModal();
-                          }}
-                          style={({ pressed }) => [
-                            styles.setupConsentPrompt,
-                            hasActiveGuardianConsent ? styles.setupConsentPromptDone : null,
-                            { opacity: pressed ? 0.84 : 1 },
-                          ]}
-                        >
-                          <View style={styles.setupConsentPromptIcon}>
-                            <AppIcon
-                              name={hasActiveGuardianConsent ? 'success' : 'shield'}
-                              size="sm"
-                              color={hasActiveGuardianConsent ? '#1E7A42' : theme.colors.brandPrimary}
-                            />
-                          </View>
-                          <View style={styles.setupConsentPromptCopy}>
-                            <Text style={styles.setupConsentPromptTitle}>
-                              {hasActiveGuardianConsent ? 'Guardian consent completed' : 'Guardian consent needed'}
-                            </Text>
-                            <Text style={styles.setupConsentPromptText}>
-                              {hasActiveGuardianConsent
-                                ? 'This account can continue to donation steps after the profile is saved.'
-                                : 'Ask a parent or legal guardian to review and complete this before saving.'}
-                            </Text>
-                          </View>
-                          {!hasActiveGuardianConsent ? (
-                            <AppIcon name="chevronRight" size="sm" color={theme.colors.brandPrimary} />
-                          ) : null}
-                        </Pressable>
-                      ) : null}
-
                     </ScrollView>
 
                     <View
@@ -1725,7 +1656,7 @@ export default function ProfileScreen() {
                     >
                       <ProfileModalActionButton
                         title="Cancel"
-                        icon="close"
+                        icon="arrow-left"
                         onPress={requestEditModalClose}
                         roles={roles}
                         variant="secondary"
@@ -1733,7 +1664,7 @@ export default function ProfileScreen() {
                       />
                       <ProfileModalActionButton
                         title={saveSuccess ? 'Saved' : 'Save changes'}
-                        icon={saveSuccess ? 'success' : 'save'}
+                        icon={saveSuccess ? 'check-circle-outline' : 'content-save-check-outline'}
                         loading={isSavingProfile}
                         disabled={isSavingProfile}
                         onPress={profileForm.handleSubmit(
@@ -1854,31 +1785,32 @@ export default function ProfileScreen() {
 
               <AppCard
                 variant="elevated"
-                radius="md"
-                padding="lg"
+                radius="xl"
+                padding="none"
                 style={[styles.guardianConsentModalCard, { maxHeight: modalMaxHeight }]}
-                contentStyle={styles.modalCardContent}
+                contentStyle={styles.guardianConsentModalContent}
               >
-                <View style={styles.guardianConsentHeader}>
+                <LinearGradient
+                  colors={[theme.colors.palette.wine900, roles.primaryActionBackground, theme.colors.palette.wine700]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.guardianConsentHeader}
+                >
+                  <View pointerEvents="none" style={styles.guardianConsentHeaderGlow} />
                   <View style={styles.guardianConsentHeaderIcon}>
-                    <AppIcon name="shield" color={theme.colors.brandPrimary} />
+                    <AppIcon name="shield-account-outline" color={roles.primaryActionText} size="lg" />
                   </View>
                   <View style={styles.guardianConsentHeaderCopy}>
-                    <Text style={styles.guardianConsentTitle}>Guardian Consent</Text>
-                    <Text style={styles.guardianConsentSubtitle}>
-                      Required because the entered birthdate is below 18 years old.
+                    <Text style={[styles.guardianConsentEyebrow, { color: roles.primaryActionText }]}>MINOR ACCOUNT</Text>
+                    <Text style={[styles.guardianConsentTitle, { color: roles.primaryActionText }]}>Guardian consent</Text>
+                    <Text style={[styles.guardianConsentSubtitle, { color: roles.primaryActionText }]}>
+                      A parent or legal guardian must review and approve participation.
                     </Text>
                   </View>
-                  <Pressable
-                    onPress={closeGuardianConsentModal}
-                    style={({ pressed }) => [styles.guardianConsentCloseButton, { opacity: pressed ? 0.72 : 1 }]}
-                  >
-                    <AppIcon name="close" size="sm" color={theme.colors.textSecondary} />
-                  </Pressable>
-                </View>
+                </LinearGradient>
 
                 <ScrollView
-                  style={[styles.modalBodyScroll, { maxHeight: modalMaxHeight - 170 }]}
+                  style={[styles.guardianConsentBodyScroll, { maxHeight: modalMaxHeight - 236 }]}
                   contentContainerStyle={styles.guardianConsentBody}
                   showsVerticalScrollIndicator={true}
                   keyboardShouldPersistTaps="handled"
@@ -1929,57 +1861,123 @@ export default function ProfileScreen() {
                   />
 
                   <View style={styles.guardianConsentNotice}>
-                    <Text style={styles.guardianConsentNoticeTitle}>
-                      Guardian Consent Agreement
-                    </Text>
-                    <Text style={styles.guardianConsentNoticeText}>
-                      {guardianConsentText}
-                    </Text>
+                    <View style={styles.guardianConsentNoticeHeader}>
+                      <View style={[styles.guardianConsentNoticeIcon, { backgroundColor: roles.iconPrimarySurface }]}>
+                        <AppIcon name="file-document-check-outline" size="sm" color={roles.primaryActionBackground} />
+                      </View>
+                      <View style={styles.guardianConsentNoticeHeadingCopy}>
+                        <Text style={[styles.guardianConsentNoticeTitle, { color: roles.headingText }]}>
+                          Consent document preview
+                        </Text>
+                        <Text style={[styles.guardianConsentNoticeMeta, { color: roles.metaText }]}>
+                          {isLoadingGuardianConsentDocument
+                            ? 'Loading the current consent...'
+                            : guardianConsentDocument?.version
+                              ? `Version ${guardianConsentDocument.version} · Tap the preview to read`
+                              : 'Tap the preview to read the complete document'}
+                        </Text>
+                      </View>
+                    </View>
+
+                    {isLoadingGuardianConsentDocument ? (
+                      <View style={styles.guardianConsentLoadingRow}>
+                        <ActivityIndicator size="small" color={roles.primaryActionBackground} />
+                        <Text style={[styles.guardianConsentLoadingText, { color: roles.bodyText }]}>Loading consent from the database</Text>
+                      </View>
+                    ) : guardianConsentDocumentError ? (
+                      <View style={styles.guardianConsentLoadError}>
+                        <View style={styles.guardianConsentLoadErrorCopy}>
+                          <AppIcon name="alert-circle-outline" size="sm" color={theme.colors.textError} />
+                          <Text style={styles.guardianConsentLoadErrorText}>{guardianConsentDocumentError}</Text>
+                        </View>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel="Retry loading guardian consent"
+                          onPress={loadGuardianConsentDocument}
+                          style={[styles.guardianConsentRetryButton, { borderColor: roles.primaryActionBackground }]}
+                        >
+                          <AppIcon name="refresh" size="sm" color={roles.primaryActionBackground} />
+                          <Text style={[styles.guardianConsentRetryText, { color: roles.primaryActionBackground }]}>Try again</Text>
+                        </Pressable>
+                      </View>
+                    ) : (
+                      <LegalDocumentPreview document={guardianConsentDocument} roles={roles} />
+                    )}
                   </View>
 
                   <View style={styles.guardianAgreementBlock}>
                     <Pressable
                       accessibilityRole="checkbox"
-                      accessibilityState={{ checked: Boolean(guardianConsentForm.guardianAgreementAccepted), disabled: isSavingGuardianConsent }}
-                      disabled={isSavingGuardianConsent}
+                      accessibilityLabel="Accept the guardian consent agreement"
+                      accessibilityState={{
+                        checked: Boolean(guardianConsentForm.guardianAgreementAccepted),
+                        disabled: isSavingGuardianConsent || isLoadingGuardianConsentDocument || !hasCurrentGuardianConsentDocument,
+                      }}
+                      disabled={isSavingGuardianConsent || isLoadingGuardianConsentDocument || !hasCurrentGuardianConsentDocument}
                       onPress={() => updateGuardianConsentField('guardianAgreementAccepted', !guardianConsentForm.guardianAgreementAccepted)}
-                      style={({ pressed }) => [
+                      android_ripple={{ color: theme.colors.surfacePressed, borderless: false }}
+                      style={[
                         styles.guardianAgreementRow,
-                        pressed ? styles.pressed : null,
+                        {
+                          backgroundColor: roles.supportCardBackground,
+                          borderColor: guardianConsentErrors.guardianAgreementAccepted
+                            ? theme.colors.borderError
+                            : roles.supportCardBorder,
+                        },
+                        isLoadingGuardianConsentDocument || !hasCurrentGuardianConsentDocument
+                          ? styles.guardianAgreementRowDisabled
+                          : null,
                       ]}
                     >
                       <View
                         style={[
                           styles.guardianAgreementCheckbox,
-                          guardianConsentForm.guardianAgreementAccepted ? styles.guardianAgreementCheckboxActive : null,
+                          guardianConsentForm.guardianAgreementAccepted
+                            ? {
+                                backgroundColor: roles.primaryActionBackground,
+                                borderColor: roles.primaryActionBackground,
+                              }
+                            : null,
                         ]}
                       >
                         {guardianConsentForm.guardianAgreementAccepted ? (
-                          <AppIcon name="checkmark" size="xs" state="inverse" />
+                          <AppIcon name="checkmark" size="sm" color={roles.primaryActionText} />
                         ) : null}
                       </View>
-                      <Text style={styles.guardianAgreementText}>
-                        As a guardian, I agree to the{' '}
-                        <Text style={styles.guardianAgreementLink}>Guardian Consent</Text>
-                        {' '}terms and confirm that the information I provided is true.
-                      </Text>
+                      <View style={styles.guardianAgreementCopy}>
+                        <Text style={[styles.guardianAgreementTitle, { color: roles.headingText }]}>Required confirmation</Text>
+                        <Text style={[styles.guardianAgreementText, { color: roles.bodyText }]}>
+                          I have read and agree to the{' '}
+                          <Text style={[styles.guardianAgreementLink, { color: roles.primaryActionBackground }]}>Guardian Consent</Text>
+                          . I confirm that I am authorized to provide consent and that the information above is correct.
+                        </Text>
+                      </View>
                     </Pressable>
                     {guardianConsentErrors.guardianAgreementAccepted ? (
                       <Text style={styles.guardianConsentError}>{guardianConsentErrors.guardianAgreementAccepted}</Text>
                     ) : null}
                   </View>
 
-                  <View style={styles.formActions}>
-                    <AppButton
-                      title="Save Guardian Consent"
-                      size="lg"
-                      loading={isSavingGuardianConsent}
-                      onPress={submitGuardianConsent}
-                      leading={<AppIcon name="save" state="inverse" />}
-                    />
-                    <AppTextLink title="Cancel" variant="muted" onPress={closeGuardianConsentModal} />
-                  </View>
                 </ScrollView>
+
+                <View style={[styles.guardianConsentFooter, { backgroundColor: roles.defaultCardBackground, borderTopColor: roles.defaultCardBorder }]}>
+                  <ProfileModalActionButton
+                    title="Cancel"
+                    icon="arrow-left"
+                    onPress={closeGuardianConsentModal}
+                    roles={roles}
+                    variant="secondary"
+                    disabled={isSavingGuardianConsent}
+                  />
+                  <ProfileModalActionButton
+                    title="Save consent"
+                    icon="shield-check-outline"
+                    loading={isSavingGuardianConsent}
+                    onPress={submitGuardianConsent}
+                    roles={roles}
+                    disabled={isLoadingGuardianConsentDocument || !hasCurrentGuardianConsentDocument}
+                  />
+                </View>
               </AppCard>
             </View>
           </KeyboardAvoidingView>
@@ -2330,8 +2328,19 @@ export default function ProfileScreen() {
 
 const styles = StyleSheet.create({
   profileMainShell: {
-    gap: theme.spacing.lg,
-    paddingTop: theme.spacing.sm,
+    gap: theme.spacing.xl,
+    paddingTop: theme.spacing.md,
+    paddingBottom: theme.spacing.md,
+  },
+  profileStickyHeroHost: {
+    width: '100%',
+    alignSelf: 'stretch',
+    paddingBottom: 2,
+  },
+  patientStickyHeroHost: {
+    paddingTop: 0,
+    paddingBottom: theme.spacing.xs,
+    zIndex: 2,
   },
   profileTopAppBar: {
     minHeight: 56,
@@ -2362,51 +2371,95 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
   profileHeroPanel: {
+    position: 'relative',
+    width: '100%',
+    alignSelf: 'stretch',
+    alignItems: 'stretch',
+    overflow: 'hidden',
+    borderRadius: 26,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.22)',
+    padding: theme.spacing.md,
+    gap: 10,
+    ...theme.shadows.card,
+  },
+  profileHeroGlowLarge: {
+    position: 'absolute',
+    width: 190,
+    height: 190,
+    borderRadius: 95,
+    right: -62,
+    top: -102,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
+  profileHeroGlowSmall: {
+    position: 'absolute',
+    width: 110,
+    height: 110,
+    borderRadius: 55,
+    left: -52,
+    bottom: -68,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+  },
+  profileHeroIdentityRow: {
+    width: '100%',
+    alignSelf: 'stretch',
+    flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.sm,
+    gap: theme.spacing.sm,
   },
   profileHeroPhotoButton: {
     position: 'relative',
-    marginBottom: theme.spacing.xs,
+    flexShrink: 0,
   },
   profileHeroPhoto: {
-    width: 72,
-    height: 72,
+    width: 68,
+    height: 68,
     borderRadius: theme.radius.full,
     overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: theme.colors.surfaceCard,
+    backgroundColor: '#FFF7F9',
     borderWidth: 3,
-    borderColor: theme.colors.surfaceCard,
+    borderColor: 'rgba(255,255,255,0.82)',
+  },
+  profileHeroPhotoBadge: {
+    position: 'absolute',
+    right: -2,
+    bottom: -2,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
+    borderWidth: 2,
+    borderColor: theme.colors.palette.wine700,
   },
   profileHeroCopyCentered: {
-    alignItems: 'center',
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'flex-start',
     gap: theme.spacing.xs,
-    width: '100%',
   },
   profileHeroDisplayName: {
-    maxWidth: '94%',
-    textAlign: 'center',
+    width: '100%',
     fontFamily: theme.typography.fontFamilyDisplay,
-    fontSize: theme.typography.semantic.bodyLg,
-    lineHeight: theme.typography.semantic.bodyLg * theme.typography.lineHeights.snug,
+    fontSize: theme.typography.semantic.titleSm,
+    lineHeight: theme.typography.semantic.titleSm * theme.typography.lineHeights.snug,
     fontWeight: theme.typography.weights.bold,
-    color: theme.colors.textPrimary,
+    color: '#FFFFFF',
   },
   profileHeroContactRow: {
     width: '100%',
     flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexWrap: 'nowrap',
-    gap: 6,
+    alignItems: 'flex-start',
+    gap: 5,
   },
   profileHeroContactItem: {
+    width: '100%',
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
     gap: 6,
     minWidth: 0,
   },
@@ -2414,43 +2467,92 @@ const styles = StyleSheet.create({
     flexShrink: 1,
     minWidth: 0,
     fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.semantic.bodySm,
-    textAlign: 'center',
+    fontSize: theme.typography.semantic.caption,
+    color: '#F9EDEF',
   },
   profileHeroMetricsRow: {
     width: '100%',
+    alignSelf: 'stretch',
     flexDirection: 'row',
-    flexWrap: 'nowrap',
     alignItems: 'stretch',
-    justifyContent: 'space-between',
-    gap: theme.spacing.xs,
-    marginTop: theme.spacing.xs,
+    justifyContent: 'flex-start',
+    gap: theme.spacing.sm,
+  },
+  profileHeroMetricPressable: {
+    flexGrow: 1,
+    flexShrink: 1,
+    flexBasis: 0,
+    minWidth: 0,
+    maxWidth: '50%',
+    alignSelf: 'stretch',
+    borderRadius: 16,
+    overflow: 'hidden',
+    ...theme.shadows.soft,
   },
   profileHeroMetricCard: {
     flex: 1,
-    minWidth: 0,
-    minHeight: 66,
+    alignSelf: 'stretch',
+    minHeight: 52,
     borderWidth: 1,
-    borderRadius: 14,
-    paddingVertical: 3,
-    paddingHorizontal: theme.spacing.sm,
+    borderColor: 'rgba(116,20,43,0.08)',
+    borderRadius: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    gap: 6,
+  },
+  profileHeroMetricCardPressed: {
+    opacity: 0.82,
+    transform: [{ scale: 0.98 }],
+  },
+  profileHeroMetricIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 1,
-    ...theme.shadows.soft,
+    flexShrink: 0,
+    borderWidth: 1,
+    borderColor: 'rgba(116,20,43,0.10)',
+    backgroundColor: 'rgba(116,20,43,0.08)',
   },
-  profileHeroMetricValue: {
-    fontFamily: theme.typography.fontFamilyDisplay,
-    fontSize: theme.typography.semantic.bodyLg,
-    fontWeight: theme.typography.weights.bold,
-    lineHeight: theme.typography.semantic.bodyLg * theme.typography.lineHeights.tight,
+  profileHeroMetricIconEmphasized: {
+    borderColor: 'rgba(255,255,255,0.18)',
+    backgroundColor: 'rgba(255,255,255,0.16)',
   },
-  profileHeroMetricLabel: {
+  profileHeroMetricTitle: {
+    flex: 1,
+    minWidth: 0,
     fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.semantic.body,
-    fontWeight: theme.typography.weights.semibold,
-    lineHeight: theme.typography.semantic.body * theme.typography.lineHeights.snug,
-    textAlign: 'center',
+    fontSize: theme.typography.compact.bodySm,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.palette.wine900,
+  },
+  profileHeroMetricTitleEmphasized: {
+    color: '#FFFFFF',
+  },
+  profileHeroMetricCount: {
+    minWidth: 24,
+    height: 24,
+    borderRadius: 12,
+    paddingHorizontal: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    backgroundColor: 'rgba(114,20,43,0.10)',
+  },
+  profileHeroMetricCountEmphasized: {
+    backgroundColor: 'rgba(255,255,255,0.18)',
+  },
+  profileHeroMetricCountText: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.compact.bodySm,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.palette.wine900,
+  },
+  profileHeroMetricCountTextEmphasized: {
+    color: '#FFFFFF',
   },
   profileActionGradientBorder: {
     flex: 1,
@@ -2487,10 +2589,33 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   profileSection: {
-    gap: theme.spacing.sm,
+    gap: theme.spacing.md,
   },
   profileSectionHeader: {
     paddingHorizontal: theme.spacing.xs,
+  },
+  profileSectionHeadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    paddingHorizontal: 2,
+  },
+  profileSectionHeadingIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...theme.shadows.soft,
+  },
+  profileSectionHeadingText: {
+    flex: 1,
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.body,
+    fontWeight: theme.typography.weights.bold,
+  },
+  profileDonorSectionShell: {
+    gap: theme.spacing.sm,
   },
   profileSectionShell: {
     overflow: 'hidden',
@@ -2509,20 +2634,20 @@ const styles = StyleSheet.create({
     color: theme.colors.textSecondary,
   },
   profileMenuRow: {
-    minHeight: 64,
+    minHeight: 70,
     flexDirection: 'row',
     alignItems: 'center',
     gap: theme.spacing.sm,
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.sm,
-    backgroundColor: 'transparent',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: theme.colors.borderSubtle,
+    borderWidth: 1,
+    borderRadius: 18,
+    ...theme.shadows.soft,
   },
   profileMenuIconWrap: {
-    width: 38,
-    height: 38,
-    borderRadius: theme.radius.full,
+    width: 42,
+    height: 42,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.colors.surfaceSoft,
@@ -2579,21 +2704,21 @@ const styles = StyleSheet.create({
   },
   profileMoreRow: {
     width: '100%',
-    minHeight: 64,
+    minHeight: 70,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: theme.spacing.sm,
     paddingHorizontal: theme.spacing.md,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: theme.colors.borderSubtle,
-    backgroundColor: 'transparent',
     paddingVertical: theme.spacing.sm,
+    borderWidth: 1,
+    borderRadius: 18,
+    ...theme.shadows.soft,
   },
   profileMoreIconWrap: {
-    width: 38,
-    height: 38,
-    borderRadius: theme.radius.full,
+    width: 42,
+    height: 42,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: theme.colors.surfaceSoft,
@@ -2622,7 +2747,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   profileRowLast: {
-    borderBottomWidth: 0,
+    borderBottomWidth: 1,
   },
   profileLogoutSection: {
     width: '100%',
@@ -2646,75 +2771,175 @@ const styles = StyleSheet.create({
   },
   patientProfileShell: {
     gap: theme.spacing.lg,
-    paddingTop: theme.spacing.sm,
+    paddingTop: theme.spacing.md,
     paddingBottom: theme.spacing.lg,
   },
   patientProfileHero: {
+    position: 'relative',
+    overflow: 'hidden',
+    borderRadius: 24,
+    padding: theme.spacing.lg,
+    ...theme.shadows.card,
+  },
+  patientProfileHeroGlow: {
+    position: 'absolute',
+    width: 150,
+    height: 150,
+    borderRadius: 75,
+    right: -46,
+    top: -82,
+    backgroundColor: 'rgba(255,255,255,0.10)',
+  },
+  patientProfileIdentityRow: {
+    flexDirection: 'row',
     alignItems: 'center',
-    gap: 2,
-    paddingTop: theme.spacing.xs,
+    gap: theme.spacing.md,
   },
   patientProfileAvatarButton: {
     position: 'relative',
-    marginBottom: theme.spacing.sm,
+    flexShrink: 0,
   },
   patientProfileAvatar: {
-    width: 94,
-    height: 94,
+    width: 82,
+    height: 82,
     borderRadius: theme.radius.full,
     overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 4,
+    backgroundColor: '#FFF9FA',
+    borderColor: 'rgba(255,255,255,0.72)',
+    borderWidth: 3,
     ...theme.shadows.soft,
   },
   patientProfileAvatarText: {
     fontFamily: theme.typography.fontFamilyDisplay,
     fontSize: theme.typography.semantic.bodyLg,
     fontWeight: theme.typography.weights.bold,
+    color: theme.colors.palette.wine800,
   },
-  patientProfileVerifiedBadge: {
+  patientProfileCameraBadge: {
     position: 'absolute',
-    right: 4,
-    bottom: 4,
-    width: 28,
-    height: 28,
+    right: -2,
+    bottom: -2,
+    width: 30,
+    height: 30,
     borderRadius: theme.radius.full,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 4,
+    borderWidth: 2,
+    borderColor: theme.colors.palette.wine800,
+    backgroundColor: '#FFFFFF',
+  },
+  patientProfileIdentityCopy: {
+    flex: 1,
+    minWidth: 0,
+    alignItems: 'flex-start',
+    gap: 7,
   },
   patientProfileName: {
-    maxWidth: '92%',
-    textAlign: 'center',
+    maxWidth: '100%',
     fontFamily: theme.typography.fontFamilyDisplay,
     fontSize: theme.typography.semantic.titleSm,
     lineHeight: theme.typography.semantic.titleSm * theme.typography.lineHeights.snug,
     fontWeight: theme.typography.weights.bold,
+    color: '#FFFFFF',
   },
   patientProfileStatusPill: {
-    minHeight: 30,
+    minHeight: 28,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
     borderRadius: theme.radius.full,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: 6,
-    marginTop: theme.spacing.xs,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: 5,
+    backgroundColor: 'rgba(255,255,255,0.16)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255,255,255,0.32)',
   },
   patientProfileStatusText: {
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.semantic.caption,
     fontWeight: theme.typography.weights.bold,
+    color: '#FFFFFF',
   },
   patientProfileCode: {
-    maxWidth: '90%',
+    maxWidth: '100%',
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.semantic.caption,
     fontWeight: theme.typography.weights.semibold,
+    color: '#F7DDE4',
   },
   patientProfileGrid: {
     gap: theme.spacing.lg,
+  },
+  patientMedicalAccessButton: {
+    width: '100%',
+    borderRadius: 22,
+  },
+  patientMedicalAccessButtonPressed: {
+    opacity: 0.88,
+    transform: [{ scale: 0.985 }],
+  },
+  patientMedicalAccessCard: {
+    minHeight: 132,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    borderWidth: 1,
+    borderRadius: 22,
+    padding: theme.spacing.md,
+    overflow: 'hidden',
+    ...theme.shadows.soft,
+  },
+  patientMedicalAccessIcon: {
+    width: 54,
+    height: 54,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  patientMedicalAccessCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 4,
+  },
+  patientMedicalAccessTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.body,
+    fontWeight: theme.typography.weights.bold,
+  },
+  patientMedicalAccessText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.caption,
+    lineHeight: 17,
+  },
+  patientMedicalAccessBadge: {
+    alignSelf: 'flex-start',
+    minHeight: 26,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    borderRadius: theme.radius.full,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: 4,
+    marginTop: 3,
+  },
+  patientMedicalAccessBadgeText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    fontWeight: theme.typography.weights.bold,
+  },
+  patientMedicalAccessArrow: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  patientSettingsList: {
+    gap: theme.spacing.sm,
   },
   patientProfileCard: {
     gap: theme.spacing.md,
@@ -2782,8 +3007,9 @@ const styles = StyleSheet.create({
     fontWeight: theme.typography.weights.bold,
   },
   patientProfileLogoutButton: {
-    minWidth: 148,
-    borderRadius: theme.radius.full,
+    width: '100%',
+    minHeight: 52,
+    borderRadius: theme.radius.lg,
     backgroundColor: theme.colors.surfaceCard,
   },
   donorProfileShell: {
@@ -2897,7 +3123,7 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.sm,
-    marginTop: -theme.spacing.xs,
+    marginTop: theme.spacing.xs,
     marginBottom: theme.spacing.sm,
     borderWidth: 1,
   },
@@ -2908,7 +3134,7 @@ const styles = StyleSheet.create({
     borderRadius: theme.radius.pill,
     paddingHorizontal: theme.spacing.sm,
     paddingVertical: theme.spacing.xs,
-    marginTop: -theme.spacing.xxs,
+    marginTop: theme.spacing.xs,
     marginBottom: theme.spacing.xxs,
     minHeight: 0,
   },
@@ -2949,48 +3175,15 @@ const styles = StyleSheet.create({
   setupAgeBadgeTextWarning: {
     color: '#8A5A00',
   },
-  setupConsentPrompt: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    minHeight: 62,
-    borderRadius: 20,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.sm,
-    marginTop: -theme.spacing.xs,
-    marginBottom: theme.spacing.sm,
-    backgroundColor: theme.colors.surfaceCard,
-    borderWidth: 1,
-    borderColor: theme.colors.borderSubtle,
-    ...theme.shadows.soft,
-  },
-  setupConsentPromptDone: {
-    backgroundColor: '#EAF8EF',
-    borderColor: '#BFE8CD',
-  },
-  setupConsentPromptIcon: {
-    width: 38,
-    height: 38,
-    borderRadius: 14,
+  setupAgeBadgeAction: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: theme.colors.brandPrimaryMuted,
-  },
-  setupConsentPromptCopy: {
-    flex: 1,
-    gap: 2,
-  },
-  setupConsentPromptTitle: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.bodySm,
-    fontWeight: theme.typography.weights.bold,
-    color: theme.colors.textPrimary,
-  },
-  setupConsentPromptText: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.caption,
-    lineHeight: theme.typography.compact.caption * theme.typography.lineHeights.relaxed,
-    color: theme.colors.textSecondary,
+    alignSelf: 'center',
+    backgroundColor: 'rgba(138, 90, 0, 0.10)',
+    flexShrink: 0,
   },
   donorActionPanel: {
     marginTop: -theme.spacing.xl,
@@ -3409,8 +3602,28 @@ const styles = StyleSheet.create({
   profileEditFieldShell: {
     minHeight: 52,
     borderRadius: 16,
-    shadowOpacity: 0,
-    elevation: 0,
+    shadowColor: theme.colors.palette.wine900,
+    shadowOffset: { width: 0, height: 4 },
+    shadowRadius: 10,
+    shadowOpacity: 0.06,
+    elevation: 1,
+  },
+  profileEditInputIconSurface: {
+    left: 10,
+    top: 9,
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+  },
+  profileEditFieldIconSurface: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+  },
+  profileEditFieldActionSurface: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
   },
   profileEditFieldText: {
     fontSize: theme.typography.semantic.body,
@@ -3533,8 +3746,8 @@ const styles = StyleSheet.create({
   },
   editModalActionButton: {
     width: '100%',
-    minHeight: 50,
-    borderRadius: theme.radius.pill,
+    minHeight: 52,
+    borderRadius: 18,
     overflow: 'hidden',
   },
   editModalActionSlot: {
@@ -3542,15 +3755,31 @@ const styles = StyleSheet.create({
     minWidth: 0,
     ...theme.shadows.soft,
   },
+  editModalActionGradientBorder: {
+    width: '100%',
+    minHeight: 52,
+    borderRadius: 18,
+    padding: 2,
+    overflow: 'hidden',
+  },
   editModalActionContent: {
     width: '100%',
-    minHeight: 50,
-    borderRadius: theme.radius.pill,
-    borderWidth: 1,
+    minHeight: 48,
+    borderRadius: 16,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: theme.spacing.sm,
+    overflow: 'hidden',
+  },
+  editModalActionShine: {
+    position: 'absolute',
+    top: -42,
+    left: 18,
+    width: 34,
+    height: 136,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    transform: [{ rotate: '22deg' }],
   },
   editModalActionText: {
     marginLeft: 6,
@@ -3571,64 +3800,101 @@ const styles = StyleSheet.create({
     width: '100%',
     alignSelf: 'center',
     maxWidth: theme.layout.authCardMaxWidth,
-    borderRadius: 18,
+    borderRadius: 28,
     minHeight: 0,
     overflow: 'hidden',
     flexShrink: 1,
+    ...theme.shadows.card,
+  },
+  guardianConsentModalContent: {
+    minHeight: 0,
+    overflow: 'hidden',
   },
   guardianConsentHeader: {
+    minHeight: 126,
     flexDirection: 'row',
     alignItems: 'center',
     gap: theme.spacing.sm,
-    paddingBottom: theme.spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.borderSubtle,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.lg,
+    overflow: 'hidden',
+  },
+  guardianConsentHeaderGlow: {
+    position: 'absolute',
+    width: 150,
+    height: 150,
+    borderRadius: 75,
+    right: -45,
+    top: -86,
+    backgroundColor: 'rgba(255, 255, 255, 0.10)',
   },
   guardianConsentHeaderIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 16,
+    width: 52,
+    height: 52,
+    borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: theme.colors.brandPrimaryMuted,
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.22)',
+    flexShrink: 0,
   },
   guardianConsentHeaderCopy: {
     flex: 1,
+    minWidth: 0,
     gap: 2,
   },
-  guardianConsentTitle: {
+  guardianConsentEyebrow: {
     fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.semantic.bodyLg,
+    fontSize: 10,
     fontWeight: theme.typography.weights.bold,
-    color: theme.colors.textPrimary,
+    letterSpacing: 1.2,
+    opacity: 0.76,
+  },
+  guardianConsentTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.titleSm,
+    fontWeight: theme.typography.weights.bold,
   },
   guardianConsentSubtitle: {
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.caption,
     lineHeight: theme.typography.compact.caption * theme.typography.lineHeights.relaxed,
-    color: theme.colors.textSecondary,
+    opacity: 0.82,
   },
-  guardianConsentCloseButton: {
-    width: 40,
-    height: 40,
-    borderRadius: theme.radius.full,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: theme.colors.surfaceSoft,
+  guardianConsentBodyScroll: {
+    minHeight: 0,
   },
   guardianConsentBody: {
-    paddingTop: theme.spacing.md,
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.lg,
     paddingBottom: theme.spacing.xl,
   },
   guardianConsentNotice: {
+    marginTop: theme.spacing.xs,
+    marginBottom: theme.spacing.lg,
+    paddingBottom: theme.spacing.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.borderSubtle,
+  },
+  guardianConsentNoticeHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
     marginBottom: theme.spacing.md,
-    borderRadius: 18,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.md,
-    backgroundColor: theme.colors.surfaceSoft,
-    borderWidth: 1,
-    borderColor: theme.colors.borderSubtle,
-    gap: theme.spacing.xs,
+  },
+  guardianConsentNoticeIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.brandPrimaryMuted,
+    flexShrink: 0,
+  },
+  guardianConsentNoticeHeadingCopy: {
+    flex: 1,
+    minWidth: 0,
   },
   guardianConsentNoticeTitle: {
     fontFamily: theme.typography.fontFamily,
@@ -3636,41 +3902,103 @@ const styles = StyleSheet.create({
     fontWeight: theme.typography.weights.bold,
     color: theme.colors.textPrimary,
   },
+  guardianConsentNoticeMeta: {
+    marginTop: 2,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 16,
+  },
   guardianConsentNoticeText: {
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.bodySm,
     lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.relaxed,
     color: theme.colors.textSecondary,
   },
-  guardianAgreementBlock: {
-    gap: 4,
-    marginBottom: theme.spacing.sm,
-  },
-  guardianAgreementRow: {
+  guardianConsentLoadingRow: {
+    minHeight: 72,
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-  },
-  guardianAgreementCheckbox: {
-    width: 18,
-    height: 18,
-    borderRadius: 4,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1.5,
-    borderColor: theme.colors.borderSubtle,
-    backgroundColor: theme.colors.surfaceCard,
-    marginTop: 1,
+    gap: theme.spacing.sm,
   },
-  guardianAgreementCheckboxActive: {
-    backgroundColor: theme.colors.brandPrimary,
-    borderColor: theme.colors.brandPrimary,
+  guardianConsentLoadingText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
   },
-  guardianAgreementText: {
+  guardianConsentLoadError: {
+    gap: theme.spacing.md,
+  },
+  guardianConsentLoadErrorCopy: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: theme.spacing.sm,
+  },
+  guardianConsentLoadErrorText: {
     flex: 1,
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.bodySm,
-    lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.normal,
+    lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.relaxed,
+    color: theme.colors.textError,
+  },
+  guardianConsentRetryButton: {
+    minHeight: 38,
+    alignSelf: 'flex-start',
+    paddingHorizontal: theme.spacing.md,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.xs,
+  },
+  guardianConsentRetryText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+    fontWeight: theme.typography.weights.bold,
+  },
+  guardianAgreementBlock: {
+    gap: theme.spacing.xs,
+    marginBottom: theme.spacing.sm,
+  },
+  guardianAgreementRow: {
+    minHeight: 76,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: theme.spacing.md,
+    padding: theme.spacing.md,
+    borderRadius: 16,
+    borderWidth: 1,
+    overflow: 'hidden',
+  },
+  guardianAgreementRowDisabled: {
+    opacity: 0.52,
+  },
+  guardianAgreementCheckbox: {
+    width: 24,
+    height: 24,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: theme.colors.borderStrong,
+    backgroundColor: theme.colors.surfaceCard,
+    marginTop: 2,
+    flexShrink: 0,
+  },
+  guardianAgreementCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  guardianAgreementTitle: {
+    marginBottom: 3,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+    fontWeight: theme.typography.weights.bold,
+  },
+  guardianAgreementText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+    lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.relaxed,
     color: theme.colors.textPrimary,
   },
   guardianAgreementLink: {
@@ -3679,10 +4007,20 @@ const styles = StyleSheet.create({
     color: theme.colors.brandPrimary,
   },
   guardianConsentError: {
-    marginLeft: 28,
+    marginTop: 2,
+    marginLeft: 36,
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.caption,
     color: theme.colors.textError,
+  },
+  guardianConsentFooter: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.md,
+    paddingBottom: theme.spacing.lg,
+    borderTopWidth: 1,
   },
   documentModal: {
     flex: 1,

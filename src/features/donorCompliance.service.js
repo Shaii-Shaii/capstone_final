@@ -8,6 +8,8 @@ export const DONOR_PERMISSION_REASONS = {
   databaseFailure: 'DATABASE_FAILURE',
 };
 
+export const MINOR_CONSENT_DOCUMENT_TYPE = 'consent_for_minors';
+
 export const GUARDIAN_CONSENT_TEXT = 'I confirm that I am the parent or legal guardian of this minor donor. I allow the minor donor to participate in the hair donation process through Donivra. I understand that the system may collect and process the minor donor’s profile information, hair donation details, and submitted hair images for AI-assisted initial screening, donation tracking, and coordination with authorized personnel. I understand that final acceptance of donated hair will still be reviewed by authorized personnel.';
 
 const legalDocumentTypeAliases = {
@@ -51,6 +53,8 @@ const normalizeLegalDocument = (row = null) => {
     file_path: normalizeStoragePath(rawFilePath, fileBucket),
     file_bucket: fileBucket,
     is_active: row.Is_Active ?? row.is_active ?? false,
+    effective_at: row.Effective_At || row.effective_at || null,
+    created_at: row.Created_At || row.created_at || null,
   };
 };
 
@@ -536,6 +540,64 @@ export const fetchActiveLegalDocument = async (documentType = 'Terms and Conditi
     return {
       data: null,
       error: new Error(`${documentType} document could not be loaded. Please try again.`),
+    };
+  }
+};
+
+export const fetchActiveMinorConsentDocument = async () => {
+  try {
+    const result = await supabase
+      .from(legalDocumentsTable)
+      .select(`
+        legal_document_id,
+        document_type,
+        version,
+        title,
+        content,
+        is_active,
+        effective_at,
+        created_at,
+        file_path
+      `)
+      .eq('document_type', MINOR_CONSENT_DOCUMENT_TYPE)
+      .eq('is_active', true)
+      .order('effective_at', { ascending: false, nullsFirst: false })
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (result.error) throw result.error;
+
+    const document = normalizeLegalDocument(result.data || null);
+    if (!document?.legal_document_id || !String(document.content || '').trim()) {
+      return {
+        data: null,
+        error: new Error('Guardian consent document is not available yet.'),
+      };
+    }
+
+    const pdfUrl = await resolveLegalDocumentPdfUrl(document);
+    if (document.file_path && !pdfUrl) {
+      return {
+        data: null,
+        error: new Error('The guardian consent PDF is not available right now.'),
+      };
+    }
+
+    return {
+      data: {
+        ...document,
+        pdf_url: pdfUrl,
+      },
+      error: null,
+    };
+  } catch (error) {
+    logAppError('legal_document.fetch_minor_consent', error, {
+      documentType: MINOR_CONSENT_DOCUMENT_TYPE,
+    });
+    return {
+      data: null,
+      error: new Error('Guardian consent could not be loaded. Please try again.'),
     };
   }
 };

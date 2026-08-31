@@ -433,64 +433,48 @@ export const SignupForm = ({
         name="acceptedLegal"
         render={({ field: { onChange, value } }) => (
           <View style={styles.legalBlock}>
-            <Pressable
-              accessibilityRole="checkbox"
-              accessibilityLabel="Agree to the Terms of Service and Privacy Policy"
-              accessibilityState={{ checked: Boolean(value), disabled: isLoading }}
-              disabled={isLoading}
-              onPress={() => {
-                onFieldEdit?.();
-                onChange(!value);
-              }}
-              style={({ pressed }) => [
+            <View
+              style={[
                 styles.legalConsentCard,
                 {
                   borderColor: value ? roles.primaryActionBackground : roles.defaultCardBorder,
                   backgroundColor: value ? roles.iconPrimarySurface : theme.colors.surfaceCard,
                 },
-                pressed ? styles.legalConsentCardPressed : null,
                 isLoading ? styles.legalConsentCardDisabled : null,
               ]}
             >
-              <View pointerEvents="none" style={styles.legalConsentRow}>
-                <View style={styles.checkbox}>
+              <View style={styles.legalConsentRow}>
+                <Pressable
+                  accessibilityRole="checkbox"
+                  accessibilityLabel="Agree to the Terms of Service and Privacy Policy"
+                  accessibilityState={{ checked: Boolean(value), disabled: isLoading }}
+                  disabled={isLoading}
+                  hitSlop={8}
+                  onPress={() => {
+                    onFieldEdit?.();
+                    onChange(!value);
+                  }}
+                  style={({ pressed }) => [styles.checkbox, pressed ? styles.pressed : null]}
+                >
                   <MaterialCommunityIcons
                     name={value ? 'checkbox-marked' : 'checkbox-blank-outline'}
                     size={30}
                     color={roles.primaryActionBackground}
                     allowFontScaling={false}
                   />
-                </View>
-                <Text numberOfLines={2} style={[styles.legalTitle, { color: roles.headingText }]}>I agree to the terms and privacy policy</Text>
+                </Pressable>
+                <Text style={[styles.legalTitle, { color: roles.headingText }]}>
+                  I agree to the{' '}
+                  <Text
+                    accessibilityRole="link"
+                    onPress={openTermsModal}
+                    style={[styles.legalInlineLink, { color: roles.primaryActionBackground }]}
+                  >
+                    Terms of Service and Privacy Policy
+                  </Text>
+                  .
+                </Text>
               </View>
-            </Pressable>
-
-            <View style={styles.legalLinksRow}>
-              <Pressable
-                accessibilityRole="link"
-                accessibilityLabel="Read Terms of Service"
-                hitSlop={6}
-                onPress={openTermsModal}
-                style={({ pressed }) => [styles.legalLinkButton, pressed ? styles.pressed : null]}
-              >
-                <View style={styles.legalLinkIconWrap}>
-                  <MaterialCommunityIcons name="file-document-outline" size={16} color={roles.primaryActionBackground} allowFontScaling={false} />
-                </View>
-                <Text numberOfLines={1} maxFontSizeMultiplier={1.2} style={[styles.legalInlineLink, { color: roles.primaryActionBackground }]}>Terms of Service</Text>
-              </Pressable>
-              <View style={[styles.legalLinkDivider, { backgroundColor: roles.defaultCardBorder }]} />
-              <Pressable
-                accessibilityRole="link"
-                accessibilityLabel="Read Privacy Policy"
-                hitSlop={6}
-                onPress={openTermsModal}
-                style={({ pressed }) => [styles.legalLinkButton, pressed ? styles.pressed : null]}
-              >
-                <View style={styles.legalLinkIconWrap}>
-                  <MaterialCommunityIcons name="shield-lock-outline" size={16} color={roles.primaryActionBackground} allowFontScaling={false} />
-                </View>
-                <Text numberOfLines={1} maxFontSizeMultiplier={1.2} style={[styles.legalInlineLink, { color: roles.primaryActionBackground }]}>Privacy Policy</Text>
-              </Pressable>
             </View>
             {errors.acceptedLegal?.message ? (
               <Text style={styles.legalErrorText}>{errors.acceptedLegal.message}</Text>
@@ -601,10 +585,6 @@ const styles = StyleSheet.create({
     gap: theme.spacing.sm,
     paddingHorizontal: theme.spacing.xs,
   },
-  legalConsentCardPressed: {
-    opacity: 0.78,
-    transform: [{ scale: 0.99 }],
-  },
   legalConsentCardDisabled: {
     opacity: 0.55,
   },
@@ -623,41 +603,12 @@ const styles = StyleSheet.create({
     fontWeight: theme.typography.weights.semibold,
     textAlign: 'left',
   },
-  legalLinksRow: {
-    minHeight: 36,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: theme.spacing.md,
-    paddingHorizontal: theme.spacing.xs,
-  },
-  legalLinkButton: {
-    minHeight: 36,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 5,
-    flexShrink: 1,
-    paddingHorizontal: theme.spacing.xs,
-  },
-  legalLinkIconWrap: {
-    width: 20,
-    height: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-  },
-  legalLinkDivider: {
-    width: 1,
-    height: 18,
-  },
   legalInlineLink: {
     fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.semantic.caption,
+    fontSize: theme.typography.semantic.bodySm,
+    lineHeight: 19,
     fontWeight: theme.typography.weights.semibold,
     textDecorationLine: 'underline',
-    textAlign: 'center',
-    flexShrink: 1,
   },
   legalErrorText: {
     marginTop: 0,

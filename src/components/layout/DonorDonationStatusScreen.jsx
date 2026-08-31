@@ -16,6 +16,7 @@ import { AppInput } from '../ui/AppInput';
 import { StatusBanner } from '../ui/StatusBanner';
 import { DonivraLoadingOverlay } from '../ui/DonivraLoadingOverlay';
 import { DonorTabHeader } from '../donor/DonorTabHeader';
+import { ProfileCompletionGateModal } from '../donor/ProfileCompletionGateModal';
 import { donorDashboardNavItems } from '../../constants/dashboard';
 import { useAuth } from '../../providers/AuthProvider';
 import { useLanguage } from '../../providers/LanguageProvider';
@@ -43,7 +44,7 @@ import {
   linkDonationRecipient,
   cancelDonorDonation,
 } from '../../features/donorDonations.service';
-import { createDonationDriveRegistration } from '../../features/donorHome.api';
+import { createDonationDriveRegistration, unlockPrivateEventAccess } from '../../features/donorHome.api';
 import { fetchLatestLogisticsSettings, updateHairSubmissionById, updateHairSubmissionDetailById } from '../../features/hairSubmission.api';
 import { hairDonationModeOptions } from '../../features/hairSubmission.constants';
 import { buildProfileCompletionMeta } from '../../features/profile/services/profile.service';
@@ -147,6 +148,21 @@ const getFriendlyDonationModuleError = (error = '') => {
   }
 
   return text;
+};
+
+const extractDriveIdFromPrivateUnlock = (payload) => {
+  const candidates = Array.isArray(payload) ? payload : [payload];
+  for (const item of candidates) {
+    const driveId = Number(
+      item?.donation_drive_id
+      || item?.event_request_id
+      || item?.Event_Request_ID
+      || item?.drive_id
+      || item?.event_id
+    );
+    if (Number.isFinite(driveId) && driveId > 0) return driveId;
+  }
+  return null;
 };
 
 const getFriendlyDonationActionError = (error = '', fallback = 'Unable to save the donation right now.') => {
@@ -1389,6 +1405,152 @@ function DonationEventCard({ roles, drive, onOpenDetails }) {
   );
 }
 
+function PrivateEventCodeCard({ roles, onPress }) {
+  const { language } = useLanguage();
+  const isFilipino = language === 'fil';
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={isFilipino ? 'Maglagay ng code para sa pribadong event' : 'Enter a private event code'}
+      onPress={onPress}
+      style={({ pressed }) => [styles.privateEventCodePressable, pressed ? styles.eventFeedPressed : null]}
+    >
+      <LinearGradient
+        colors={[theme.colors.palette.wine900, theme.colors.palette.wine700, '#8F2944']}
+        start={{ x: 0, y: 0.35 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.privateEventCodeCard}
+      >
+        <View pointerEvents="none" style={styles.privateEventCodeGlow} />
+        <View style={styles.privateEventCodeIcon}>
+          <MaterialCommunityIcons name="lock-outline" size={24} color={roles.primaryActionBackground} />
+        </View>
+        <View style={styles.privateEventCodeCopy}>
+          <Text style={styles.privateEventCodeEyebrow}>{isFilipino ? 'PRIBADONG EVENT' : 'PRIVATE EVENT'}</Text>
+          <Text style={styles.privateEventCodeTitle}>{isFilipino ? 'May event code ka?' : 'Have an event code?'}</Text>
+          <Text style={styles.privateEventCodeText}>
+            {isFilipino
+              ? 'Ilagay ang code upang makita at salihan ang pribadong donation event.'
+              : 'Enter your code to view and join a private donation event.'}
+          </Text>
+        </View>
+        <View style={styles.privateEventCodeArrow}>
+          <MaterialCommunityIcons name="arrow-right" size={19} color={roles.primaryActionBackground} />
+        </View>
+      </LinearGradient>
+    </Pressable>
+  );
+}
+
+function PrivateEventCodeModal({
+  visible,
+  roles,
+  isFilipino,
+  code,
+  error,
+  isSubmitting,
+  onChangeCode,
+  onSubmit,
+  onClose,
+}) {
+  return (
+    <Modal
+      transparent
+      visible={visible}
+      animationType="fade"
+      presentationStyle="overFullScreen"
+      statusBarTranslucent
+      navigationBarTranslucent
+      onRequestClose={onClose}
+    >
+      <View style={styles.privateEventModalOverlay}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={isFilipino ? 'Isara ang private event popup' : 'Close private event popup'}
+          onPress={onClose}
+          style={styles.privateEventModalBackdrop}
+        />
+        <View
+          accessibilityViewIsModal
+          style={[
+            styles.privateEventModalCard,
+            {
+              backgroundColor: roles.defaultCardBackground,
+              borderColor: roles.defaultCardBorder,
+            },
+          ]}
+        >
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={isFilipino ? 'Isara' : 'Close'}
+            disabled={isSubmitting}
+            onPress={onClose}
+            hitSlop={10}
+            style={({ pressed }) => [
+              styles.privateEventModalClose,
+              { borderColor: roles.defaultCardBorder, backgroundColor: roles.iconPrimarySurface },
+              pressed ? styles.eventFeedPressed : null,
+            ]}
+          >
+            <MaterialCommunityIcons name="close" size={22} color={roles.primaryActionBackground} />
+          </Pressable>
+
+          <View style={styles.privateEventModalHeader}>
+            <MaterialCommunityIcons name="lock-outline" size={32} color={roles.primaryActionBackground} />
+            <Text style={[styles.privateEventModalTitle, { color: roles.primaryActionBackground }]}>
+              {isFilipino ? 'Pribadong Event' : 'Private Event'}
+            </Text>
+          </View>
+
+          <View style={styles.privateEventModalField}>
+            <Text style={[styles.privateEventModalLabel, { color: roles.headingText }]}>EVENT CODE</Text>
+            <TextInput
+              value={code}
+              onChangeText={onChangeCode}
+              editable={!isSubmitting}
+              autoCapitalize="characters"
+              autoCorrect={false}
+              maxLength={8}
+              returnKeyType="done"
+              onSubmitEditing={() => { void onSubmit(); }}
+              placeholder={isFilipino ? 'Ilagay ang Private Event Code' : 'Enter Private Event Code'}
+              placeholderTextColor={withOpacity(roles.primaryActionBackground, 0.28)}
+              selectionColor={withOpacity(roles.primaryActionBackground, 0.24)}
+              cursorColor={roles.primaryActionBackground}
+              style={[
+                styles.privateEventModalInput,
+                {
+                  color: roles.headingText,
+                  borderColor: error ? '#B42318' : withOpacity(roles.primaryActionBackground, 0.16),
+                  backgroundColor: withOpacity(roles.primaryActionBackground, 0.035),
+                },
+              ]}
+            />
+            {error ? (
+              <View style={styles.privateEventModalErrorRow}>
+                <MaterialCommunityIcons name="alert-circle-outline" size={16} color="#B42318" />
+                <Text style={styles.privateEventModalError}>{error}</Text>
+              </View>
+            ) : null}
+          </View>
+
+          <GradientActionButton
+            title={isFilipino ? 'Isumite' : 'Submit'}
+            onPress={onSubmit}
+            loading={isSubmitting}
+            disabled={isSubmitting || !String(code || '').trim()}
+            textColor={roles.primaryActionText}
+            size="md"
+            style={styles.privateEventModalAction}
+            buttonStyle={styles.privateEventModalActionButton}
+          />
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 function LogisticsMapPreview({ roles, logisticsSettings }) {
   const coordinate = React.useMemo(
     () => getLogisticsMapCoordinate(logisticsSettings),
@@ -1638,6 +1800,7 @@ function DonationHomeOverview({
   registeredDrives = [],
   activeDonationCount = 0,
   onOpenDonationDetails,
+  onOpenPrivateEventCode,
   onOpenLogistics,
   searchQuery = '',
   eventSortOrder = 'soonest',
@@ -1648,7 +1811,7 @@ function DonationHomeOverview({
   onResetFilters,
   onCloseFilters,
 }) {
-  const { language, t } = useLanguage();
+  const { t } = useLanguage();
   const allEventDrives = React.useMemo(() => {
     const byId = new Map();
     [...(drives || []), ...(registeredDrives || [])].filter(Boolean).forEach((drive) => {
@@ -1717,31 +1880,26 @@ function DonationHomeOverview({
             <Text style={[styles.sectionEyebrow, { color: roles.primaryActionBackground }]}>{t('donate.eventsEyebrow')}</Text>
             <Text style={[styles.sectionHeading, { color: roles.headingText }]}>{t('donate.availableEvents')}</Text>
           </View>
-          <Text style={[styles.eventResultCount, { color: roles.metaText }]}>
-            {t('donate.eventCount', {
-              count: visibleEventDrives.length,
-              label: language === 'fil' || visibleEventDrives.length === 1 ? 'event' : 'events',
-            })}
-          </Text>
         </View>
 
-        {visibleEventDrives.length ? (
-          <View style={styles.flowCardList}>
-            {visibleEventDrives.map((drive) => (
+        <View style={styles.flowCardList}>
+          <PrivateEventCodeCard roles={roles} onPress={onOpenPrivateEventCode} />
+          {visibleEventDrives.length ? visibleEventDrives.map((drive) => (
               <DonationEventCard
                 key={`event-drive-${drive?.donation_drive_id || drive?.event_title || drive?.start_date}`}
                 roles={roles}
                 drive={drive}
                 onOpenDetails={() => onOpenDonationDetails?.(drive)}
               />
-            ))}
-          </View>
-        ) : (
+            )) : null}
+        </View>
+
+        {!visibleEventDrives.length ? (
           <DonationEventsEmptyState
             title={searchQuery ? 'No matching events' : 'No events available yet'}
             message={searchQuery ? 'Try another event name or location.' : 'New donation events will appear here when they are published.'}
           />
-        )}
+        ) : null}
 
         <LogisticsDonationSection
           roles={roles}
@@ -4745,6 +4903,8 @@ export function DonorDonationStatusScreen() {
   const routeParams = useLocalSearchParams();
   const { width } = useWindowDimensions();
   const { user, profile, resolvedTheme } = useAuth();
+  const { language } = useLanguage();
+  const isFilipino = language === 'fil';
   const isMobileViewport = width < 768;
   const roles = resolveThemeRoles(resolvedTheme, { isMobile: isMobileViewport });
   const { unreadCount } = useNotifications({
@@ -4768,6 +4928,10 @@ export function DonorDonationStatusScreen() {
   const [eventSortOrder, setEventSortOrder] = React.useState('soonest');
   const [eventVisibilityFilter, setEventVisibilityFilter] = React.useState('all');
   const [isEventFilterSheetOpen, setIsEventFilterSheetOpen] = React.useState(false);
+  const [isPrivateEventCodeOpen, setIsPrivateEventCodeOpen] = React.useState(false);
+  const [privateEventCode, setPrivateEventCode] = React.useState('');
+  const [isUnlockingPrivateEvent, setIsUnlockingPrivateEvent] = React.useState(false);
+  const [privateEventCodeError, setPrivateEventCodeError] = React.useState('');
   const activeEventFilterCount = Number(eventSortOrder !== 'soonest')
     + Number(eventVisibilityFilter !== 'all');
 
@@ -4801,6 +4965,7 @@ export function DonorDonationStatusScreen() {
   const [isCancellingDonation, setIsCancellingDonation] = React.useState(false);
   const [, setIsSubmitPreviewOpen] = React.useState(false);
   const [isGeneratingEventRsvp, setIsGeneratingEventRsvp] = React.useState(false);
+  const [isProfileCompletionModalVisible, setIsProfileCompletionModalVisible] = React.useState(false);
   const [selectedDriveForDonation, setSelectedDriveForDonation] = React.useState(null);
   const [donationModuleScreen, setDonationModuleScreen] = React.useState(DONATION_MODULE_SCREEN.EVENTS);
   const [activeDonationTabKey, setActiveDonationTabKey] = React.useState('hair-event');
@@ -5545,6 +5710,59 @@ export function DonorDonationStatusScreen() {
       params: { driveId: String(drive.donation_drive_id) },
     });
   }, [router]);
+  const handleOpenPrivateEventCode = React.useCallback(() => {
+    setPrivateEventCode('');
+    setPrivateEventCodeError('');
+    setIsPrivateEventCodeOpen(true);
+  }, []);
+  const handleClosePrivateEventCode = React.useCallback(() => {
+    if (isUnlockingPrivateEvent) return;
+    setPrivateEventCode('');
+    setPrivateEventCodeError('');
+    setIsPrivateEventCodeOpen(false);
+  }, [isUnlockingPrivateEvent]);
+  const handleUnlockPrivateEvent = React.useCallback(async () => {
+    const normalizedCode = String(privateEventCode || '').trim();
+    if (!normalizedCode) {
+      setPrivateEventCodeError(isFilipino ? 'Ilagay ang private event code.' : 'Enter the private event code.');
+      return;
+    }
+
+    setIsUnlockingPrivateEvent(true);
+    setPrivateEventCodeError('');
+    const result = await unlockPrivateEventAccess({ accessCode: normalizedCode });
+
+    if (result.error) {
+      setIsUnlockingPrivateEvent(false);
+      setPrivateEventCodeError(
+        result.error?.message
+        || (isFilipino ? 'Hindi mabuksan ang pribadong event gamit ang code na ito.' : 'This code could not unlock a private event.')
+      );
+      return;
+    }
+
+    const unlockedDriveId = extractDriveIdFromPrivateUnlock(result.data);
+    const refreshedData = await loadModuleData({ silent: true });
+    const refreshedDrives = [
+      ...(refreshedData?.drives || []),
+      ...(refreshedData?.registeredDrives || []),
+    ];
+    const unlockedDrive = refreshedDrives.find((drive) => (
+      Number(drive?.donation_drive_id) === Number(unlockedDriveId)
+    )) || refreshedDrives.find((drive) => !isDonationDrivePublic(drive));
+
+    setIsUnlockingPrivateEvent(false);
+    setPrivateEventCode('');
+    setIsPrivateEventCodeOpen(false);
+    setModuleFeedback({
+      message: isFilipino ? 'Nabuksan na ang pribadong event.' : 'Private event unlocked.',
+      variant: 'success',
+    });
+
+    if (unlockedDrive) {
+      handleOpenEventDonationDetails(unlockedDrive);
+    }
+  }, [handleOpenEventDonationDetails, isFilipino, loadModuleData, privateEventCode]);
   const handleOpenLogisticDonationDetails = React.useCallback((item) => {
     if (!item?.submission?.submission_id) return;
     setActiveDonationTabKey('logistic');
@@ -6493,6 +6711,10 @@ export function DonorDonationStatusScreen() {
   const handleEnsureEventRsvp = React.useCallback(async () => {
     if (!selectedDriveForDonation?.donation_drive_id) return;
     if (isGeneratingEventRsvp) return;
+    if (!isProfileComplete) {
+      setIsProfileCompletionModalVisible(true);
+      return;
+    }
     if (hasOngoingDonation) {
       setModuleFeedback({
         message: 'You already have a donation in progress. You can view this event, but you cannot register until the current donation is finished or cancelled.',
@@ -6530,6 +6752,10 @@ export function DonorDonationStatusScreen() {
     setIsGeneratingEventRsvp(false);
 
     if (result.error) {
+      if (result.error?.code === DONOR_PERMISSION_REASONS.profileIncomplete) {
+        setIsProfileCompletionModalVisible(true);
+        return;
+      }
       setModuleFeedback({
         message: result.error?.message || 'Unable to create RSVP right now.',
         variant: 'error',
@@ -6544,7 +6770,7 @@ export function DonorDonationStatusScreen() {
         : 'RSVP generated. Show your RSVP QR at check-in. Donation submission unlocks after staff marks you Present.',
       variant: 'success',
     });
-  }, [hairEligibilityMessage, hasHairScanLog, hasOngoingDonation, isAiEligible, isGeneratingEventRsvp, profile?.user_id, refreshDriveRegistrationFromTable, requiresPostDonationAnalysis, selectedDriveForDonation]);
+  }, [hairEligibilityMessage, hasHairScanLog, hasOngoingDonation, isAiEligible, isGeneratingEventRsvp, isProfileComplete, profile?.user_id, refreshDriveRegistrationFromTable, requiresPostDonationAnalysis, selectedDriveForDonation]);
 
   React.useEffect(() => {
     if (donationModuleScreen !== DONATION_MODULE_SCREEN.EVENT_DETAILS) return;
@@ -6609,11 +6835,7 @@ export function DonorDonationStatusScreen() {
     }
 
     if (!isProfileComplete) {
-      setModuleFeedback({
-        message: 'Complete your donor profile before submitting hair for this donation drive.',
-        variant: 'info',
-      });
-      router.navigate('/profile');
+      setIsProfileCompletionModalVisible(true);
       return;
     }
 
@@ -6664,7 +6886,6 @@ export function DonorDonationStatusScreen() {
     moduleData?.latestAiDonation,
     moduleData?.latestAnalysisEntry,
     moduleData?.latestSubmission?.donation_drive_id,
-    router,
     selectedDriveForDonation,
   ]);
 
@@ -7039,6 +7260,7 @@ export function DonorDonationStatusScreen() {
             && !isClosedDonationStatus(item?.submission?.status)
           )).length}
           onOpenDonationDetails={handleOpenEventDonationDetails}
+          onOpenPrivateEventCode={handleOpenPrivateEventCode}
           onOpenLogistics={handleShowLogisticTab}
         />
       );
@@ -7229,6 +7451,7 @@ export function DonorDonationStatusScreen() {
     handleEnsureEventRsvp,
     handleAddLogisticDonation,
     handleOpenEventDonationDetails,
+    handleOpenPrivateEventCode,
     handleOpenLogisticDonationDetails,
     handleShowHairEventTab,
     handleShowLogisticTab,
@@ -7444,6 +7667,21 @@ export function DonorDonationStatusScreen() {
         onSave={handleSaveManualDetails}
       />
 
+      <PrivateEventCodeModal
+        visible={isPrivateEventCodeOpen}
+        roles={roles}
+        isFilipino={isFilipino}
+        code={privateEventCode}
+        error={privateEventCodeError}
+        isSubmitting={isUnlockingPrivateEvent}
+        onChangeCode={(value) => {
+          setPrivateEventCode(value);
+          if (privateEventCodeError) setPrivateEventCodeError('');
+        }}
+        onSubmit={handleUnlockPrivateEvent}
+        onClose={handleClosePrivateEventCode}
+      />
+
       <ModalShell
         visible={isDonationMethodModalOpen}
         title="How will you send your donation?"
@@ -7516,6 +7754,16 @@ export function DonorDonationStatusScreen() {
         actionTitle="Go to Analysis"
         onClose={() => setIsHairEligibilityPromptOpen(false)}
         onStartHairCheck={handleStartHairCheckFromPrompt}
+      />
+
+      <ProfileCompletionGateModal
+        visible={isProfileCompletionModalVisible && !isProfileComplete}
+        completionMeta={donorProfileMeta}
+        onClose={() => setIsProfileCompletionModalVisible(false)}
+        onComplete={() => {
+          setIsProfileCompletionModalVisible(false);
+          router.navigate('/profile');
+        }}
       />
 
       <DonationSubmitPreviewModal
@@ -8032,11 +8280,6 @@ const styles = StyleSheet.create({
     fontFamily: theme.typography.fontFamilyDisplay,
     fontSize: theme.typography.semantic.titleSm,
     fontWeight: theme.typography.weights.bold,
-  },
-  eventResultCount: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.caption,
-    fontWeight: theme.typography.weights.semibold,
   },
   donationEventBrowserHero: {
     borderWidth: 1,
@@ -10653,6 +10896,160 @@ const styles = StyleSheet.create({
   eventFeedPressed: {
     opacity: 0.9,
     transform: [{ scale: 0.985 }],
+  },
+  privateEventCodePressable: {
+    borderRadius: 22,
+  },
+  privateEventCodeCard: {
+    position: 'relative',
+    minHeight: 146,
+    overflow: 'hidden',
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+    padding: theme.spacing.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    ...theme.shadows.card,
+  },
+  privateEventCodeGlow: {
+    position: 'absolute',
+    width: 150,
+    height: 150,
+    borderRadius: 75,
+    right: -44,
+    top: -76,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
+  privateEventCodeIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 16,
+    flexShrink: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.94)',
+  },
+  privateEventCodeCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 4,
+  },
+  privateEventCodeEyebrow: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 0.9,
+    color: '#F6DCE3',
+  },
+  privateEventCodeTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.bodyLg,
+    fontWeight: theme.typography.weights.bold,
+    color: '#FFFFFF',
+  },
+  privateEventCodeText: {
+    maxWidth: 235,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.caption,
+    lineHeight: theme.typography.semantic.caption * theme.typography.lineHeights.relaxed,
+    color: '#F9EDEF',
+  },
+  privateEventCodeArrow: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    flexShrink: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.94)',
+  },
+  privateEventModalOverlay: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.xl,
+    paddingVertical: theme.spacing.xxl,
+  },
+  privateEventModalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(29, 7, 13, 0.64)',
+  },
+  privateEventModalCard: {
+    position: 'relative',
+    width: '100%',
+    maxWidth: 390,
+    borderWidth: 1,
+    borderRadius: 24,
+    paddingHorizontal: theme.spacing.xl,
+    paddingTop: theme.spacing.xxl,
+    paddingBottom: theme.spacing.lg,
+    gap: theme.spacing.lg,
+    ...theme.shadows.card,
+  },
+  privateEventModalClose: {
+    position: 'absolute',
+    top: theme.spacing.md,
+    right: theme.spacing.md,
+    zIndex: 2,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  privateEventModalHeader: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
+    paddingTop: theme.spacing.sm,
+  },
+  privateEventModalTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.titleSm,
+    fontWeight: theme.typography.weights.bold,
+    textAlign: 'center',
+  },
+  privateEventModalField: {
+    gap: 7,
+  },
+  privateEventModalLabel: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.label,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 0.7,
+  },
+  privateEventModalInput: {
+    minHeight: 54,
+    borderWidth: 1,
+    borderRadius: 16,
+    paddingHorizontal: theme.spacing.md,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.body,
+    fontWeight: theme.typography.weights.semibold,
+    letterSpacing: 1.2,
+  },
+  privateEventModalErrorRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+    paddingHorizontal: theme.spacing.xs,
+  },
+  privateEventModalError: {
+    flex: 1,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.caption,
+    lineHeight: theme.typography.semantic.caption * theme.typography.lineHeights.relaxed,
+    color: '#B42318',
+  },
+  privateEventModalAction: {
+    borderRadius: 16,
+    ...theme.shadows.soft,
+  },
+  privateEventModalActionButton: {
+    minHeight: 50,
   },
   eventFeedCard: {
     height: 214,

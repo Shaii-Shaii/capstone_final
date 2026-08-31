@@ -79,6 +79,8 @@ export function AddressSelectField({
   leftIcon,
   leftIconColor,
   rightIconColor,
+  leftIconContainerStyle,
+  rightIconContainerStyle,
   labelStyle,
   fieldStyle,
   valueStyle,
@@ -86,27 +88,56 @@ export function AddressSelectField({
   helperTextStyle,
   errorTextStyle,
 }) {
+  const { resolvedTheme } = useAuth();
+  const roles = resolveThemeRoles(resolvedTheme);
+  const [isPressed, setIsPressed] = useState(false);
+  const primaryColor = resolvedTheme?.primaryColor || theme.colors.brandPrimary;
+  const primaryTextColor = resolvedTheme?.primaryTextColor || theme.colors.textPrimary;
+  const mutedTextColor = resolvedTheme?.tertiaryTextColor || theme.colors.textMuted;
+
   return (
     <View style={styles.selectFieldWrap}>
-      <Text style={[styles.selectFieldLabel, labelStyle]}>
+      <Text
+        style={[
+          styles.selectFieldLabel,
+          { color: error ? theme.colors.textError : primaryTextColor },
+          labelStyle,
+        ]}
+      >
         {label}
         {required ? <Text style={styles.requiredMark}> *</Text> : null}
       </Text>
       <Pressable
         disabled={disabled}
         onPress={onPress}
-        style={({ pressed }) => [
+        onPressIn={() => setIsPressed(true)}
+        onPressOut={() => setIsPressed(false)}
+        android_ripple={{ color: theme.colors.surfacePressed, borderless: false }}
+        accessibilityRole="button"
+        accessibilityLabel={`${label}: ${value || placeholder}`}
+        accessibilityHint={`Opens ${label.toLowerCase()} options`}
+        style={[
           styles.selectField,
+          {
+            backgroundColor: roles.defaultCardBackground || theme.colors.surfaceCard,
+            borderColor: roles.defaultCardBorder,
+          },
           disabled ? styles.selectFieldDisabled : null,
-          error ? styles.selectFieldError : null,
-          pressed && !disabled ? styles.selectFieldPressed : null,
           fieldStyle,
+          error ? styles.selectFieldError : null,
+          isPressed && !disabled ? styles.selectFieldPressed : null,
         ]}
       >
         <View pointerEvents="none" style={styles.selectFieldContent}>
           {leftIcon ? (
-            <View style={styles.selectFieldLeftIconWrap}>
-              <AppIcon name={leftIcon} color={leftIconColor} />
+            <View
+              style={[
+                styles.selectFieldLeftIconWrap,
+                { backgroundColor: roles.iconPrimarySurface },
+                leftIconContainerStyle,
+              ]}
+            >
+              <AppIcon name={leftIcon} color={leftIconColor || primaryColor} size="sm" />
             </View>
           ) : null}
           <Text
@@ -115,6 +146,7 @@ export function AddressSelectField({
               leftIcon ? styles.selectFieldValueWithIcon : null,
               !value ? styles.selectFieldPlaceholder : null,
               disabled ? styles.selectFieldValueDisabled : null,
+              { color: value ? primaryTextColor : mutedTextColor },
               valueStyle,
               !value ? placeholderStyle : null,
             ]}
@@ -122,11 +154,20 @@ export function AddressSelectField({
           >
             {value || placeholder}
           </Text>
-          <AppIcon
-            name="chevronRight"
-            color={rightIconColor}
-            state={disabled ? 'disabled' : 'muted'}
-          />
+          <View
+            style={[
+              styles.selectFieldActionWrap,
+              { backgroundColor: roles.iconPrimarySurface },
+              rightIconContainerStyle,
+            ]}
+          >
+            <AppIcon
+              name="chevronRight"
+              color={rightIconColor || primaryColor}
+              state={disabled ? 'disabled' : 'muted'}
+              size="sm"
+            />
+          </View>
         </View>
       </Pressable>
       {error ? (
@@ -617,6 +658,11 @@ const styles = StyleSheet.create({
     borderColor: theme.colors.borderSubtle,
     backgroundColor: theme.colors.surfaceCard,
     overflow: 'hidden',
+    shadowColor: theme.colors.shadow,
+    shadowOffset: { width: 0, height: 6 },
+    shadowRadius: 14,
+    shadowOpacity: 0.08,
+    elevation: 2,
   },
   selectFieldContent: {
     width: '100%',
@@ -628,7 +674,8 @@ const styles = StyleSheet.create({
   },
   selectFieldPressed: {
     borderColor: theme.colors.borderFocus,
-    ...theme.shadows.soft,
+    opacity: 0.92,
+    transform: [{ scale: 0.998 }],
   },
   selectFieldDisabled: {
     opacity: 0.55,
@@ -644,7 +691,12 @@ const styles = StyleSheet.create({
     color: theme.colors.textPrimary,
   },
   selectFieldLeftIconWrap: {
-    marginRight: theme.spacing.xs,
+    width: 34,
+    height: 34,
+    marginRight: theme.spacing.sm,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   selectFieldValueWithIcon: {
     marginLeft: 0,
@@ -654,6 +706,13 @@ const styles = StyleSheet.create({
   },
   selectFieldValueDisabled: {
     color: theme.colors.textDisabled,
+  },
+  selectFieldActionWrap: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   selectFieldHelper: {
     marginTop: 4,

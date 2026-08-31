@@ -514,26 +514,6 @@ const hasShortDonationEndpoint = (analysis = {}) => {
   return /\b(shoulder|shoulder-length|collarbone|clavicle|upper chest|chest length|reaches the chest|neck-length|chin-length|jaw-length)\b/i.test(notes);
 };
 
-const hasScalpCoverageTracking = (analysis = {}) => Boolean(
-  analysis?.bald_spots_present === true
-  || (Array.isArray(analysis?.affected_regions) && analysis.affected_regions.length)
-  || analysis?.hair_density_score != null
-  || analysis?.shedding_level
-  || analysis?.visible_scalp_area
-  || analysis?.scalp_coverage_notes
-  || analysis?.improvement_tracking_status
-  || analysis?.improvement_recommendation
-);
-
-const hasScalpFindingTracking = (analysis = {}) => Boolean(
-  analysis?.dandruff_detected === true
-  || analysis?.dandruff_severity
-  || analysis?.dandruff_notes
-  || analysis?.lice_detected === true
-  || analysis?.lice_confidence
-  || analysis?.lice_notes
-);
-
 const hasScalpCoverageConcern = (analysis = {}) => (
   analysis?.bald_spots_present === true
   || ['moderate', 'high'].includes(String(analysis?.visible_scalp_area || '').toLowerCase())
@@ -590,24 +570,28 @@ const buildDonationAssessment = ({ analysis = {}, donationRequirement = null }) 
     : 18;
   const hairLengthLabel = isLengthDetected
     ? `${totalInches.toFixed(1)} inches`
-    : 'For review';
+    : 'Unable to measure';
   const donatableLengthLabel = isDonationReady
     ? `${cmToInches(donatableLengthCm).toFixed(1)} inches`
     : isLengthDetected
       ? shortEndpoint || hasHardBlocker
         ? '0.0 inches'
         : `${cmToInches(neededLengthCm).toFixed(1)} inches more needed`
-      : 'Manual check';
+      : 'Not measured';
 
   return {
     cutLineBottomPercent,
     donatableLengthLabel,
+    hasHardBlocker,
+    hasRequirement,
     hairLengthLabel,
     isDonationReady,
     meetsLengthRequirement,
     minimumLengthLabel: minimumInches ? `${minimumInches.toFixed(1)} inches` : 'Not configured',
     summary: isDonationReady
       ? (analysis?.donation_readiness_note || 'Your hair appears long enough for donation. You can prepare for a haircut assessment and final partner review.')
+      : !isLengthDetected
+        ? 'Hair length could not be measured reliably because the cut-start area or lowest ends were hidden. Retake the length views with the hair loose, fully visible, and free of clips or ties.'
       : !hasRequirement
         ? 'Donation requirements are not configured. Please contact the team before using this result for donation eligibility.'
       : hasScalpCoverageConcern(analysis)
@@ -710,8 +694,35 @@ const buildHairRecommendationFallbacks = ({ analysis = {}, donationAssessment = 
   const dryness = Number(analysis?.dryness_level);
   const damage = Number(analysis?.damage_level);
   const frizz = Number(analysis?.frizz_level);
+  const oiliness = Number(analysis?.oiliness_level);
+  const dandruffSeverity = String(analysis?.dandruff_severity || '').trim().toLowerCase();
+  const sheddingLevel = String(analysis?.shedding_level || '').trim().toLowerCase();
 
-  if (!donationAssessment.meetsLengthRequirement) {
+  if (analysis?.lice_detected === true) {
+    rows.push({
+      title: 'Pause donation and confirm scalp health',
+      recommendation_text: 'The scan marked visible lice or nit-like signs. Pause donation preparation and ask a qualified health or scalp-care professional to confirm the finding before using a treatment or joining an event.',
+      priority_order: rows.length + 1,
+    });
+  }
+
+  if (analysis?.dandruff_detected === true || ['mild', 'moderate', 'heavy'].includes(dandruffSeverity)) {
+    rows.push({
+      title: 'Use gentle scalp care',
+      recommendation_text: 'Visible flakes were noted around the scalp. Cleanse the scalp gently, avoid scratching or heavy buildup, and seek professional advice if flaking, redness, or discomfort continues.',
+      priority_order: rows.length + 1,
+    });
+  }
+
+  if (hasScalpCoverageConcern(analysis) || ['moderate', 'severe'].includes(sheddingLevel)) {
+    rows.push({
+      title: 'Protect the scalp and reduce tension',
+      recommendation_text: 'The result noted increased scalp visibility or shedding. Avoid tight hairstyles and harsh pulling, handle the roots gently, and compare the same photo views over time; consult a professional if the change is sudden or worsening.',
+      priority_order: rows.length + 1,
+    });
+  }
+
+  if (donationAssessment.hasRequirement && !donationAssessment.meetsLengthRequirement) {
     rows.push({
       title: 'Grow and retain length',
       recommendation_text: 'Your scanned hair is still below the donation length. Reduce heat styling, avoid tight pulling styles, and trim only visibly damaged ends so the hair can keep growing with less breakage.',
@@ -743,6 +754,14 @@ const buildHairRecommendationFallbacks = ({ analysis = {}, donationAssessment = 
     });
   }
 
+  if (Number.isFinite(oiliness) && oiliness >= 6) {
+    rows.push({
+      title: 'Balance oily roots',
+      recommendation_text: 'The roots appear oily compared with the lengths. Concentrate shampoo on the scalp, rinse thoroughly, and keep heavy conditioners or oils mainly on the mid-lengths and ends.',
+      priority_order: rows.length + 1,
+    });
+  }
+
   rows.push({
     title: 'Maintain hair between checks',
     recommendation_text: 'Keep a gentle routine while the hair grows. Avoid tight pulling styles, reduce high heat, detangle carefully, and protect the ends from breakage.',
@@ -764,19 +783,25 @@ const buildVisibleHairRecommendations = ({ analysis = {}, donationAssessment = {
     }))
     .filter((recommendation) => recommendation.recommendation_text && isHairRecommendation(recommendation));
 
-  return (cleanedRecommendations.length
-    ? cleanedRecommendations
-    : buildHairRecommendationFallbacks({ analysis, donationAssessment }))
-    .slice(0, 3);
-};
+  const fallbackRecommendations = buildHairRecommendationFallbacks({ analysis, donationAssessment });
+  const hasPriorityScalpConcern = analysis?.lice_detected === true
+    || analysis?.dandruff_detected === true
+    || hasScalpCoverageConcern(analysis);
+  const combinedRecommendations = [
+    ...(hasPriorityScalpConcern ? fallbackRecommendations.slice(0, 1) : []),
+    ...cleanedRecommendations,
+    ...fallbackRecommendations,
+  ]
+    .filter((recommendation, index, collection) => {
+      const normalizedTitle = recommendation.title.trim().toLowerCase();
+      const normalizedText = recommendation.recommendation_text.trim().toLowerCase();
+      return collection.findIndex((entry) => (
+        entry.title.trim().toLowerCase() === normalizedTitle
+        || entry.recommendation_text.trim().toLowerCase() === normalizedText
+      )) === index;
+    });
 
-const getHairImprovementRecommendation = (analysis = {}) => {
-  const rawText = cleanHairRecommendationText(analysis?.improvement_recommendation || '');
-  const fallbackText = 'Focus on gentle handling, moisture balance, scalp comfort, and protecting the ends from breakage while you continue tracking hair progress.';
-
-  if (!rawText) return fallbackText;
-  if (isPhotoCaptureRecommendation({ recommendation_text: rawText })) return fallbackText;
-  return rawText;
+  return combinedRecommendations.slice(0, 3);
 };
 
 const buildFinalAiResultNote = () => (
@@ -2487,6 +2512,76 @@ function NativeLiveFaceCamera({ cameraRef, facing = 'front', flashMode = 'off', 
   );
 }
 
+function ReviewPhotoThumbnail({ photo, size = 104, onPreview }) {
+  const primaryUri = photo?.uri || '';
+  const fallbackUri = photo?.dataUrl || '';
+  const [displayUri, setDisplayUri] = useState(primaryUri || fallbackUri);
+  const [imageLoaded, setImageLoaded] = useState(false);
+  const [imageUnavailable, setImageUnavailable] = useState(false);
+
+  useEffect(() => {
+    setDisplayUri(primaryUri || fallbackUri);
+    setImageLoaded(false);
+    setImageUnavailable(false);
+  }, [fallbackUri, primaryUri]);
+
+  useEffect(() => {
+    if (!primaryUri || !fallbackUri || displayUri !== primaryUri || imageLoaded) return undefined;
+    const fallbackTimer = setTimeout(() => {
+      setDisplayUri(fallbackUri);
+      setImageLoaded(false);
+    }, 1200);
+    return () => clearTimeout(fallbackTimer);
+  }, [displayUri, fallbackUri, imageLoaded, primaryUri]);
+
+  if (!displayUri) {
+    return (
+      <View style={[styles.preAnalysisPhotoFrame, styles.preAnalysisPhotoEmpty, { width: size, height: size }]}>
+        <AppIcon name="image" size="md" state="muted" />
+      </View>
+    );
+  }
+
+  return (
+    <Pressable
+      accessibilityRole="imagebutton"
+      accessibilityLabel={`Preview ${photo?.viewLabel || 'hair photo'}`}
+      onPress={() => onPreview?.(displayUri)}
+      style={[styles.preAnalysisPhotoFrame, { width: size, height: size }]}
+    >
+      <Image
+        key={displayUri === primaryUri ? 'local-photo' : 'embedded-photo'}
+        source={{ uri: displayUri }}
+        style={styles.preAnalysisPhoto}
+        resizeMode="cover"
+        onLoad={() => {
+          setImageLoaded(true);
+          setImageUnavailable(false);
+        }}
+        onError={() => {
+          if (fallbackUri && displayUri !== fallbackUri) {
+            setDisplayUri(fallbackUri);
+            setImageLoaded(false);
+            return;
+          }
+          setImageUnavailable(true);
+        }}
+      />
+      {!imageLoaded && !imageUnavailable ? (
+        <View style={styles.preAnalysisPhotoLoading} pointerEvents="none">
+          <ActivityIndicator size="small" color={theme.colors.brandPrimary} />
+        </View>
+      ) : null}
+      {imageUnavailable ? (
+        <View style={styles.preAnalysisPhotoLoadError}>
+          <MaterialCommunityIcons name="image-off-outline" size={22} color="#FFFFFF" />
+          <Text style={styles.preAnalysisPhotoLoadErrorText}>Preview unavailable</Text>
+        </View>
+      ) : null}
+    </Pressable>
+  );
+}
+
 function PreAnalysisPhotoReview({
   photos = [],
   requiredViews = [],
@@ -2499,6 +2594,12 @@ function PreAnalysisPhotoReview({
   onRetake,
   onRunAnalysis,
 }) {
+  const { width: viewportWidth } = useWindowDimensions();
+  const isNarrowReview = viewportWidth < 370;
+  const reviewPhotoSize = Math.max(
+    76,
+    Math.min(96, Math.floor((Math.min(viewportWidth, theme.layout.contentMaxWidth) - 80) / 3))
+  );
   const readyCount = photos.filter(Boolean).length;
   const allReady = readyCount === requiredViews.length && requiredViews.length > 0;
   const validationMessage = typeof validation?.message === 'string'
@@ -2524,13 +2625,39 @@ function PreAnalysisPhotoReview({
   const statusText = isValidating
     ? 'Checking photos...'
     : validationSummaryText || validationMessage || `${readyCount}/${requiredViews.length} photos ready`;
+  const accessoriesDetected = validation?.accessoriesDetected;
+  const hairAuthenticityStatus = String(validation?.hairAuthenticityStatus || '').trim().toLowerCase();
+  const screeningChecks = [
+    {
+      icon: accessoriesDetected === true ? 'alert-circle-outline' : 'hair-dryer-outline',
+      text: accessoriesDetected === true
+        ? 'Blocking accessory detected'
+        : accessoriesDetected === false
+          ? 'No blocking accessories found'
+          : 'Accessories will be checked',
+      issue: accessoriesDetected === true,
+    },
+    {
+      icon: hairAuthenticityStatus === 'possible_wig_or_extensions' ? 'alert-circle-outline' : 'account-search-outline',
+      text: hairAuthenticityStatus === 'possible_wig_or_extensions'
+        ? 'Possible wig or extensions detected'
+        : hairAuthenticityStatus === 'likely_natural'
+          ? 'Hair appears visually consistent'
+          : 'Wig and extension signs will be checked',
+      issue: hairAuthenticityStatus === 'possible_wig_or_extensions',
+    },
+  ];
 
   return (
     <View style={styles.analysisResultPanel}>
       <View style={styles.analysisResultTopBar}>
-        <View style={styles.resultHeaderButtonPlaceholder} />
-        <Text style={styles.analysisResultScreenTitle}>Review Photos</Text>
-        <View style={styles.resultHeaderButtonPlaceholder} />
+        <View style={styles.preAnalysisHeadingIcon}>
+          <MaterialCommunityIcons name="image-multiple-outline" size={22} color={theme.colors.brandPrimary} />
+        </View>
+        <View style={styles.preAnalysisHeadingCopy}>
+          <Text style={styles.preAnalysisHeadingTitle}>Review your photos</Text>
+          <Text style={styles.preAnalysisHeadingSubtitle}>Tap a photo to enlarge it or retake any unclear view.</Text>
+        </View>
       </View>
 
       <View style={[styles.preAnalysisReviewCard, { backgroundColor: cardBackground }]}>
@@ -2573,73 +2700,103 @@ function PreAnalysisPhotoReview({
           </View>
         ) : null}
 
+        <View style={[styles.preAnalysisScreeningRow, isNarrowReview ? styles.preAnalysisScreeningRowNarrow : null]}>
+          {screeningChecks.map((check) => (
+            <View
+              key={check.text}
+              style={[
+                styles.preAnalysisScreeningChip,
+                isNarrowReview ? styles.preAnalysisScreeningChipNarrow : null,
+                check.issue ? styles.preAnalysisScreeningChipIssue : null,
+              ]}
+            >
+              <MaterialCommunityIcons
+                name={check.icon}
+                size={16}
+                color={check.issue ? theme.colors.textError : theme.colors.brandPrimary}
+              />
+              <Text
+                numberOfLines={2}
+                style={[styles.preAnalysisScreeningText, check.issue ? styles.preAnalysisScreeningTextIssue : null]}
+              >
+                {check.text}
+              </Text>
+            </View>
+          ))}
+        </View>
+
+        <View style={styles.preAnalysisActions}>
+          <AppButton
+            title={isValidating
+              ? 'Checking photos...'
+              : isAnalyzing
+                ? 'Analyzing...'
+                : validationFailed
+                  ? 'Retake required'
+                  : 'Continue to analysis'}
+            onPress={onRunAnalysis}
+            loading={isValidating || isAnalyzing}
+            disabled={!allReady || !validation?.ok || isValidating || isAnalyzing || isSaving}
+            trailing={<MaterialCommunityIcons name="arrow-right" size={19} color="#FFFFFF" />}
+            fullWidth
+          />
+        </View>
+
         <View style={styles.preAnalysisList}>
           {requiredViews.map((view, index) => {
             const photo = photos[index];
-            const canRetakePhoto = retakeSlotIndexes.has(index);
+            const needsRetake = retakeSlotIndexes.has(index);
             return (
               <View
                 key={view?.key || view?.label || index}
-                style={[styles.preAnalysisPhotoCard, { backgroundColor: cardBackground }]}
+                style={[
+                  styles.preAnalysisPhotoCard,
+                  { width: reviewPhotoSize },
+                  needsRetake ? styles.preAnalysisPhotoCardIssue : null,
+                ]}
               >
-                <Pressable
-                  onPress={() => onPreview?.(photo?.uri)}
-                  disabled={!photo?.uri}
-                  style={({ pressed }) => [
-                    styles.preAnalysisPhotoFrame,
-                    pressed ? styles.preAnalysisPhotoPressed : null,
-                  ]}
-                >
-                  {photo?.uri ? (
-                    <Image source={{ uri: photo.uri }} style={styles.preAnalysisPhoto} resizeMode="cover" />
-                  ) : (
-                    <View style={styles.preAnalysisPhotoEmpty}>
-                      <AppIcon name="image" size="md" state="muted" />
-                    </View>
-                  )}
-                </Pressable>
+                <View style={styles.preAnalysisPhotoVisual}>
+                  <ReviewPhotoThumbnail
+                    photo={photo}
+                    size={reviewPhotoSize}
+                    onPreview={onPreview}
+                  />
+                  <View style={styles.preAnalysisPhotoNumberBadge}>
+                    <Text style={styles.preAnalysisPhotoNumberText}>{index + 1}</Text>
+                  </View>
+                  <View style={[styles.preAnalysisPhotoStateBadge, needsRetake ? styles.preAnalysisPhotoStateBadgeIssue : null]}>
+                    <MaterialCommunityIcons
+                      name={needsRetake ? 'alert' : 'check'}
+                      size={12}
+                      color="#FFFFFF"
+                    />
+                    <Text style={styles.preAnalysisPhotoStateText}>{needsRetake ? 'Check' : 'Ready'}</Text>
+                  </View>
+                </View>
                 <View style={styles.preAnalysisPhotoMeta}>
                   <Text style={styles.preAnalysisPhotoTitle} numberOfLines={1}>
-                    {view?.label || `Photo ${index + 1}`}
+                    {view?.tutorialTitle || view?.label || `Photo ${index + 1}`}
                   </Text>
-                  <Text style={styles.preAnalysisPhotoSubtitle}>
-                    {photo?.uri ? 'Tap to preview' : 'Photo needed'}
-                  </Text>
+                  {photo ? (
+                    <Pressable
+                      onPress={() => onRetake?.(index)}
+                      disabled={isAnalyzing || isSaving || isValidating}
+                      style={({ pressed }) => [
+                        styles.preAnalysisRetakeButton,
+                        pressed ? styles.preAnalysisPhotoPressed : null,
+                      ]}
+                    >
+                      <AppIcon name="camera-retake-outline" size="sm" state="active" />
+                      <Text style={styles.preAnalysisRetakeText}>Retake</Text>
+                    </Pressable>
+                  ) : null}
                 </View>
-                {canRetakePhoto ? (
-                  <Pressable
-                    onPress={() => onRetake?.(index)}
-                    disabled={isAnalyzing || isSaving}
-                    style={({ pressed }) => [
-                      styles.preAnalysisRetakeButton,
-                      pressed ? styles.preAnalysisPhotoPressed : null,
-                    ]}
-                  >
-                    <AppIcon name="camera-retake-outline" size="sm" state="active" />
-                    <Text style={styles.preAnalysisRetakeText}>Retake</Text>
-                  </Pressable>
-                ) : null}
               </View>
             );
           })}
         </View>
       </View>
 
-      <View style={styles.preAnalysisActions}>
-        <AppButton
-          title={isValidating
-            ? 'Checking photos...'
-            : isAnalyzing
-              ? 'Analyzing...'
-              : validation?.ok
-                ? 'Run analysis'
-                : 'Retake required'}
-          onPress={onRunAnalysis}
-          loading={isValidating || isAnalyzing}
-          disabled={!allReady || !validation?.ok || isValidating || isAnalyzing || isSaving}
-          fullWidth
-        />
-      </View>
     </View>
   );
 }
@@ -2649,63 +2806,144 @@ function AnalysisLoadingSplash({ resolvedTheme, photos = [], completedPhotoCount
   const logoSource = resolveBrandLogoSource(resolvedTheme, imageFailed);
   const primaryPhoto = photos.find((photo) => photo?.uri);
   const progressPercent = Math.min(95, Math.max(35, 35 + completedPhotoCount * 18));
+  const scanMotion = useRef(new Animated.Value(0)).current;
+  const pulseMotion = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     setImageFailed(false);
   }, [resolvedTheme?.logoIcon]);
 
-  return (
-    <View style={styles.analysisSplash}>
-      <View style={styles.analysisScanHeader}>
-        <View>
-          <Text style={styles.analysisSplashTitle}>Analyzing hair</Text>
-          <Text style={styles.analysisSplashText}>Checking photos, length, texture, and condition.</Text>
-        </View>
-        <Text style={styles.analysisScanPercent}>{progressPercent}%</Text>
-      </View>
+  useEffect(() => {
+    const scanLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(scanMotion, {
+          toValue: 1,
+          duration: 1700,
+          useNativeDriver: true,
+        }),
+        Animated.timing(scanMotion, {
+          toValue: 0,
+          duration: 1700,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    const pulseLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseMotion, {
+          toValue: 1,
+          duration: 800,
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulseMotion, {
+          toValue: 0,
+          duration: 800,
+          useNativeDriver: true,
+        }),
+      ])
+    );
 
-      <View style={styles.analysisScanRow}>
-        <View style={styles.analysisScanPreview}>
-          {primaryPhoto?.uri ? (
-            <Image source={{ uri: primaryPhoto.uri }} style={styles.analysisScanImage} resizeMode="cover" />
-          ) : (
-            <Image
-              source={logoSource}
-              style={styles.analysisSplashLogo}
-              resizeMode="contain"
-              onError={() => setImageFailed(true)}
-            />
-          )}
-          <View style={styles.analysisScanGrid} pointerEvents="none" />
-          <View style={styles.analysisScanBadge}>
-            <View style={styles.analysisScanDot} />
-            <Text style={styles.analysisScanBadgeText}>AI scan</Text>
+    scanLoop.start();
+    pulseLoop.start();
+    return () => {
+      scanLoop.stop();
+      pulseLoop.stop();
+    };
+  }, [pulseMotion, scanMotion]);
+
+  const scanLineStyle = {
+    transform: [{
+      translateY: scanMotion.interpolate({
+        inputRange: [0, 1],
+        outputRange: [12, 190],
+      }),
+    }],
+  };
+  const pulseStyle = {
+    opacity: pulseMotion.interpolate({
+      inputRange: [0, 1],
+      outputRange: [0.7, 1],
+    }),
+    transform: [{
+      scale: pulseMotion.interpolate({
+        inputRange: [0, 1],
+        outputRange: [0.96, 1.04],
+      }),
+    }],
+  };
+
+  return (
+    <LinearGradient
+      colors={[theme.colors.donorCardFrom, theme.colors.donorCardTo]}
+      start={{ x: 0.08, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={styles.analysisSplash}
+    >
+      <View style={styles.analysisScanHeader}>
+        <View style={styles.analysisScanHeaderCopy}>
+          <Animated.View style={[styles.analysisSplashIcon, pulseStyle]}>
+            <MaterialCommunityIcons name="head-cog-outline" size={23} color={theme.colors.brandPrimary} />
+          </Animated.View>
+          <View style={styles.analysisScanHeaderText}>
+          <Text style={styles.analysisSplashTitle}>Analyzing hair</Text>
+            <Text style={styles.analysisSplashText}>Reviewing your six photos to prepare a clear result.</Text>
           </View>
         </View>
+        <LinearGradient
+          colors={[theme.colors.palette.wine700, theme.colors.palette.wine900]}
+          style={styles.analysisScanPercentBadge}
+        >
+          <Text style={styles.analysisScanPercent}>{progressPercent}%</Text>
+        </LinearGradient>
+      </View>
 
-        <View style={styles.analysisScanChecks}>
-          {[
-            ['hair-dryer-outline', 'Texture'],
-            ['ruler', 'Length'],
-            ['checkHair', 'Condition'],
-          ].map(([icon, label], index) => (
-            <View key={label} style={styles.analysisScanCheck}>
-              {index < 2 ? (
-                <AppIcon name="check-circle-outline" size="sm" state="success" />
-              ) : (
-                <ActivityIndicator size="small" color={resolvedTheme?.primaryColor || theme.colors.brandPrimary} />
-              )}
-              <Text style={styles.analysisScanCheckText}>{label}</Text>
-              <AppIcon name={icon} size="sm" state="muted" />
-            </View>
-          ))}
+      <View style={styles.analysisScanPreview}>
+        {primaryPhoto?.uri ? (
+          <Image source={{ uri: primaryPhoto.uri }} style={styles.analysisScanImage} resizeMode="cover" />
+        ) : (
+          <Image
+            source={logoSource}
+            style={styles.analysisSplashLogo}
+            resizeMode="contain"
+            onError={() => setImageFailed(true)}
+          />
+        )}
+        <LinearGradient
+          pointerEvents="none"
+          colors={['rgba(75, 16, 32, 0)', 'rgba(75, 16, 32, 0.78)']}
+          style={styles.analysisScanOverlay}
+        />
+        <Animated.View pointerEvents="none" style={[styles.analysisScanLine, scanLineStyle]} />
+        <View style={styles.analysisScanBadge}>
+          <Animated.View style={[styles.analysisScanDot, pulseStyle]} />
+          <Text style={styles.analysisScanBadgeText}>Secure AI review</Text>
+        </View>
+        <View style={styles.analysisScanCaption}>
+          <Text style={styles.analysisScanCaptionTitle}>Processing captured photos</Text>
+          <Text style={styles.analysisScanCaptionText}>This usually takes only a moment.</Text>
         </View>
       </View>
 
-      <View style={styles.analysisScanProgressTrack}>
-        <View style={[styles.analysisScanProgressFill, { width: `${progressPercent}%` }]} />
+      <View style={styles.analysisProgressHeader}>
+        <Text style={styles.analysisProgressLabel}>Analysis in progress</Text>
+        <Text style={styles.analysisProgressValue}>{progressPercent}% complete</Text>
       </View>
-    </View>
+      <View style={styles.analysisScanProgressTrack}>
+        <View style={[styles.analysisScanProgressFill, { width: `${progressPercent}%` }]}>
+          <LinearGradient
+            colors={[theme.colors.palette.wine600, theme.colors.palette.wine900]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 0 }}
+            style={StyleSheet.absoluteFillObject}
+          />
+        </View>
+      </View>
+
+      <View style={styles.analysisSplashNotice}>
+        <MaterialCommunityIcons name="shield-check-outline" size={18} color={theme.colors.brandPrimary} />
+        <Text style={styles.analysisSplashNoticeText}>Keep this screen open while your result is prepared.</Text>
+      </View>
+    </LinearGradient>
   );
 }
 
@@ -3774,6 +4012,7 @@ export function DonorHairSubmissionScreen() {
   const [isAnalysisLaunching, setIsAnalysisLaunching] = useState(false);
   const [analysisReviewValues, setAnalysisReviewValues] = useState(() => buildHairReviewDefaultValues(null));
   const [isEditingAnalysisReview, setIsEditingAnalysisReview] = useState(false);
+  const [resultDetailIndex, setResultDetailIndex] = useState(0);
   const { user, profile, resolvedTheme } = useAuth();
   const { width: viewportWidth } = useWindowDimensions();
   const roles = resolveThemeRoles(resolvedTheme);
@@ -4437,12 +4676,21 @@ export function DonorHairSubmissionScreen() {
   const saveConfirmedAnalysis = async () => {
     if (!analysis) return;
     const donationAssessment = buildDonationAssessment({ analysis, donationRequirement });
-    const analysisForSave = buildDonationAlignedAnalysis(analysis, donationAssessment);
+    const donationAlignedAnalysis = buildDonationAlignedAnalysis(analysis, donationAssessment);
+    const personalizedRecommendations = buildVisibleHairRecommendations({
+      analysis,
+      donationAssessment,
+    });
+    const analysisForSave = {
+      ...donationAlignedAnalysis,
+      recommendations: personalizedRecommendations,
+    };
 
     logAppEvent('donor_hair_submission.confirmation', 'User confirmed AI result for saving.', {
       userId: user?.id || null,
       analysisKeys: Object.keys(analysisForSave || {}),
       adjustedDecision: analysisForSave?.decision || null,
+      recommendationCount: personalizedRecommendations.length,
       humanReviewedSpecs: true,
     });
 
@@ -5221,7 +5469,184 @@ export function DonorHairSubmissionScreen() {
             </Pressable>
           </View>
         </View>
+
       </View>
+    );
+  };
+
+  const openGuidedHairCamera = async () => {
+    const currentReviewAnswers = getCurrentQuestionnaireAnswers();
+    const reviewQuestions = getVisibleQuestions(currentReviewAnswers, questionnaireMode);
+    const firstUnansweredIndex = findFirstUnansweredQuestionIndex(reviewQuestions, currentReviewAnswers);
+
+    if (firstUnansweredIndex >= 0) {
+      setQuestionIndex(firstUnansweredIndex);
+      setStepIndex(0);
+      return;
+    }
+
+    Object.entries(currentReviewAnswers).forEach(([key, value]) => {
+      questionForm.setValue(key, value, {
+        shouldDirty: true,
+        shouldTouch: true,
+        shouldValidate: false,
+      });
+    });
+
+    const isValid = await questionForm.trigger();
+    if (!isValid) {
+      const latestAnswers = getCurrentQuestionnaireAnswers();
+      const latestQuestions = getVisibleQuestions(latestAnswers, questionnaireMode);
+      const latestMissingIndex = findFirstUnansweredQuestionIndex(latestQuestions, latestAnswers);
+      setQuestionIndex(Math.max(latestMissingIndex, 0));
+      setStepIndex(0);
+      return;
+    }
+
+    complianceForm.setValue('acknowledged', true, {
+      shouldDirty: true,
+      shouldTouch: true,
+      shouldValidate: true,
+    });
+    setStepIndex(2);
+    requestLiveCameraPermission().catch(() => {
+      setCameraModalError('Camera permission could not be checked. Tap Allow Camera to continue.');
+    });
+  };
+
+  const renderReadinessActionDock = () => {
+    if (stepIndex !== 1) return null;
+
+    return (
+      <LinearGradient
+        colors={[theme.colors.backgroundPrimary, theme.colors.palette.blush100]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.readinessFloatingDock}
+      >
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Edit questionnaire answers"
+          onPress={() => {
+            setQuestionIndex(0);
+            setStepIndex(0);
+          }}
+          style={styles.readinessFloatingEdit}
+        >
+          <View style={styles.readinessFloatingEditIcon}>
+            <MaterialCommunityIcons name="pencil-outline" size={19} color={theme.colors.brandPrimary} />
+          </View>
+          <Text style={styles.readinessFloatingEditText}>Edit answers</Text>
+        </Pressable>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Open the guided hair camera"
+          onPress={openGuidedHairCamera}
+          style={styles.readinessFloatingPrimary}
+        >
+          <LinearGradient
+            pointerEvents="none"
+            colors={[theme.colors.palette.wine700, theme.colors.palette.wine900]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.readinessFloatingPrimarySurface}
+          >
+            <View style={styles.readinessFloatingPrimaryIcon}>
+              <MaterialCommunityIcons name="camera-outline" size={21} color={theme.colors.textOnBrand} />
+            </View>
+            <View style={styles.readinessFloatingPrimaryCopy}>
+              <Text style={styles.readinessFloatingPrimaryTitle}>Open camera</Text>
+              <Text style={styles.readinessFloatingPrimarySubtitle}>6 guided hair views</Text>
+            </View>
+            <MaterialCommunityIcons name="arrow-right" size={19} color={theme.colors.textOnBrand} />
+          </LinearGradient>
+        </Pressable>
+      </LinearGradient>
+    );
+  };
+
+  const startNewHairScan = () => {
+    resetFlow();
+    setAnalysisReviewValues(buildHairReviewDefaultValues(null));
+    setIsEditingAnalysisReview(false);
+    setResultDetailIndex(0);
+    setResultConfirmationMode('pending');
+    setPhotoIndex(0);
+    setQuestionIndex(0);
+    setStepIndex(0);
+    setHasAcknowledgedRequirementIntro(false);
+  };
+
+  const renderResultActionDock = () => {
+    if (stepIndex !== 3 || !analysis) return null;
+    const donationAssessment = buildDonationAssessment({ analysis, donationRequirement });
+
+    return (
+      <LinearGradient
+        colors={[theme.colors.backgroundPrimary, theme.colors.palette.blush100]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.resultFloatingDock}
+      >
+        <View style={styles.resultFloatingNotice}>
+          <View style={styles.resultFloatingNoticeIcon}>
+            <MaterialCommunityIcons name="account-check-outline" size={18} color={theme.colors.brandPrimary} />
+          </View>
+          <Text style={styles.resultFloatingNoticeText}>{buildFinalAiResultNote()}</Text>
+          {donationAssessment.isDonationReady ? (
+            <Pressable
+              onPress={() => router.replace('/donor/home?tab=drives')}
+              disabled={isSaving || isAnalyzing}
+              accessibilityRole="button"
+              accessibilityLabel="Find donation drives"
+              style={styles.resultFloatingDrivesLink}
+            >
+              <Text style={styles.resultFloatingDrivesText}>Find drives</Text>
+            </Pressable>
+          ) : null}
+        </View>
+        <View style={styles.resultFloatingActions}>
+          <Pressable
+            onPress={startNewHairScan}
+            disabled={isSaving || isAnalyzing}
+            accessibilityRole="button"
+            accessibilityLabel="Scan hair again"
+            style={[
+              styles.resultFloatingSecondaryButton,
+              isSaving || isAnalyzing ? styles.resultFloatingButtonDisabled : null,
+            ]}
+          >
+            <MaterialCommunityIcons name="refresh" size={19} color={theme.colors.brandPrimary} />
+            <Text style={styles.resultFloatingSecondaryText}>Scan again</Text>
+          </Pressable>
+          <Pressable
+            onPress={saveConfirmedAnalysis}
+            disabled={isSaving || isAnalyzing}
+            accessibilityRole="button"
+            accessibilityLabel="Save analysis result"
+            style={[
+              styles.resultFloatingPrimaryButton,
+              isSaving || isAnalyzing ? styles.resultFloatingButtonDisabled : null,
+            ]}
+          >
+            <LinearGradient
+              pointerEvents="none"
+              colors={[theme.colors.palette.wine700, theme.colors.palette.wine900]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.resultFloatingPrimarySurface}
+            >
+              {isSaving ? (
+                <ActivityIndicator size="small" color={theme.colors.textOnBrand} />
+              ) : (
+                <MaterialCommunityIcons name="content-save-check-outline" size={19} color={theme.colors.textOnBrand} />
+              )}
+              <Text style={styles.resultFloatingPrimaryText}>{isSaving ? 'Saving...' : 'Save result'}</Text>
+            </LinearGradient>
+          </Pressable>
+        </View>
+      </LinearGradient>
     );
   };
 
@@ -5339,7 +5764,8 @@ export function DonorHairSubmissionScreen() {
           ];
           const scanTips = [
             'Use bright, even light so your hair details are clear.',
-            'Keep your full hair in frame and avoid shadows or backlight.',
+            'Wear your hair loose and remove clips, ties, buns, or scrunchies so the natural ends are visible.',
+            'Keep your full hair in frame from the neck area to the lowest ends.',
             'Make sure only one person appears against a simple background.',
           ];
 
@@ -5432,84 +5858,6 @@ export function DonorHairSubmissionScreen() {
               </Text>
             </View>
 
-            <View style={styles.readinessActions}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Open the guided hair camera"
-                onPress={async () => {
-                  const currentReviewAnswers = getCurrentQuestionnaireAnswers();
-                  const reviewQuestions = getVisibleQuestions(currentReviewAnswers, questionnaireMode);
-                  const firstUnansweredIndex = findFirstUnansweredQuestionIndex(reviewQuestions, currentReviewAnswers);
-
-                  if (firstUnansweredIndex >= 0) {
-                    setQuestionIndex(firstUnansweredIndex);
-                    setStepIndex(0);
-                    return;
-                  }
-
-                  Object.entries(currentReviewAnswers).forEach(([key, value]) => {
-                    questionForm.setValue(key, value, {
-                      shouldDirty: true,
-                      shouldTouch: true,
-                      shouldValidate: false,
-                    });
-                  });
-
-                  const isValid = await questionForm.trigger();
-                  if (!isValid) {
-                    const latestAnswers = getCurrentQuestionnaireAnswers();
-                    const latestQuestions = getVisibleQuestions(latestAnswers, questionnaireMode);
-                    const latestMissingIndex = findFirstUnansweredQuestionIndex(latestQuestions, latestAnswers);
-                    setQuestionIndex(Math.max(latestMissingIndex, 0));
-                    setStepIndex(0);
-                    return;
-                  }
-
-                  complianceForm.setValue('acknowledged', true, { shouldDirty: true, shouldTouch: true, shouldValidate: true });
-                  setStepIndex(2);
-                  requestLiveCameraPermission().catch(() => {
-                    setCameraModalError('Camera permission could not be checked. Tap Allow Camera to continue.');
-                  });
-                }}
-                style={({ pressed }) => [styles.readinessPrimaryAction, pressed ? styles.questionDockButtonPressed : null]}
-              >
-                <LinearGradient
-                  pointerEvents="none"
-                  colors={[theme.colors.palette.wine700, theme.colors.palette.wine900]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={styles.readinessPrimarySurface}
-                >
-                  <View style={styles.readinessPrimaryIcon}>
-                    <MaterialCommunityIcons name="camera-outline" size={23} color="#FFFFFF" />
-                  </View>
-                  <View style={styles.readinessPrimaryCopy}>
-                    <Text style={styles.readinessPrimaryTitle}>Open guided camera</Text>
-                    <Text style={styles.readinessPrimarySubtitle}>Capture six hair views</Text>
-                  </View>
-                  <View style={styles.readinessPrimaryArrow}>
-                    <MaterialCommunityIcons name="arrow-right" size={19} color="#FFFFFF" />
-                  </View>
-                </LinearGradient>
-              </Pressable>
-
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Edit questionnaire answers"
-                onPress={() => {
-                  setQuestionIndex(0);
-                  setStepIndex(0);
-                }}
-                style={({ pressed }) => [styles.readinessEditAction, pressed ? styles.pressedMuted : null]}
-              >
-                <View style={styles.readinessEditContent}>
-                  <View style={styles.readinessEditIconWrap}>
-                    <MaterialCommunityIcons name="pencil-outline" size={17} color={theme.colors.brandPrimary} />
-                  </View>
-                  <Text numberOfLines={1} style={styles.readinessEditText}>Edit my answers</Text>
-                </View>
-              </Pressable>
-            </View>
           </Animated.View>
         );
         }
@@ -5573,314 +5921,382 @@ export function DonorHairSubmissionScreen() {
             analysis,
             donationAssessment,
           });
-          const hairImprovementRecommendation = getHairImprovementRecommendation(displayAnalysis);
           const questionnaireGuidanceNote = String(displayAnalysis?.history_assessment || '').trim();
           const reviewSummaryRows = buildReviewSummaryRows(analysisReviewValues);
-          const finalAiResultNote = buildFinalAiResultNote(analysisReviewValues);
+          const resultConditionLabel = getReviewDisplayValue(
+            displayAnalysis?.detected_condition || analysisReviewValues.declaredCondition
+          );
+          const resultDetailPageWidth = Math.max(
+            280,
+            Math.min(theme.layout.contentMaxWidth, viewportWidth) - theme.spacing.md * 2
+          );
 
           return (
             <View style={styles.analysisResultPanel}>
-              <View style={styles.analysisResultTopBar}>
-                <Pressable onPress={() => setStepIndex(2)} style={styles.resultHeaderButton}>
-                  <AppIcon name="arrow-left" size="md" state="default" />
-                </Pressable>
-                <Text style={styles.analysisResultScreenTitle}>Analysis Results</Text>
-                <View style={styles.resultHeaderButtonPlaceholder} />
-              </View>
-
-              <View style={styles.donationAssessmentCard}>
-                <Pressable
-                  onPress={() => openScanImagePreview(scanPhoto?.uri, resultPhotoGallery)}
-                  disabled={!scanPhoto?.uri}
-                  style={({ pressed }) => [
-                    styles.cutLineImageWrap,
-                    scanPhoto?.uri ? styles.cutLineImageTouchable : null,
-                    pressed ? styles.cutLineImagePressed : null,
-                  ]}
-                  accessibilityRole="button"
-                  accessibilityLabel={scanPhoto?.uri ? 'Open full hair scan photo preview' : 'Hair scan photo unavailable'}
-                >
-                  {scanPhoto?.uri ? (
-                    <>
-                      <Image source={{ uri: scanPhoto.uri }} style={styles.cutLineImage} resizeMode="cover" />
-                      <View style={styles.cutLinePreviewHint} pointerEvents="none">
-                        <AppIcon name="image-search-outline" size="sm" state="inverse" />
-                        <Text style={styles.cutLinePreviewHintText}>Tap to view</Text>
-                      </View>
-                    </>
-                  ) : (
-                    <View style={styles.cutLineImageFallback}>
-                      <AppIcon name="image" size="xl" state="muted" />
+              <LinearGradient
+                colors={[theme.colors.donorCardFrom, theme.colors.donorCardTo]}
+                start={{ x: 0.08, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.resultOverviewCard}
+              >
+                <View style={styles.resultOverviewOrb} pointerEvents="none" />
+                <View style={styles.resultOverviewHeader}>
+                  <View style={styles.resultOverviewEyebrow}>
+                    <View style={styles.resultOverviewIcon}>
+                      <MaterialCommunityIcons name="head-check-outline" size={20} color={theme.colors.brandPrimary} />
                     </View>
-                  )}
-                  {donationAssessment.isDonationReady ? (
-                    <>
-                      <View style={styles.cutLineLabel} pointerEvents="none">
-                        <Text style={styles.cutLineLabelText}>
-                          Cut guide - {donationAssessment.donatableLengthLabel}
-                        </Text>
-                      </View>
-                      <View
-                        pointerEvents="none"
-                        style={[styles.cutLineOverlay, { bottom: `${donationAssessment.cutLineBottomPercent}%` }]}
-                      >
-                        <View style={styles.cutLineDashed} />
-                        <View style={styles.cutLineScissorBadge}>
-                          <AppIcon name="content-cut" size="sm" state="inverse" />
-                        </View>
-                        <View style={styles.cutLineDashed} />
-                      </View>
-                    </>
-                  ) : null}
-                </Pressable>
-                <View style={styles.donationAssessmentBody}>
-                  <View style={styles.donationAssessmentHeader}>
-                    <Text style={styles.resultSectionTitle}>Hair Donation Assessment</Text>
-                    <View style={[
-                      styles.donationReadyBadge,
-                      donationAssessment.isDonationReady ? styles.donationReadyBadgeOk : styles.donationReadyBadgeReview,
+                    <View>
+                      <Text style={styles.resultOverviewKicker}>YOUR HAIR CHECK</Text>
+                      <Text style={styles.resultOverviewTitle}>AI assessment summary</Text>
+                    </View>
+                  </View>
+                  <View style={[
+                    styles.donationReadyBadge,
+                    donationAssessment.isDonationReady ? styles.donationReadyBadgeOk : styles.donationReadyBadgeReview,
+                  ]}>
+                    <Text style={[
+                      styles.donationReadyBadgeText,
+                      donationAssessment.isDonationReady ? styles.donationReadyBadgeTextOk : styles.donationReadyBadgeTextReview,
                     ]}>
-                      <Text style={[
-                        styles.donationReadyBadgeText,
-                        donationAssessment.isDonationReady ? styles.donationReadyBadgeTextOk : styles.donationReadyBadgeTextReview,
-                      ]}>
-                        {donationAssessment.isDonationReady ? 'Can donate' : 'Needs review'}
-                      </Text>
-                    </View>
-                  </View>
-                  <View style={styles.assessmentRows}>
-                    <View style={styles.assessmentRow}>
-                      <Text style={styles.assessmentLabel}>Donatable Length</Text>
-                      <Text style={styles.assessmentValue}>{donationAssessment.donatableLengthLabel}</Text>
-                    </View>
-                    <View style={styles.assessmentRow}>
-                      <Text style={styles.assessmentLabel}>Hair Length</Text>
-                      <Text style={styles.assessmentValue}>{donationAssessment.hairLengthLabel}</Text>
-                    </View>
-                  </View>
-                  <View style={styles.assessmentNote}>
-                    <AppIcon
-                      name={donationAssessment.isDonationReady ? 'content-cut' : 'alert-circle-outline'}
-                      size="md"
-                      state="active"
-                    />
-                    <Text style={styles.assessmentNoteText} numberOfLines={2}>{donationAssessment.summary}</Text>
+                      {donationAssessment.isDonationReady ? 'Can donate' : 'Not ready yet'}
+                    </Text>
                   </View>
                 </View>
-              </View>
+
+                <View style={styles.resultOverviewContent}>
+                  <Pressable
+                    onPress={() => openScanImagePreview(scanPhoto?.uri, resultPhotoGallery)}
+                    disabled={!scanPhoto?.uri}
+                    style={styles.resultPhotoThumb}
+                    accessibilityRole="button"
+                    accessibilityLabel={scanPhoto?.uri ? 'Open full hair scan photo preview' : 'Hair scan photo unavailable'}
+                  >
+                    {scanPhoto?.uri ? (
+                      <Image source={{ uri: scanPhoto.uri }} style={styles.resultPhotoThumbImage} resizeMode="cover" />
+                    ) : (
+                      <View style={styles.resultPhotoThumbFallback}>
+                        <AppIcon name="image" size="lg" state="muted" />
+                      </View>
+                    )}
+                    <LinearGradient
+                      pointerEvents="none"
+                      colors={['rgba(75, 16, 32, 0)', 'rgba(75, 16, 32, 0.78)']}
+                      style={styles.resultPhotoThumbOverlay}
+                    />
+                    <View style={styles.resultPhotoThumbAction} pointerEvents="none">
+                      <MaterialCommunityIcons name="arrow-expand" size={15} color={theme.colors.textInverse} />
+                    </View>
+                    <Text style={styles.resultPhotoThumbLabel} pointerEvents="none">View photo</Text>
+                  </Pressable>
+
+                  <View style={styles.resultOverviewCopy}>
+                    <Text style={styles.resultOverviewCondition}>{resultConditionLabel}</Text>
+                    <View style={styles.resultOverviewMetricRow}>
+                      <View style={styles.resultOverviewMetric}>
+                        <Text style={styles.resultOverviewMetricLabel}>Hair length</Text>
+                        <Text style={styles.resultOverviewMetricValue}>{donationAssessment.hairLengthLabel}</Text>
+                      </View>
+                      <View style={styles.resultOverviewMetricDivider} />
+                      <View style={styles.resultOverviewMetric}>
+                        <Text style={styles.resultOverviewMetricLabel}>Donation length</Text>
+                        <Text style={styles.resultOverviewMetricValue}>
+                          {donationAssessment.donatableLengthLabel}
+                        </Text>
+                      </View>
+                    </View>
+                    <Text style={styles.resultOverviewSummary}>{donationAssessment.summary}</Text>
+                  </View>
+                </View>
+              </LinearGradient>
 
               <View style={styles.aiAssessmentNotice}>
                 <AppIcon name="info" size="md" state="active" />
                 <Text style={styles.aiAssessmentNoticeText}>
-                  AI results are guidance only and may not be fully accurate. For hair health concerns, consult a hair specialist.
+                  This result compares all captured views with your answers. Use it as hair-care guidance, not a medical diagnosis.
                 </Text>
               </View>
 
-              <View style={styles.resultInlineSection}>
-                <View style={styles.resultSectionHeader}>
-                  <View>
-                    <Text style={styles.resultSectionTitle}>Review detected details</Text>
-                    <Text style={styles.resultSectionHint}>
-                      Edit only obvious measurement or classification mistakes.
-                    </Text>
-                  </View>
-                  <Pressable
-                    onPress={() => setIsEditingAnalysisReview((current) => !current)}
-                    style={({ pressed }) => [
-                      styles.reviewEditButton,
-                      isEditingAnalysisReview ? styles.reviewEditButtonActive : null,
-                      pressed ? styles.interactivePressed : null,
-                    ]}
-                    accessibilityRole="button"
-                    accessibilityLabel={isEditingAnalysisReview ? 'Close result editing' : 'Edit detected result'}
-                  >
-                    <AppIcon
-                      name={isEditingAnalysisReview ? 'close' : 'pencil-outline'}
-                      size="md"
-                      state={isEditingAnalysisReview ? 'inverse' : 'active'}
-                    />
-                  </Pressable>
-                </View>
-
-                {!isEditingAnalysisReview ? (
-                  <View style={styles.reviewSummaryList}>
-                    {reviewSummaryRows.map(([label, value]) => (
-                      <View key={label} style={styles.reviewSummaryRow}>
-                        <Text style={styles.reviewSummaryLabel}>{label}</Text>
-                        <Text style={styles.reviewSummaryValue}>{value}</Text>
-                      </View>
-                    ))}
-                  </View>
-                ) : (
-                  <View style={styles.reviewEditPanel}>
-                    <View style={styles.reviewFieldsGrid}>
-                      <AppInput
-                        label="Hair length"
-                        value={analysisReviewValues.declaredLength}
-                        onChangeText={(nextValue) => setAnalysisReviewValues((current) => ({
-                          ...current,
-                          declaredLength: nextValue,
-                        }))}
-                        keyboardType="decimal-pad"
-                        variant="filled"
-                        helperText="inches"
-                      />
-                      <AppInput
-                        label="Color"
-                        value={analysisReviewValues.declaredColor}
-                        onChangeText={(nextValue) => setAnalysisReviewValues((current) => ({
-                          ...current,
-                          declaredColor: nextValue,
-                        }))}
-                        variant="filled"
-                        placeholder="Black, brown, dyed..."
-                      />
-                    </View>
-
-                    <View style={styles.correctionFieldGroup}>
-                      <Text style={styles.correctionFieldLabel}>Texture</Text>
-                      <ReviewOptionChips
-                        value={analysisReviewValues.declaredTexture}
-                        options={HAIR_TEXTURE_REVIEW_OPTIONS}
-                        onChange={(nextValue) => setAnalysisReviewValues((current) => ({
-                          ...current,
-                          declaredTexture: nextValue,
-                        }))}
-                      />
-                    </View>
-
-                    <View style={styles.correctionFieldGroup}>
-                      <Text style={styles.correctionFieldLabel}>Density</Text>
-                      <ReviewOptionChips
-                        value={analysisReviewValues.declaredDensity}
-                        options={HAIR_DENSITY_REVIEW_OPTIONS}
-                        onChange={(nextValue) => setAnalysisReviewValues((current) => ({
-                          ...current,
-                          declaredDensity: nextValue,
-                        }))}
-                      />
-                    </View>
-
-                    <View style={styles.aiReadOnlyBlock}>
-                      <Text style={styles.aiReadOnlyLabel}>AI condition assessment</Text>
-                      <Text style={styles.aiReadOnlyValue}>
-                        {getReviewDisplayValue(analysisReviewValues.declaredCondition)}
-                      </Text>
-                    </View>
-                    <AppButton
-                      title="Done editing"
-                      variant="outline"
-                      onPress={() => setIsEditingAnalysisReview(false)}
-                      disabled={isSaving || isAnalyzing}
-                      fullWidth
-                    />
-                  </View>
-                )}
-              </View>
-
-              {hasScalpCoverageTracking(displayAnalysis) ? (
-                <View style={styles.resultInlineSection}>
-                  <View style={styles.resultSectionHeader}>
-                    <Text style={styles.resultSectionTitle}>Scalp coverage tracking</Text>
-                    <View style={styles.conditionBadge}>
-                      <View style={styles.conditionBadgeDot} />
-                      <Text style={styles.conditionBadgeText}>WELLNESS</Text>
-                    </View>
-                  </View>
-                  <View style={styles.assessmentRows}>
-                    <View style={styles.assessmentRow}>
-                      <Text style={styles.assessmentLabel}>Visible scalp area</Text>
-                      <Text style={styles.assessmentValue}>{displayAnalysis.visible_scalp_area || 'low'}</Text>
-                    </View>
-                    <View style={styles.assessmentRow}>
-                      <Text style={styles.assessmentLabel}>Affected area</Text>
-                      <Text style={styles.assessmentValue}>{formatAffectedRegions(displayAnalysis.affected_regions)}</Text>
-                    </View>
-                    <View style={styles.assessmentRow}>
-                      <Text style={styles.assessmentLabel}>Density score</Text>
-                      <Text style={styles.assessmentValue}>{formatDensityScore(displayAnalysis.hair_density_score)}</Text>
-                    </View>
-                    <View style={styles.assessmentRow}>
-                      <Text style={styles.assessmentLabel}>Shedding level</Text>
-                      <Text style={styles.assessmentValue}>{displayAnalysis.shedding_level || 'mild'}</Text>
-                    </View>
-                  </View>
-                  <View style={styles.assessmentNote}>
-                    <AppIcon name="chart-line" size="md" state="active" />
-                    <Text style={styles.assessmentNoteText} numberOfLines={2}>
-                      {displayAnalysis.scalp_coverage_notes || 'This check tracks visible scalp coverage for progress monitoring only.'}
-                    </Text>
-                  </View>
-                </View>
-              ) : null}
-
-              {hasScalpFindingTracking(displayAnalysis) ? (
-                <View style={styles.resultInlineSection}>
-                  <View style={styles.resultSectionHeader}>
-                    <Text style={styles.resultSectionTitle}>Scalp findings</Text>
-                    <View style={styles.conditionBadge}>
-                      <View style={styles.conditionBadgeDot} />
-                      <Text style={styles.conditionBadgeText}>VISIBLE CHECK</Text>
-                    </View>
-                  </View>
-                  <View style={styles.assessmentRows}>
-                    <View style={styles.assessmentRow}>
-                      <Text style={styles.assessmentLabel}>Dandruff / flakes</Text>
-                      <Text style={styles.assessmentValue}>
-                        {formatDetectedLabel(displayAnalysis.dandruff_detected)}
-                      </Text>
-                    </View>
-                    <View style={styles.assessmentRow}>
-                      <Text style={styles.assessmentLabel}>Dandruff severity</Text>
-                      <Text style={styles.assessmentValue}>{displayAnalysis.dandruff_severity || 'none'}</Text>
-                    </View>
-                    <View style={styles.assessmentRow}>
-                      <Text style={styles.assessmentLabel}>Lice / nits</Text>
-                      <Text style={styles.assessmentValue}>
-                        {formatDetectedLabel(displayAnalysis.lice_detected)}
-                      </Text>
-                    </View>
-                    <View style={styles.assessmentRow}>
-                      <Text style={styles.assessmentLabel}>Lice confidence</Text>
-                      <Text style={styles.assessmentValue}>{displayAnalysis.lice_confidence || 'none'}</Text>
-                    </View>
-                  </View>
-                  <View style={styles.assessmentNote}>
-                    <AppIcon name="info" size="md" state="active" />
-                    <Text style={styles.assessmentNoteText} numberOfLines={3}>
-                      {[displayAnalysis.dandruff_notes, displayAnalysis.lice_notes].filter(Boolean).join(' ')}
-                    </Text>
-                  </View>
-                </View>
-              ) : null}
-
               {hairRecommendations.length ? (
-                <View style={styles.resultInlineSection}>
+                <LinearGradient
+                  colors={[theme.colors.backgroundPrimary, theme.colors.brandPrimaryMuted]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.recommendationSection}
+                >
                   <View style={styles.resultSectionHeader}>
-                    <Text style={styles.resultSectionTitle}>Hair recommendations</Text>
+                    <View style={styles.recommendationHeadingCopy}>
+                      <Text style={styles.resultSectionTitle}>Your personalized care plan</Text>
+                    </View>
                     <View style={styles.conditionBadge}>
                       <View style={styles.conditionBadgeDot} />
-                      <Text style={styles.conditionBadgeText}>HAIR CARE</Text>
+                      <Text style={styles.conditionBadgeText}>AI GUIDE</Text>
                     </View>
                   </View>
-                  <Text style={styles.resultSectionHint}>{hairImprovementRecommendation}</Text>
                   <View style={styles.recommendationList}>
                     {hairRecommendations.map((recommendation, index) => (
-                      <View
+                      <LinearGradient
                         key={`${recommendation.title}-${index}`}
+                        colors={index === 0
+                          ? [theme.colors.palette.blush100, theme.colors.backgroundPrimary]
+                          : [theme.colors.backgroundPrimary, theme.colors.palette.warm50]}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
                         style={[
                           styles.recommendationCard,
                           index === 0 ? styles.recommendationCardPrimary : null,
                         ]}
                       >
-                        <Text style={styles.recommendationPill}>Step {index + 1}</Text>
-                        <Text style={styles.recommendationTitle}>{recommendation.title}</Text>
-                        <Text style={styles.recommendationBody}>{recommendation.recommendation_text}</Text>
-                      </View>
+                        <View style={styles.recommendationStepBadge}>
+                          <Text style={styles.recommendationStepNumber}>{index + 1}</Text>
+                        </View>
+                        <View style={styles.recommendationCopy}>
+                          <Text style={styles.recommendationPill}>CARE STEP {index + 1}</Text>
+                          <Text style={styles.recommendationTitle}>{recommendation.title}</Text>
+                          <Text style={styles.recommendationBody}>{recommendation.recommendation_text}</Text>
+                        </View>
+                      </LinearGradient>
                     ))}
                   </View>
-                </View>
+                </LinearGradient>
               ) : null}
+
+              <View style={styles.resultDetailsModule}>
+                <View style={styles.resultDetailsModuleHeader}>
+                  <View style={styles.resultDetailsModuleIcon}>
+                    <MaterialCommunityIcons name="gesture-swipe-horizontal" size={20} color={theme.colors.brandPrimary} />
+                  </View>
+                  <View style={styles.resultDetailsModuleCopy}>
+                    <Text style={styles.resultDetailsModuleTitle}>Explore your analysis</Text>
+                    <Text style={styles.resultDetailsModuleHint}>Swipe left or right to review each result module.</Text>
+                  </View>
+                  <Text style={styles.resultDetailsModuleCount}>{resultDetailIndex + 1}/3</Text>
+                </View>
+
+                <ScrollView
+                  horizontal
+                  pagingEnabled
+                  nestedScrollEnabled
+                  showsHorizontalScrollIndicator={false}
+                  decelerationRate="fast"
+                  onMomentumScrollEnd={(event) => {
+                    const nextIndex = Math.round(event.nativeEvent.contentOffset.x / resultDetailPageWidth);
+                    setResultDetailIndex(Math.max(0, Math.min(2, nextIndex)));
+                  }}
+                  style={styles.resultDetailsPager}
+                >
+                  <LinearGradient
+                    colors={[theme.colors.backgroundPrimary, theme.colors.palette.blush100]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={[
+                      styles.resultDetailPage,
+                      { width: resultDetailPageWidth },
+                      resultDetailIndex === 0 ? styles.resultDetailPageActive : null,
+                    ]}
+                  >
+                    <View style={styles.resultDetailAccent} />
+                    <View style={styles.resultSectionHeader}>
+                      <View style={styles.resultDetailHeaderCopy}>
+                        <Text style={styles.resultSectionTitle}>Review detected details</Text>
+                        <Text style={styles.resultSectionHint}>Edit only obvious measurement or classification mistakes.</Text>
+                      </View>
+                      <Pressable
+                        onPress={() => setIsEditingAnalysisReview((current) => !current)}
+                        style={({ pressed }) => [
+                          styles.reviewEditButton,
+                          isEditingAnalysisReview ? styles.reviewEditButtonActive : null,
+                          pressed ? styles.interactivePressed : null,
+                        ]}
+                        accessibilityRole="button"
+                        accessibilityLabel={isEditingAnalysisReview ? 'Close result editing' : 'Edit detected result'}
+                      >
+                        <AppIcon
+                          name={isEditingAnalysisReview ? 'close' : 'pencil-outline'}
+                          size="md"
+                          state={isEditingAnalysisReview ? 'inverse' : 'active'}
+                        />
+                      </Pressable>
+                    </View>
+
+                    {!isEditingAnalysisReview ? (
+                      <View style={styles.reviewSummaryList}>
+                        {reviewSummaryRows.map(([label, value]) => (
+                          <View key={label} style={styles.reviewSummaryRow}>
+                            <Text style={styles.reviewSummaryLabel}>{label}</Text>
+                            <Text style={styles.reviewSummaryValue}>{value}</Text>
+                          </View>
+                        ))}
+                      </View>
+                    ) : (
+                      <View style={styles.reviewEditPanel}>
+                        <View style={styles.reviewFieldsGrid}>
+                          <AppInput
+                            label="Hair length"
+                            value={analysisReviewValues.declaredLength}
+                            onChangeText={(nextValue) => setAnalysisReviewValues((current) => ({
+                              ...current,
+                              declaredLength: nextValue,
+                            }))}
+                            keyboardType="decimal-pad"
+                            variant="filled"
+                            helperText="inches"
+                          />
+                          <AppInput
+                            label="Color"
+                            value={analysisReviewValues.declaredColor}
+                            onChangeText={(nextValue) => setAnalysisReviewValues((current) => ({
+                              ...current,
+                              declaredColor: nextValue,
+                            }))}
+                            variant="filled"
+                            placeholder="Black, brown, dyed..."
+                          />
+                        </View>
+                        <View style={styles.correctionFieldGroup}>
+                          <Text style={styles.correctionFieldLabel}>Texture</Text>
+                          <ReviewOptionChips
+                            value={analysisReviewValues.declaredTexture}
+                            options={HAIR_TEXTURE_REVIEW_OPTIONS}
+                            onChange={(nextValue) => setAnalysisReviewValues((current) => ({
+                              ...current,
+                              declaredTexture: nextValue,
+                            }))}
+                          />
+                        </View>
+                        <View style={styles.correctionFieldGroup}>
+                          <Text style={styles.correctionFieldLabel}>Density</Text>
+                          <ReviewOptionChips
+                            value={analysisReviewValues.declaredDensity}
+                            options={HAIR_DENSITY_REVIEW_OPTIONS}
+                            onChange={(nextValue) => setAnalysisReviewValues((current) => ({
+                              ...current,
+                              declaredDensity: nextValue,
+                            }))}
+                          />
+                        </View>
+                        <View style={styles.aiReadOnlyBlock}>
+                          <Text style={styles.aiReadOnlyLabel}>AI condition assessment</Text>
+                          <Text style={styles.aiReadOnlyValue}>{getReviewDisplayValue(analysisReviewValues.declaredCondition)}</Text>
+                        </View>
+                        <AppButton
+                          title="Done editing"
+                          variant="outline"
+                          onPress={() => setIsEditingAnalysisReview(false)}
+                          disabled={isSaving || isAnalyzing}
+                          fullWidth
+                        />
+                      </View>
+                    )}
+                  </LinearGradient>
+
+                  <LinearGradient
+                    colors={[theme.colors.palette.warm50, theme.colors.brandPrimaryMuted]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={[
+                      styles.resultDetailPage,
+                      { width: resultDetailPageWidth },
+                      resultDetailIndex === 1 ? styles.resultDetailPageActive : null,
+                    ]}
+                  >
+                    <View style={styles.resultDetailAccent} />
+                    <View style={styles.resultSectionHeader}>
+                      <View style={styles.resultDetailHeaderCopy}>
+                        <Text style={styles.resultSectionTitle}>Scalp coverage tracking</Text>
+                        <Text style={styles.resultSectionHint}>A visual progress check based on the scalp and crown views.</Text>
+                      </View>
+                      <View style={styles.conditionBadge}>
+                        <View style={styles.conditionBadgeDot} />
+                        <Text style={styles.conditionBadgeText}>WELLNESS</Text>
+                      </View>
+                    </View>
+                    <View style={styles.assessmentRows}>
+                      <View style={styles.assessmentRow}>
+                        <Text style={styles.assessmentLabel}>Visible scalp area</Text>
+                        <Text style={styles.assessmentValue}>{displayAnalysis.visible_scalp_area || 'low'}</Text>
+                      </View>
+                      <View style={styles.assessmentRow}>
+                        <Text style={styles.assessmentLabel}>Affected area</Text>
+                        <Text style={styles.assessmentValue}>{formatAffectedRegions(displayAnalysis.affected_regions)}</Text>
+                      </View>
+                      <View style={styles.assessmentRow}>
+                        <Text style={styles.assessmentLabel}>Density score</Text>
+                        <Text style={styles.assessmentValue}>{formatDensityScore(displayAnalysis.hair_density_score)}</Text>
+                      </View>
+                      <View style={styles.assessmentRow}>
+                        <Text style={styles.assessmentLabel}>Shedding level</Text>
+                        <Text style={styles.assessmentValue}>{displayAnalysis.shedding_level || 'mild'}</Text>
+                      </View>
+                    </View>
+                    <View style={styles.assessmentNoteCard}>
+                      <AppIcon name="chart-line" size="md" state="active" />
+                      <Text style={styles.assessmentNoteText}>
+                        {displayAnalysis.scalp_coverage_notes || 'No specific coverage concern was recorded. Continue comparing the same views over time.'}
+                      </Text>
+                    </View>
+                  </LinearGradient>
+
+                  <LinearGradient
+                    colors={[theme.colors.backgroundPrimary, theme.colors.palette.warm100]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={[
+                      styles.resultDetailPage,
+                      { width: resultDetailPageWidth },
+                      resultDetailIndex === 2 ? styles.resultDetailPageActive : null,
+                    ]}
+                  >
+                    <View style={styles.resultDetailAccent} />
+                    <View style={styles.resultSectionHeader}>
+                      <View style={styles.resultDetailHeaderCopy}>
+                        <Text style={styles.resultSectionTitle}>Scalp findings</Text>
+                        <Text style={styles.resultSectionHint}>Visible screening only; this is not a medical diagnosis.</Text>
+                      </View>
+                      <View style={styles.conditionBadge}>
+                        <View style={styles.conditionBadgeDot} />
+                        <Text style={styles.conditionBadgeText}>VISIBLE CHECK</Text>
+                      </View>
+                    </View>
+                    <View style={styles.assessmentRows}>
+                      <View style={styles.assessmentRow}>
+                        <Text style={styles.assessmentLabel}>Dandruff / flakes</Text>
+                        <Text style={styles.assessmentValue}>{formatDetectedLabel(displayAnalysis.dandruff_detected)}</Text>
+                      </View>
+                      <View style={styles.assessmentRow}>
+                        <Text style={styles.assessmentLabel}>Dandruff severity</Text>
+                        <Text style={styles.assessmentValue}>{displayAnalysis.dandruff_severity || 'none'}</Text>
+                      </View>
+                      <View style={styles.assessmentRow}>
+                        <Text style={styles.assessmentLabel}>Lice / nits</Text>
+                        <Text style={styles.assessmentValue}>{formatDetectedLabel(displayAnalysis.lice_detected)}</Text>
+                      </View>
+                      <View style={styles.assessmentRow}>
+                        <Text style={styles.assessmentLabel}>Lice confidence</Text>
+                        <Text style={styles.assessmentValue}>{displayAnalysis.lice_confidence || 'none'}</Text>
+                      </View>
+                    </View>
+                    <View style={styles.assessmentNoteCard}>
+                      <AppIcon name="information-outline" size="md" state="active" />
+                      <Text style={styles.assessmentNoteText}>
+                        {[displayAnalysis.dandruff_notes, displayAnalysis.lice_notes].filter(Boolean).join(' ')
+                          || 'No additional visible scalp finding notes were returned for this check.'}
+                      </Text>
+                    </View>
+                  </LinearGradient>
+                </ScrollView>
+
+                <View style={styles.resultDetailsDots}>
+                  {[0, 1, 2].map((index) => (
+                    <View
+                      key={index}
+                      style={[
+                        styles.resultDetailsDot,
+                        resultDetailIndex === index ? styles.resultDetailsDotActive : null,
+                      ]}
+                    />
+                  ))}
+                </View>
+              </View>
 
               {questionnaireGuidanceNote ? (
                 <View style={styles.resultInlineSection}>
@@ -5895,45 +6311,6 @@ export function DonorHairSubmissionScreen() {
                 </View>
               ) : null}
 
-              <View style={styles.resultActions}>
-                {donationAssessment.isDonationReady ? (
-                  <AppButton
-                    title="Find Donation Drives"
-                    onPress={() => router.replace('/donor/home?tab=drives')}
-                    disabled={isSaving || isAnalyzing}
-                    fullWidth
-                  />
-                ) : null}
-                <AppButton
-                  title={isSaving ? 'Saving...' : 'Save Results'}
-                  variant={donationAssessment.isDonationReady ? 'outline' : 'primary'}
-                  onPress={saveConfirmedAnalysis}
-                  loading={isSaving}
-                  disabled={isSaving || isAnalyzing}
-                  fullWidth
-                />
-                <Pressable
-                  onPress={() => {
-                    resetFlow();
-                    setAnalysisReviewValues(buildHairReviewDefaultValues(null));
-                    setIsEditingAnalysisReview(false);
-                    setResultConfirmationMode('pending');
-                    setPhotoIndex(0);
-                    setQuestionIndex(0);
-                    setStepIndex(0);
-                    setHasAcknowledgedRequirementIntro(false);
-                  }}
-                  disabled={isSaving || isAnalyzing}
-                  style={styles.scanAgainLink}
-                >
-                  <Text style={styles.scanAgainText}>Scan Again</Text>
-                </Pressable>
-              </View>
-
-              <View style={styles.finalAiNote}>
-                <AppIcon name="information-outline" size="sm" state="muted" />
-                <Text style={styles.finalAiNoteText}>{finalAiResultNote}</Text>
-              </View>
             </View>
           );
         }
@@ -6173,7 +6550,11 @@ export function DonorHairSubmissionScreen() {
           {stepIndex === 2 ? analyzerContent : (
             <ScrollView
               style={styles.analyzerScroll}
-              contentContainerStyle={styles.analyzerScrollContent}
+              contentContainerStyle={[
+                styles.analyzerScrollContent,
+                stepIndex === 1 ? styles.analyzerReadinessScrollContent : null,
+                stepIndex === 3 && analysis ? styles.analyzerResultScrollContent : null,
+              ]}
               showsVerticalScrollIndicator={false}
               keyboardShouldPersistTaps="handled"
             >
@@ -6181,6 +6562,8 @@ export function DonorHairSubmissionScreen() {
             </ScrollView>
           )}
           {renderQuestionNavigationDock()}
+          {renderReadinessActionDock()}
+          {renderResultActionDock()}
         </View>
         {donationRequirementsIntroModal}
         {previewImageModal}
@@ -6314,6 +6697,8 @@ export function DonorHairSubmissionScreen() {
             {renderStepContent()}
           </View>
           {renderQuestionNavigationDock()}
+          {renderReadinessActionDock()}
+          {renderResultActionDock()}
         </View>
       )}
 
@@ -6359,6 +6744,12 @@ const styles = StyleSheet.create({
   analyzerScrollContent: {
     flexGrow: 1,
     paddingBottom: 124,
+  },
+  analyzerReadinessScrollContent: {
+    paddingBottom: 118,
+  },
+  analyzerResultScrollContent: {
+    paddingBottom: 210,
   },
   wizardStage: {
     width: '100%',
@@ -7821,11 +8212,12 @@ const styles = StyleSheet.create({
   requirementsIntroCard: {
     width: '100%',
     maxWidth: 430,
-    maxHeight: '88%',
+    maxHeight: '92%',
+    position: 'relative',
     overflow: 'hidden',
     borderRadius: 28,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.36)',
+    borderColor: 'rgba(255,255,255,0.42)',
     backgroundColor: '#FFFBFC',
     ...theme.shadows.card,
   },
@@ -7894,9 +8286,12 @@ const styles = StyleSheet.create({
   },
   requirementsIntroScroll: {
     flexShrink: 1,
+    backgroundColor: '#FFFBFC',
   },
   requirementsIntroBody: {
-    padding: theme.spacing.lg,
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.lg,
+    paddingBottom: 100,
     gap: theme.spacing.md,
   },
   requirementsIntroSectionHeading: {
@@ -8047,27 +8442,36 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
   },
   requirementsIntroActions: {
-    paddingHorizontal: theme.spacing.lg,
-    paddingTop: theme.spacing.sm,
-    paddingBottom: theme.spacing.lg,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#ECDDE1',
-    backgroundColor: '#FFFBFC',
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 10,
+    elevation: 12,
+    paddingHorizontal: theme.spacing.sm,
+    paddingBottom: theme.spacing.sm,
+    backgroundColor: 'transparent',
   },
   requirementsIntroContinue: {
     overflow: 'hidden',
-    minHeight: 56,
-    borderRadius: 18,
-    ...theme.shadows.soft,
+    minHeight: 58,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.32)',
+    shadowColor: '#24040D',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.28,
+    shadowRadius: 14,
+    elevation: 12,
   },
   requirementsIntroContinueSurface: {
-    minHeight: 56,
+    minHeight: 58,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: theme.spacing.sm,
     paddingHorizontal: theme.spacing.md,
-    borderRadius: 18,
+    borderRadius: 20,
   },
   requirementsIntroContinueText: {
     fontFamily: theme.typography.fontFamily,
@@ -9280,60 +9684,114 @@ const styles = StyleSheet.create({
   },
   recommendationList: {
     gap: theme.spacing.sm,
-    marginTop: theme.spacing.sm,
-    marginBottom: theme.spacing.md,
+  },
+  recommendationSection: {
+    gap: theme.spacing.md,
+    padding: theme.spacing.md,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: theme.colors.borderSubtle,
+    overflow: 'hidden',
+    ...theme.shadows.soft,
+  },
+  recommendationHeadingCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 4,
   },
   recommendationCard: {
-    paddingVertical: theme.spacing.sm,
-    paddingHorizontal: 0,
-    borderRadius: theme.radius.lg,
-    borderBottomWidth: 1,
+    minHeight: 92,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: theme.spacing.sm,
+    padding: theme.spacing.sm,
+    borderRadius: 16,
+    borderWidth: 1,
     borderColor: theme.colors.borderSubtle,
   },
   recommendationCardPrimary: {
-    borderColor: theme.colors.borderSubtle,
+    borderColor: theme.colors.borderStrong,
+    ...theme.shadows.soft,
+  },
+  recommendationStepBadge: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.brandPrimary,
+  },
+  recommendationStepNumber: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.bodySm,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.textOnBrand,
+  },
+  recommendationCopy: {
+    flex: 1,
+    minWidth: 0,
   },
   recommendationPill: {
     alignSelf: 'flex-start',
-    marginBottom: theme.spacing.xs,
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: 6,
-    borderRadius: theme.radius.pill,
-    backgroundColor: theme.colors.surfaceSoft,
+    marginBottom: 3,
     fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.semantic.caption,
+    fontSize: 10,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 0.6,
     color: theme.colors.brandPrimary,
   },
   recommendationTitle: {
     fontFamily: theme.typography.fontFamilyDisplay,
     fontSize: theme.typography.semantic.body,
+    fontWeight: theme.typography.weights.bold,
     color: theme.colors.textPrimary,
-    marginBottom: theme.spacing.xs,
+    marginBottom: 3,
   },
   recommendationBody: {
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.semantic.bodySm,
+    lineHeight: theme.typography.semantic.bodySm * theme.typography.lineHeights.relaxed,
     color: theme.colors.textSecondary,
   },
   analysisSplash: {
     width: '100%',
-    minHeight: 360,
     gap: theme.spacing.md,
     padding: theme.spacing.md,
     borderRadius: 24,
     borderWidth: 1,
     borderColor: theme.colors.borderSubtle,
-    backgroundColor: theme.colors.backgroundPrimary,
+    overflow: 'hidden',
+    ...theme.shadows.card,
   },
   analysisScanHeader: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     justifyContent: 'space-between',
-    gap: theme.spacing.md,
+    gap: theme.spacing.sm,
+  },
+  analysisScanHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  analysisScanHeaderText: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  analysisSplashIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.brandPrimaryMuted,
   },
   analysisSplashLogo: {
-    width: 70,
-    height: 70,
+    width: 82,
+    height: 82,
   },
   analysisSplashTitle: {
     fontFamily: theme.typography.fontFamilyDisplay,
@@ -9341,45 +9799,61 @@ const styles = StyleSheet.create({
     color: theme.colors.textPrimary,
   },
   analysisSplashText: {
-    maxWidth: 280,
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.caption,
+    lineHeight: 16,
     color: theme.colors.textSecondary,
+  },
+  analysisScanPercentBadge: {
+    minWidth: 58,
+    minHeight: 38,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.sm,
+    borderRadius: theme.radius.full,
   },
   analysisScanPercent: {
     fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.semantic.bodyLg,
+    fontSize: theme.typography.semantic.bodySm,
     fontWeight: theme.typography.weights.bold,
-    color: theme.colors.brandPrimary,
-  },
-  analysisScanRow: {
-    flexDirection: 'row',
-    alignItems: 'stretch',
-    gap: theme.spacing.md,
+    color: theme.colors.textOnBrand,
   },
   analysisScanPreview: {
-    flex: 1,
-    aspectRatio: 1,
-    minWidth: 148,
-    borderRadius: 22,
+    position: 'relative',
+    width: '100%',
+    height: 220,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: theme.colors.borderStrong,
     overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: theme.colors.surfaceSoft,
+    backgroundColor: theme.colors.surfaceCardMuted,
   },
   analysisScanImage: {
     width: '100%',
     height: '100%',
   },
-  analysisScanGrid: {
+  analysisScanOverlay: {
     ...StyleSheet.absoluteFillObject,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.24)',
+  },
+  analysisScanLine: {
+    position: 'absolute',
+    top: 0,
+    left: theme.spacing.sm,
+    right: theme.spacing.sm,
+    height: 2,
+    borderRadius: theme.radius.full,
+    backgroundColor: theme.colors.palette.blush200,
+    shadowColor: theme.colors.palette.white,
+    shadowOpacity: 0.8,
+    shadowRadius: 7,
+    elevation: 4,
   },
   analysisScanBadge: {
     position: 'absolute',
     left: theme.spacing.sm,
-    bottom: theme.spacing.sm,
+    top: theme.spacing.sm,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
@@ -9392,7 +9866,7 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: theme.radius.full,
-    backgroundColor: theme.colors.brandPrimary,
+    backgroundColor: theme.colors.palette.blush200,
   },
   analysisScanBadgeText: {
     color: theme.colors.textInverse,
@@ -9401,30 +9875,43 @@ const styles = StyleSheet.create({
     fontWeight: theme.typography.weights.bold,
     textTransform: 'uppercase',
   },
-  analysisScanChecks: {
-    width: 132,
+  analysisScanCaption: {
+    position: 'absolute',
+    left: theme.spacing.md,
+    right: theme.spacing.md,
+    bottom: theme.spacing.md,
+    gap: 2,
+  },
+  analysisScanCaptionTitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.body,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.textInverse,
+  },
+  analysisScanCaptionText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.caption,
+    color: theme.colors.textHeroMuted,
+  },
+  analysisProgressHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     gap: theme.spacing.sm,
   },
-  analysisScanCheck: {
-    flex: 1,
-    minHeight: 48,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: theme.colors.borderSubtle,
-    backgroundColor: theme.colors.surfaceSoft,
-    paddingHorizontal: theme.spacing.sm,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-  },
-  analysisScanCheckText: {
+  analysisProgressLabel: {
     fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.caption,
-    color: theme.colors.textPrimary,
+    fontSize: theme.typography.semantic.bodySm,
     fontWeight: theme.typography.weights.semibold,
+    color: theme.colors.textPrimary,
+  },
+  analysisProgressValue: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.caption,
+    color: theme.colors.brandPrimary,
   },
   analysisScanProgressTrack: {
-    height: 8,
+    height: 9,
     borderRadius: theme.radius.full,
     overflow: 'hidden',
     backgroundColor: theme.colors.brandPrimaryMuted,
@@ -9432,7 +9919,23 @@ const styles = StyleSheet.create({
   analysisScanProgressFill: {
     height: '100%',
     borderRadius: theme.radius.full,
-    backgroundColor: theme.colors.brandPrimary,
+    overflow: 'hidden',
+  },
+  analysisSplashNotice: {
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.sm,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255, 255, 255, 0.58)',
+  },
+  analysisSplashNoticeText: {
+    flex: 1,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.caption,
+    lineHeight: 16,
+    color: theme.colors.textSecondary,
   },
   analysisResultPanel: {
     width: '100%',
@@ -9486,6 +9989,102 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: theme.colors.borderSubtle,
     backgroundColor: theme.colors.backgroundPrimary,
+  },
+  resultDetailsModule: {
+    gap: theme.spacing.sm,
+    overflow: 'hidden',
+  },
+  resultDetailsModuleHeader: {
+    minHeight: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.xs,
+  },
+  resultDetailsModuleIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.brandPrimaryMuted,
+  },
+  resultDetailsModuleCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  resultDetailsModuleTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.body,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.textPrimary,
+  },
+  resultDetailsModuleHint: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.caption,
+    lineHeight: 16,
+    color: theme.colors.textSecondary,
+  },
+  resultDetailsModuleCount: {
+    minWidth: 38,
+    textAlign: 'right',
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.caption,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.brandPrimary,
+  },
+  resultDetailsPager: {
+    width: '100%',
+    overflow: 'visible',
+  },
+  resultDetailPage: {
+    position: 'relative',
+    minHeight: 350,
+    gap: theme.spacing.md,
+    padding: theme.spacing.md,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: theme.colors.borderSubtle,
+    overflow: 'hidden',
+    opacity: 0.78,
+    transform: [{ scale: 0.985 }],
+  },
+  resultDetailPageActive: {
+    opacity: 1,
+    transform: [{ scale: 1 }],
+    borderColor: theme.colors.borderStrong,
+    ...theme.shadows.card,
+  },
+  resultDetailAccent: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 5,
+    backgroundColor: theme.colors.brandPrimary,
+  },
+  resultDetailHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
+  },
+  resultDetailsDots: {
+    minHeight: 22,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+  },
+  resultDetailsDot: {
+    width: 7,
+    height: 7,
+    borderRadius: theme.radius.full,
+    backgroundColor: theme.colors.borderStrong,
+  },
+  resultDetailsDotActive: {
+    width: 24,
+    backgroundColor: theme.colors.brandPrimary,
   },
   resultSectionHeader: {
     flexDirection: 'row',
@@ -9937,6 +10536,9 @@ const styles = StyleSheet.create({
     color: theme.colors.textSecondary,
   },
   assessmentValue: {
+    flex: 1,
+    minWidth: 0,
+    textAlign: 'right',
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.semantic.body,
     fontWeight: theme.typography.weights.semibold,
@@ -9971,12 +10573,201 @@ const styles = StyleSheet.create({
   preAnalysisReviewCard: {
     gap: theme.spacing.md,
     padding: theme.spacing.md,
-    borderRadius: 14,
+    borderRadius: 22,
     borderWidth: 1,
     borderColor: theme.colors.borderSubtle,
     backgroundColor: theme.colors.backgroundPrimary,
+    ...theme.shadows.soft,
+  },
+  preAnalysisHeadingIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    backgroundColor: theme.colors.brandPrimaryMuted,
+  },
+  preAnalysisHeadingCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  preAnalysisHeadingTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.bodyLg,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.textPrimary,
+  },
+  assessmentNoteCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: theme.spacing.sm,
+    padding: theme.spacing.sm,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: theme.colors.borderSubtle,
+    backgroundColor: 'rgba(255, 255, 255, 0.66)',
+  },
+  resultOverviewCard: {
+    position: 'relative',
+    gap: theme.spacing.md,
+    padding: theme.spacing.md,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: theme.colors.borderSubtle,
+    overflow: 'hidden',
+    ...theme.shadows.card,
+  },
+  resultOverviewOrb: {
+    position: 'absolute',
+    width: 150,
+    height: 150,
+    borderRadius: 75,
+    top: -86,
+    right: -54,
+    backgroundColor: theme.colors.accentSoft,
+  },
+  resultOverviewHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: theme.spacing.sm,
+  },
+  resultOverviewEyebrow: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  resultOverviewIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.brandPrimaryMuted,
+  },
+  resultOverviewKicker: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    lineHeight: 12,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 0.8,
+    color: theme.colors.brandPrimary,
+  },
+  resultOverviewTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.body,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.textPrimary,
+  },
+  resultOverviewContent: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: theme.spacing.md,
+  },
+  resultPhotoThumb: {
+    position: 'relative',
+    width: 108,
+    height: 138,
+    flexShrink: 0,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: theme.colors.borderStrong,
+    overflow: 'hidden',
+    backgroundColor: theme.colors.surfaceCardMuted,
+  },
+  resultPhotoThumbImage: {
+    width: 108,
+    height: 138,
+  },
+  resultPhotoThumbFallback: {
+    width: 108,
+    height: 138,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  resultPhotoThumbOverlay: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  resultPhotoThumbAction: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(75, 16, 32, 0.74)',
+  },
+  resultPhotoThumbLabel: {
+    position: 'absolute',
+    left: 9,
+    bottom: 9,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 10,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.textInverse,
+  },
+  resultOverviewCopy: {
+    flex: 1,
+    minWidth: 0,
+    justifyContent: 'center',
+    gap: theme.spacing.xs,
+  },
+  resultOverviewCondition: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.titleSm,
+    lineHeight: theme.typography.semantic.titleSm * theme.typography.lineHeights.tight,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.brandPrimary,
+  },
+  resultOverviewMetricRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: theme.spacing.xs,
+  },
+  resultOverviewMetric: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  resultOverviewMetricDivider: {
+    width: 1,
+    backgroundColor: theme.colors.borderSubtle,
+  },
+  resultOverviewMetricLabel: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    color: theme.colors.textMuted,
+  },
+  resultOverviewMetricValue: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.textPrimary,
+  },
+  resultOverviewSummary: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.caption,
+    lineHeight: 16,
+    color: theme.colors.textSecondary,
+  },
+  preAnalysisHeadingSubtitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.caption,
+    lineHeight: 17,
+    color: theme.colors.textSecondary,
   },
   preAnalysisList: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
     gap: theme.spacing.sm,
   },
   preAnalysisStatusRow: {
@@ -10038,23 +10829,64 @@ const styles = StyleSheet.create({
     lineHeight: theme.typography.semantic.caption * theme.typography.lineHeights.relaxed,
     color: theme.colors.textError,
   },
-  preAnalysisPhotoCard: {
-    minHeight: 92,
+  preAnalysisScreeningRow: {
+    flexDirection: 'row',
+    gap: theme.spacing.sm,
+  },
+  preAnalysisScreeningRowNarrow: {
+    flexDirection: 'column',
+  },
+  preAnalysisScreeningChip: {
+    flex: 1,
+    minHeight: 52,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: theme.spacing.sm,
-    padding: theme.spacing.xs,
+    gap: 6,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: theme.spacing.xs,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: theme.colors.borderSubtle,
+    backgroundColor: theme.colors.brandPrimaryMuted,
+  },
+  preAnalysisScreeningChipNarrow: {
+    width: '100%',
+    flex: 0,
+    minHeight: 44,
+  },
+  preAnalysisScreeningChipIssue: {
+    borderColor: theme.colors.textError,
+    backgroundColor: theme.colors.errorSurface,
+  },
+  preAnalysisScreeningText: {
+    flex: 1,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: theme.typography.weights.semibold,
+    color: theme.colors.brandPrimary,
+  },
+  preAnalysisScreeningTextIssue: {
+    color: theme.colors.textError,
+  },
+  preAnalysisPhotoCard: {
+    flexGrow: 0,
+    flexShrink: 0,
+    gap: 5,
+  },
+  preAnalysisPhotoCardIssue: {
+    opacity: 0.96,
+  },
+  preAnalysisPhotoVisual: {
+    position: 'relative',
+    flexShrink: 0,
+  },
+  preAnalysisPhotoFrame: {
     borderRadius: 12,
     borderWidth: 1,
     borderColor: theme.colors.borderSubtle,
-    backgroundColor: theme.colors.surfaceSoft,
-  },
-  preAnalysisPhotoFrame: {
-    width: 86,
-    height: 86,
-    borderRadius: 10,
     overflow: 'hidden',
-    backgroundColor: theme.colors.backgroundPrimary,
+    backgroundColor: theme.colors.surfaceCardMuted,
   },
   preAnalysisPhotoPressed: {
     opacity: 0.9,
@@ -10063,46 +10895,102 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
   },
+  preAnalysisPhotoLoading: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.surfaceCardMuted,
+  },
+  preAnalysisPhotoLoadError: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    paddingHorizontal: theme.spacing.sm,
+    backgroundColor: 'rgba(36, 26, 29, 0.9)',
+  },
+  preAnalysisPhotoLoadErrorText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 10,
+    fontWeight: theme.typography.weights.semibold,
+    textAlign: 'center',
+    color: '#FFFFFF',
+  },
   preAnalysisPhotoEmpty: {
-    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
+  preAnalysisPhotoNumberBadge: {
+    position: 'absolute',
+    top: 8,
+    left: 8,
+    minWidth: 25,
+    height: 25,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+    backgroundColor: 'rgba(48, 8, 17, 0.78)',
+  },
+  preAnalysisPhotoNumberText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 11,
+    fontWeight: theme.typography.weights.bold,
+    color: '#FFFFFF',
+  },
+  preAnalysisPhotoStateBadge: {
+    position: 'absolute',
+    left: 8,
+    bottom: 8,
+    minHeight: 24,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    borderRadius: theme.radius.full,
+    backgroundColor: 'rgba(28, 122, 66, 0.9)',
+  },
+  preAnalysisPhotoStateBadgeIssue: {
+    backgroundColor: 'rgba(180, 31, 53, 0.92)',
+  },
+  preAnalysisPhotoStateText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 10,
+    fontWeight: theme.typography.weights.bold,
+    color: '#FFFFFF',
+  },
   preAnalysisPhotoMeta: {
-    flex: 1,
+    width: '100%',
     minWidth: 0,
-    gap: 3,
+    gap: 5,
   },
   preAnalysisPhotoTitle: {
     fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.bodySm,
+    fontSize: 10,
+    lineHeight: 14,
     fontWeight: theme.typography.weights.semibold,
+    textAlign: 'center',
     color: theme.colors.textPrimary,
   },
-  preAnalysisPhotoSubtitle: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.semantic.caption,
-    color: theme.colors.textSecondary,
-  },
   preAnalysisRetakeButton: {
-    minHeight: 34,
+    width: '100%',
+    minHeight: 30,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: theme.spacing.sm,
+    justifyContent: 'center',
+    gap: 3,
+    paddingHorizontal: 4,
     borderRadius: theme.radius.full,
     backgroundColor: theme.colors.brandPrimaryMuted,
   },
   preAnalysisRetakeText: {
     fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.semantic.caption,
+    fontSize: 10,
     fontWeight: theme.typography.weights.bold,
     color: theme.colors.brandPrimary,
   },
   preAnalysisActions: {
-    gap: theme.spacing.sm,
-    marginTop: theme.spacing.xs,
-    marginBottom: 112,
+    width: '100%',
   },
   preAnalysisChecklist: {
     gap: theme.spacing.sm,
@@ -10440,6 +11328,202 @@ const styles = StyleSheet.create({
     bottom: theme.spacing.md,
     zIndex: 30,
     elevation: 18,
+  },
+  readinessFloatingDock: {
+    position: 'absolute',
+    left: theme.spacing.md,
+    right: theme.spacing.md,
+    bottom: theme.spacing.sm,
+    zIndex: 31,
+    elevation: 20,
+    minHeight: 72,
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: 8,
+    padding: 8,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: theme.colors.borderStrong,
+    overflow: 'hidden',
+    ...theme.shadows.card,
+  },
+  readinessFloatingEdit: {
+    width: 94,
+    minHeight: 56,
+    flexShrink: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 3,
+    paddingHorizontal: 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: theme.colors.borderStrong,
+    backgroundColor: theme.colors.backgroundPrimary,
+    ...theme.shadows.soft,
+  },
+  readinessFloatingEditIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.brandPrimaryMuted,
+  },
+  readinessFloatingEditText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 10,
+    lineHeight: 12,
+    fontWeight: theme.typography.weights.bold,
+    textAlign: 'center',
+    color: theme.colors.brandPrimary,
+  },
+  readinessFloatingPrimary: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 56,
+    borderRadius: 16,
+    overflow: 'hidden',
+    ...theme.shadows.soft,
+  },
+  readinessFloatingPrimarySurface: {
+    flex: 1,
+    minHeight: 56,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: theme.spacing.sm,
+  },
+  readinessFloatingPrimaryIcon: {
+    width: 34,
+    height: 34,
+    flexShrink: 0,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.whiteOverlay,
+  },
+  readinessFloatingPrimaryCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 1,
+  },
+  readinessFloatingPrimaryTitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.bodySm,
+    lineHeight: 17,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.textOnBrand,
+  },
+  readinessFloatingPrimarySubtitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    lineHeight: 12,
+    color: theme.colors.textHeroMuted,
+  },
+  resultFloatingDock: {
+    position: 'absolute',
+    left: theme.spacing.sm,
+    right: theme.spacing.sm,
+    bottom: theme.spacing.sm,
+    zIndex: 32,
+    elevation: 22,
+    gap: 10,
+    padding: 10,
+    borderRadius: 26,
+    borderWidth: 1,
+    borderColor: theme.colors.borderStrong,
+    overflow: 'hidden',
+    ...theme.shadows.card,
+  },
+  resultFloatingNotice: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    paddingHorizontal: 4,
+  },
+  resultFloatingNoticeIcon: {
+    width: 32,
+    height: 32,
+    flexShrink: 0,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.brandPrimaryMuted,
+  },
+  resultFloatingNoticeText: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 10,
+    lineHeight: 14,
+    color: theme.colors.textSecondary,
+  },
+  resultFloatingDrivesLink: {
+    minHeight: 32,
+    flexShrink: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.sm,
+    borderRadius: theme.radius.full,
+    backgroundColor: theme.colors.brandPrimaryMuted,
+  },
+  resultFloatingDrivesText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 10,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.brandPrimary,
+  },
+  resultFloatingActions: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: 8,
+  },
+  resultFloatingSecondaryButton: {
+    flex: 1,
+    minHeight: 56,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    paddingHorizontal: theme.spacing.sm,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: theme.colors.borderStrong,
+    backgroundColor: theme.colors.backgroundPrimary,
+  },
+  resultFloatingSecondaryText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.bodySm,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.brandPrimary,
+  },
+  resultFloatingPrimaryButton: {
+    flex: 1.15,
+    minHeight: 56,
+    minWidth: 0,
+    borderRadius: 20,
+    overflow: 'hidden',
+  },
+  resultFloatingPrimarySurface: {
+    flex: 1,
+    width: '100%',
+    minHeight: 56,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    paddingHorizontal: theme.spacing.sm,
+  },
+  resultFloatingPrimaryText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.bodySm,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.textOnBrand,
+  },
+  resultFloatingButtonDisabled: {
+    opacity: 0.7,
   },
   questionNavigationActions: {
     flexDirection: 'row',

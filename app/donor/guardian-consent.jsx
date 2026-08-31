@@ -1,12 +1,13 @@
 import React from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { AppButton } from '../../src/components/ui/AppButton';
 import { AppIcon } from '../../src/components/ui/AppIcon';
 import { StatusBanner } from '../../src/components/ui/StatusBanner';
+import { LegalDocumentPreview } from '../../src/components/legal/LegalDocumentPreview';
 import { useAuth } from '../../src/providers/AuthProvider';
-import { GUARDIAN_CONSENT_TEXT, saveGuardianConsent } from '../../src/features/donorCompliance.service';
+import { fetchActiveMinorConsentDocument, saveGuardianConsent } from '../../src/features/donorCompliance.service';
 import { resolveThemeRoles, theme } from '../../src/design-system/theme';
 
 const initialForm = {
@@ -23,12 +24,14 @@ const initialForm = {
 const requiredMessage = 'This field is required.';
 const formatPhilippineMobileInput = (value) => String(value || '').replace(/\D/g, '').slice(0, 11);
 
-const CheckboxRow = ({ label, value, onPress, optional = false }) => (
+const CheckboxRow = ({ label, value, onPress, optional = false, disabled = false }) => (
   <Pressable
     accessibilityRole="checkbox"
-    accessibilityState={{ checked: Boolean(value) }}
+    accessibilityState={{ checked: Boolean(value), disabled }}
+    disabled={disabled}
     onPress={onPress}
-    style={({ pressed }) => [styles.checkboxRow, pressed ? styles.pressed : null]}
+    android_ripple={{ color: theme.colors.surfacePressed, borderless: false }}
+    style={[styles.checkboxRow, disabled ? styles.checkboxRowDisabled : null]}
   >
     <View style={[styles.checkbox, value ? styles.checkboxActive : null]}>
       {value ? <AppIcon name="checkmark" size="xs" state="inverse" /> : null}
@@ -45,6 +48,23 @@ export default function GuardianConsentScreen() {
   const [errors, setErrors] = React.useState({});
   const [feedback, setFeedback] = React.useState(null);
   const [isSaving, setIsSaving] = React.useState(false);
+  const [consentDocument, setConsentDocument] = React.useState(null);
+  const [isLoadingConsent, setIsLoadingConsent] = React.useState(true);
+  const [consentLoadError, setConsentLoadError] = React.useState('');
+  const consentText = String(consentDocument?.content || '').trim();
+
+  const loadConsentDocument = React.useCallback(async () => {
+    setIsLoadingConsent(true);
+    setConsentLoadError('');
+    const result = await fetchActiveMinorConsentDocument();
+    setConsentDocument(result.data || null);
+    setConsentLoadError(result.error?.message || '');
+    setIsLoadingConsent(false);
+  }, []);
+
+  React.useEffect(() => {
+    loadConsentDocument();
+  }, [loadConsentDocument]);
 
   const updateField = (field, value) => {
     setForm((current) => ({ ...current, [field]: value }));
@@ -69,6 +89,11 @@ export default function GuardianConsentScreen() {
   };
 
   const handleSave = async () => {
+    if (!consentDocument?.legal_document_id || !consentText) {
+      setFeedback({ variant: 'error', message: 'Load the current guardian consent before continuing.' });
+      return;
+    }
+
     if (!validate()) return;
 
     setIsSaving(true);
@@ -79,6 +104,7 @@ export default function GuardianConsentScreen() {
       guardianContactNumber: form.guardianContactNumber,
       guardianEmail: form.guardianEmail,
       publicPostingAllowed: form.publicPostingAllowed,
+      consentTextSnapshot: consentText,
     });
     setIsSaving(false);
 
@@ -161,13 +187,42 @@ export default function GuardianConsentScreen() {
             {renderInput({ field: 'guardianContactNumber', label: 'Guardian Contact Number', keyboardType: 'phone-pad' })}
             {renderInput({ field: 'guardianEmail', label: 'Guardian Email', keyboardType: 'email-address', optional: true })}
 
-            <View style={styles.consentBox}>
-              <Text style={styles.consentText}>{GUARDIAN_CONSENT_TEXT}</Text>
+            <View style={styles.consentSection}>
+              <View style={styles.consentHeader}>
+                <View style={styles.consentIcon}>
+                  <AppIcon name="file-document-check-outline" size="sm" color={roles.primaryActionBackground} />
+                </View>
+                <View style={styles.consentHeaderCopy}>
+                  <Text style={styles.consentTitle}>Consent document preview</Text>
+                  <Text style={styles.consentMeta}>
+                    {consentDocument?.version
+                      ? `Version ${consentDocument.version} · Tap the preview to read`
+                      : 'Tap the preview to read the complete document'}
+                  </Text>
+                </View>
+              </View>
+              {isLoadingConsent ? (
+                <View style={styles.consentLoading}>
+                  <ActivityIndicator size="small" color={roles.primaryActionBackground} />
+                  <Text style={styles.consentLoadingText}>Loading consent from the database</Text>
+                </View>
+              ) : consentLoadError ? (
+                <View style={styles.consentErrorBlock}>
+                  <Text style={styles.errorText}>{consentLoadError}</Text>
+                  <Pressable onPress={loadConsentDocument} style={styles.retryButton} accessibilityRole="button">
+                    <AppIcon name="refresh" size="sm" color={roles.primaryActionBackground} />
+                    <Text style={[styles.retryText, { color: roles.primaryActionBackground }]}>Try again</Text>
+                  </Pressable>
+                </View>
+              ) : (
+                <LegalDocumentPreview document={consentDocument} roles={roles} />
+              )}
             </View>
 
             <CheckboxRow
               label="I allow this minor donor to participate in hair donation."
               value={form.minorDonationConsent}
+              disabled={isLoadingConsent || !consentDocument}
               onPress={() => updateField('minorDonationConsent', !form.minorDonationConsent)}
             />
             {errors.minorDonationConsent ? <Text style={styles.errorText}>{errors.minorDonationConsent}</Text> : null}
@@ -175,6 +230,7 @@ export default function GuardianConsentScreen() {
             <CheckboxRow
               label="I allow AI-assisted image processing for initial hair screening."
               value={form.aiImageProcessingConsent}
+              disabled={isLoadingConsent || !consentDocument}
               onPress={() => updateField('aiImageProcessingConsent', !form.aiImageProcessingConsent)}
             />
             {errors.aiImageProcessingConsent ? <Text style={styles.errorText}>{errors.aiImageProcessingConsent}</Text> : null}
@@ -183,6 +239,7 @@ export default function GuardianConsentScreen() {
               label="I allow public posting or donor recognition"
               value={form.publicPostingAllowed}
               optional
+              disabled={isLoadingConsent || !consentDocument}
               onPress={() => updateField('publicPostingAllowed', !form.publicPostingAllowed)}
             />
 
@@ -192,7 +249,7 @@ export default function GuardianConsentScreen() {
               title="Save Guardian Consent"
               onPress={handleSave}
               loading={isSaving}
-              disabled={isSaving}
+              disabled={isSaving || isLoadingConsent || !consentDocument}
               backgroundColorOverride={roles.primaryActionBackground}
               textColorOverride={roles.primaryActionText}
               borderColorOverride={roles.primaryActionBackground}
@@ -280,12 +337,39 @@ const styles = StyleSheet.create({
   inputError: {
     borderColor: theme.colors.textError,
   },
-  consentBox: {
-    borderRadius: 18,
-    backgroundColor: '#F8F4F2',
-    borderWidth: 1,
-    borderColor: '#E4D9DA',
-    padding: theme.spacing.md,
+  consentSection: {
+    paddingBottom: theme.spacing.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.borderSubtle,
+    gap: theme.spacing.md,
+  },
+  consentHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  consentIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.brandPrimaryMuted,
+  },
+  consentHeaderCopy: {
+    flex: 1,
+  },
+  consentTitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.textPrimary,
+  },
+  consentMeta: {
+    marginTop: 2,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    color: theme.colors.textMuted,
   },
   consentText: {
     fontFamily: theme.typography.fontFamily,
@@ -293,11 +377,47 @@ const styles = StyleSheet.create({
     lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.relaxed,
     color: '#526078',
   },
+  consentLoading: {
+    minHeight: 64,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
+  },
+  consentLoadingText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+    color: theme.colors.textSecondary,
+  },
+  consentErrorBlock: {
+    gap: theme.spacing.sm,
+  },
+  retryButton: {
+    minHeight: 38,
+    alignSelf: 'flex-start',
+    paddingHorizontal: theme.spacing.md,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1,
+    borderColor: theme.colors.brandPrimary,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.xs,
+  },
+  retryText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+    fontWeight: theme.typography.weights.bold,
+  },
   checkboxRow: {
     minHeight: 48,
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: theme.spacing.sm,
+    paddingVertical: theme.spacing.xs,
+    overflow: 'hidden',
+  },
+  checkboxRowDisabled: {
+    opacity: 0.5,
   },
   checkbox: {
     width: 24,
@@ -311,8 +431,8 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   checkboxActive: {
-    backgroundColor: '#6B0606',
-    borderColor: '#6B0606',
+    backgroundColor: theme.colors.brandPrimary,
+    borderColor: theme.colors.brandPrimary,
   },
   checkboxText: {
     flex: 1,

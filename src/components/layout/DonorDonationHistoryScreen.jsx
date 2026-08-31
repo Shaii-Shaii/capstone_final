@@ -1,14 +1,15 @@
 import React from 'react';
 import {
   ActivityIndicator,
-  Pressable,
   StyleSheet,
   Text,
   View,
-  useWindowDimensions,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import { LinearGradient } from 'expo-linear-gradient';
 import { DashboardLayout } from './DashboardLayout';
+import { DashboardHeaderSurface } from './DashboardHeaderSurface';
+import { DonorTopBar } from '../donor/DonorTopBar';
 import { AppIcon } from '../ui/AppIcon';
 import { EmptyDataState } from '../ui/EmptyDataState';
 import { useAuth } from '../../providers/AuthProvider';
@@ -33,62 +34,6 @@ const getDonationStatusTone = (status = '') => {
     isCompleted: /complete|completed|success|approved|received|done|closed/.test(normalized),
   };
 };
-
-function HistoryTopBar({ title, onBack, onRefresh, refreshing = false }) {
-  const { resolvedTheme } = useAuth();
-  const roles = resolveThemeRoles(resolvedTheme);
-  const { height } = useWindowDimensions();
-  const horizontalInset = height < theme.layout.shortScreenHeight
-    ? theme.layout.screenPaddingXCompact
-    : theme.layout.screenPaddingX;
-
-  return (
-    <View
-      style={[
-        styles.topBar,
-        {
-          backgroundColor: roles.primaryActionBackground,
-          marginHorizontal: -horizontalInset,
-          paddingHorizontal: 0,
-        },
-      ]}
-    >
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Go back"
-        onPress={onBack}
-        style={({ pressed }) => [
-          styles.topBarButton,
-          { backgroundColor: 'rgba(255, 255, 255, 0.10)' },
-          pressed ? styles.topBarButtonPressed : null,
-        ]}
-      >
-        <AppIcon name="arrowLeft" state="inverse" color={roles.primaryActionText} />
-      </Pressable>
-
-      <Text numberOfLines={1} style={[styles.topBarTitle, { color: roles.primaryActionText }]}>
-        {title}
-      </Text>
-
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Refresh history"
-        onPress={onRefresh}
-        style={({ pressed }) => [
-          styles.topBarButton,
-          { backgroundColor: 'rgba(255, 255, 255, 0.10)' },
-          pressed ? styles.topBarButtonPressed : null,
-        ]}
-      >
-        {refreshing ? (
-          <ActivityIndicator size="small" color={roles.primaryActionText} />
-        ) : (
-          <AppIcon name="refresh" state="inverse" color={roles.primaryActionText} />
-        )}
-      </Pressable>
-    </View>
-  );
-}
 
 function DonationHistoryRow({ item, roles, showDivider = true }) {
   const { isCancelled, isCompleted } = getDonationStatusTone(item?.status);
@@ -208,15 +153,34 @@ export function DonorDonationHistoryScreen() {
       onRefresh={() => loadHistory({ silent: true })}
       refreshing={isRefreshing}
       header={(
-        <HistoryTopBar
-          title="History"
-          onBack={() => router.back()}
-          onRefresh={() => loadHistory({ silent: true })}
-          refreshing={isRefreshing}
-        />
+        <DashboardHeaderSurface>
+          <DonorTopBar
+            title="History"
+            subtitle="Your donation journey"
+            showBack
+            showNotificationsAction={false}
+            showLogoutAction={false}
+            onBackPress={() => router.back()}
+          />
+        </DashboardHeaderSurface>
       )}
     >
       <View style={styles.page}>
+        <LinearGradient
+          colors={[roles.iconPrimarySurface, roles.defaultCardBackground]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={[styles.historyOverview, { borderColor: roles.defaultCardBorder }]}
+        >
+          <View style={[styles.historyOverviewIcon, { backgroundColor: roles.primaryActionBackground }]}>
+            <AppIcon name="history" size="lg" color={roles.primaryActionText} />
+          </View>
+          <View style={styles.historyOverviewCopy}>
+            <Text style={[styles.historyOverviewTitle, { color: roles.headingText }]}>Donation history</Text>
+            <Text style={[styles.historyOverviewText, { color: roles.bodyText }]}>Review completed and cancelled donations in one place.</Text>
+          </View>
+        </LinearGradient>
+
         {isLoading ? (
           <View style={styles.loadingState}>
             <ActivityIndicator color={resolvedTheme?.primaryColor || theme.colors.brandPrimary} />
@@ -225,7 +189,7 @@ export function DonorDonationHistoryScreen() {
             </Text>
           </View>
         ) : historyItems.length ? (
-          <View style={[styles.list, { borderTopColor: roles.defaultCardBorder }]}>
+          <View style={[styles.list, { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder }]}>
             {historyItems.map((item, index) => (
               <DonationHistoryRow
                 key={item.submission_id}
@@ -236,16 +200,18 @@ export function DonorDonationHistoryScreen() {
             ))}
           </View>
         ) : (
-          <EmptyDataState
-            variant="default"
-            showCountBadge={false}
-            title="No donation history yet"
-            message="Completed or cancelled donations will appear here."
-            style={styles.emptyState}
-            illustrationStyle={styles.emptyIllustration}
-            titleStyle={[styles.emptyTitle, { color: roles.headingText }]}
-            messageStyle={[styles.emptyBody, { color: roles.metaText }]}
-          />
+          <View style={[styles.emptyCard, { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder }]}>
+            <EmptyDataState
+              variant="default"
+              showCountBadge={false}
+              title="No donation history yet"
+              message="Completed or cancelled donations will appear here."
+              style={styles.emptyState}
+              illustrationStyle={styles.emptyIllustration}
+              titleStyle={[styles.emptyTitle, { color: roles.headingText }]}
+              messageStyle={[styles.emptyBody, { color: roles.metaText }]}
+            />
+          </View>
         )}
       </View>
     </DashboardLayout>
@@ -253,36 +219,43 @@ export function DonorDonationHistoryScreen() {
 }
 
 const styles = StyleSheet.create({
-  topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: theme.spacing.sm,
-    minHeight: 56,
-    paddingVertical: theme.spacing.xs,
-  },
-  topBarButton: {
-    width: 40,
-    height: 40,
-    borderRadius: theme.radius.full,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  topBarButtonPressed: {
-    opacity: 0.82,
-  },
-  topBarTitle: {
-    flex: 1,
-    textAlign: 'center',
-    fontFamily: theme.typography.fontFamilyDisplay,
-    fontSize: theme.typography.semantic.bodyLg,
-    fontWeight: theme.typography.weights.bold,
-  },
   page: {
     width: '100%',
     maxWidth: theme.layout.contentMaxWidth,
     alignSelf: 'center',
     gap: theme.spacing.md,
+  },
+  historyOverview: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    padding: theme.spacing.md,
+    borderWidth: 1,
+    borderRadius: 20,
+    ...theme.shadows.soft,
+  },
+  historyOverviewIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  historyOverviewCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
+  },
+  historyOverviewTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.body,
+    fontWeight: theme.typography.weights.bold,
+  },
+  historyOverviewText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.caption,
+    lineHeight: theme.typography.semantic.caption * theme.typography.lineHeights.relaxed,
   },
   loadingState: {
     minHeight: 180,
@@ -295,7 +268,11 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.semantic.bodySm,
   },
   list: {
-    borderTopWidth: StyleSheet.hairlineWidth,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderRadius: 20,
+    paddingHorizontal: theme.spacing.md,
+    ...theme.shadows.soft,
   },
   row: {
     flexDirection: 'row',
@@ -361,9 +338,15 @@ const styles = StyleSheet.create({
   },
   emptyState: {
     width: '100%',
-    minHeight: 340,
+    minHeight: 300,
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.lg,
+  },
+  emptyCard: {
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderRadius: 24,
+    ...theme.shadows.soft,
   },
   emptyIllustration: {
     marginBottom: theme.spacing.xs,

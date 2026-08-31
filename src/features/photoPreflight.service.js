@@ -103,6 +103,12 @@ const isSoftCrossViewMismatchReason = (reason = '') => {
     || normalized.includes('stock')
     || normalized.includes('watermark')
     || normalized.includes('downloaded')
+    || normalized.includes('wig')
+    || normalized.includes('extension')
+    || normalized.includes('hairpiece')
+    || normalized.includes('accessor')
+    || normalized.includes('headband')
+    || normalized.includes('clip')
   );
 };
 
@@ -231,10 +237,45 @@ const runCrossViewPhotoValidation = async ({ photos = [], requiredViews = [] } =
   }
 
   const validation = result.data?.validation || {};
-  const isAcceptable = validation.is_acceptable === true;
-  const reason = toSafeMessage(validation.reason, isAcceptable
+  const visualScreeningCompleted = validation.visual_screening_completed === true;
+  const accessoriesDetected = visualScreeningCompleted
+    ? validation.accessories_detected === true
+      ? true
+      : validation.accessories_detected === false
+        ? false
+        : null
+    : null;
+  const reportedHairAuthenticityStatus = [
+    'likely_natural',
+    'possible_wig_or_extensions',
+    'unclear',
+  ].includes(String(validation.hair_authenticity_status || '').trim().toLowerCase())
+    ? String(validation.hair_authenticity_status).trim().toLowerCase()
+    : 'unclear';
+  const hairAuthenticityStatus = visualScreeningCompleted
+    ? reportedHairAuthenticityStatus
+    : 'unclear';
+  const appearanceFlags = Array.isArray(validation.appearance_flags)
+    ? validation.appearance_flags.map((flag) => String(flag || '').trim()).filter(Boolean)
+    : [];
+  const hasArtificialHairConcern = hairAuthenticityStatus === 'possible_wig_or_extensions';
+  const isAcceptable = validation.is_acceptable === true
+    && accessoriesDetected !== true
+    && !hasArtificialHairConcern;
+  const visualConcernReason = accessoriesDetected === true
+    ? toSafeMessage(validation.accessory_notes, 'Remove accessories or objects blocking the hair, then retake the affected views.')
+    : hasArtificialHairConcern
+      ? toSafeMessage(validation.hair_authenticity_notes, 'Possible wig, hairpiece, or extensions detected. Retake with the natural hairline and roots clearly visible.')
+      : '';
+  const reason = visualConcernReason || toSafeMessage(validation.reason, isAcceptable
     ? 'Ready for analysis.'
     : 'Photos must show the same person and same current hair.');
+  const failedViews = Array.isArray(validation.failed_views)
+    ? validation.failed_views
+    : [];
+  const resolvedFailedViews = failedViews.length || !visualConcernReason
+    ? failedViews
+    : ['Photo set'];
 
   if (!isAcceptable && isInternalValidationReason(reason)) {
     return {
@@ -246,6 +287,10 @@ const runCrossViewPhotoValidation = async ({ photos = [], requiredViews = [] } =
       details: [],
       validationMode: 'remote_cross_view_internal_pass',
       validationWarning: reason,
+      accessoriesDetected,
+      hairAuthenticityStatus,
+      appearanceFlags,
+      visualScreeningCompleted,
     };
   }
 
@@ -259,6 +304,10 @@ const runCrossViewPhotoValidation = async ({ photos = [], requiredViews = [] } =
       details: [],
       validationMode: 'remote_cross_view_soft_pass',
       validationWarning: reason,
+      accessoriesDetected,
+      hairAuthenticityStatus,
+      appearanceFlags,
+      visualScreeningCompleted,
     };
   }
 
@@ -266,10 +315,22 @@ const runCrossViewPhotoValidation = async ({ photos = [], requiredViews = [] } =
     ok: isAcceptable,
     skipped: false,
     hardBlock: !isAcceptable,
-    title: isAcceptable ? 'Photos Ready' : 'Photos Do Not Match',
+    title: isAcceptable
+      ? 'Photos Ready'
+      : accessoriesDetected === true
+        ? 'Remove Hair Accessories'
+        : hasArtificialHairConcern
+          ? 'Hair Verification Needed'
+          : 'Photos Do Not Match',
     message: isAcceptable ? 'Ready for analysis.' : reason,
-    details: isAcceptable ? [] : buildRemoteValidationDetails(validation.failed_views, reason),
+    details: isAcceptable ? [] : buildRemoteValidationDetails(resolvedFailedViews, reason),
     validationMode: 'remote_cross_view',
+    accessoriesDetected,
+    accessoryNotes: toSafeMessage(validation.accessory_notes),
+    hairAuthenticityStatus,
+    hairAuthenticityNotes: toSafeMessage(validation.hair_authenticity_notes),
+    appearanceFlags,
+    visualScreeningCompleted,
   };
 };
 
@@ -307,7 +368,9 @@ export const validateHairPhotosBeforeAnalysis = async ({ photos = [], requiredVi
       ? crossViewResult.details.map((detail) => normalizeViewLabel(detail?.viewLabel || '')).filter(Boolean)
       : [];
     const scalpOnlyFailure = failedViewLabels.length === 1 && failedViewLabels[0] === 'Hair Scalp';
-    if (scalpOnlyFailure && hasCanonicalView(photos, 'Hair Scalp')) {
+    const hasAppearanceConcern = crossViewResult?.accessoriesDetected === true
+      || crossViewResult?.hairAuthenticityStatus === 'possible_wig_or_extensions';
+    if (scalpOnlyFailure && !hasAppearanceConcern && hasCanonicalView(photos, 'Hair Scalp')) {
       return {
         ok: true,
         skipped: false,

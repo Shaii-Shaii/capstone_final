@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Animated, Image, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Animated, Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Redirect, useRouter } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -13,17 +13,22 @@ import { AppButton } from '../src/components/ui/AppButton';
 import { AppInput } from '../src/components/ui/AppInput';
 import { OtpInput } from '../src/components/ui/OtpInput';
 import { DatePickerField } from '../src/components/ui/DatePickerField';
+import { LegalDocumentPreview } from '../src/components/legal/LegalDocumentPreview';
 import { AddressOptionSheet, AddressSelectField, SignupAddressSection } from '../src/components/auth/SignupAddressSection';
 import { useAuth } from '../src/providers/AuthProvider';
 import {
   completePostLoginOnboarding,
   getPatientLinkPreview,
 } from '../src/features/profile/services/profile.service';
-import { verifyMedicalCertificateAsset } from '../src/features/patientMedicalCertificate.service';
+import {
+  compareMedicalCertificateToPatientInput,
+  verifyMedicalCertificateAsset,
+} from '../src/features/patientMedicalCertificate.service';
 import { calculateAgeFromBirthdate } from '../src/features/auth/validators/auth.schema';
 import { patientOnboardingSchema } from '../src/features/profile/profile.schema';
 import { guardianRelationshipOptions, profileGenderOptions, profileSuffixOptions } from '../src/constants/profile';
 import { resolveBrandLogoSource, resolveThemeRoles, theme } from '../src/design-system/theme';
+import { fetchActiveMinorConsentDocument } from '../src/features/donorCompliance.service';
 
 // Rose-gold gradient border — shared across splash / login / signup / onboarding
 const BADGE_BORDER_GRAD = ['#6e2e0e', '#d4874e', '#f5dfa8', '#d4874e', '#6e2e0e'];
@@ -206,6 +211,20 @@ const VERIFIED_MEDICAL_DOCUMENT_STATUSES = new Set([
   'verified',
   'staff_verified',
 ]);
+const DATABASE_MEDICAL_DOCUMENT_STATUSES = new Set([
+  'not_submitted',
+  'ocr_failed',
+  'ocr_passed_prc_pending',
+  'prc_verified',
+  'rejected',
+  'verified',
+]);
+
+const getDatabaseSafeMedicalDocumentStatus = (status, passed = false) => {
+  const normalized = String(status || '').toLowerCase();
+  if (DATABASE_MEDICAL_DOCUMENT_STATUSES.has(normalized)) return normalized;
+  return passed ? 'ocr_passed_prc_pending' : 'ocr_failed';
+};
 
 const getMedicalDocumentVerification = (medicalDocumentValue, fallbackVerification = null) => {
   if (medicalDocumentValue && typeof medicalDocumentValue === 'object') {
@@ -318,6 +337,396 @@ function LoadingState() {
   );
 }
 
+const formatMedicalRecordDate = (value = '') => {
+  const normalized = String(value || '').trim();
+  if (!normalized) return 'Not detected';
+  const parsed = /^\d{4}-\d{2}-\d{2}$/.test(normalized)
+    ? new Date(`${normalized}T00:00:00`)
+    : new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) return normalized;
+  return new Intl.DateTimeFormat(undefined, {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  }).format(parsed);
+};
+
+function MedicalVerificationResultModal({
+  visible,
+  roles,
+  verification,
+  documentValue,
+  onClose,
+  onReviewMismatchStep,
+}) {
+  const [isImageViewerOpen, setIsImageViewerOpen] = useState(false);
+  const documentUri = typeof documentValue === 'string'
+    ? documentValue
+    : String(documentValue?.publicUrl || documentValue?.url || documentValue?.uri || documentValue?.previewUri || '');
+  const previewUri = typeof documentValue === 'object'
+    ? String(documentValue?.previewUri || documentValue?.uri || documentUri)
+    : documentUri;
+  const fileName = typeof documentValue === 'object'
+    ? String(documentValue?.fileName || documentValue?.name || 'medical-certificate.pdf')
+    : String(documentUri.split('?')[0].split('/').pop() || 'medical-certificate.pdf');
+  const mimeType = typeof documentValue === 'object'
+    ? String(documentValue?.contentType || documentValue?.mimeType || '')
+    : '';
+  const isImageDocument = mimeType.startsWith('image/') || /\.(png|jpe?g|webp|gif)(?:$|[?#])/i.test(previewUri);
+  const raw = verification?.raw || {};
+  const detectedCondition = verification?.medicalCondition
+    || raw.medical_condition
+    || raw.medicalCondition
+    || '';
+  const detectedDiagnosisDate = verification?.diagnosisDate
+    || raw.diagnosis_date
+    || raw.diagnosisDate
+    || '';
+  const detectedHospital = verification?.hospitalName
+    || raw.hospital_name
+    || raw.hospitalName
+    || '';
+  const patientInputComparison = verification?.patientInputComparison || {};
+  const mismatches = Array.isArray(patientInputComparison?.mismatches)
+    ? patientInputComparison.mismatches
+    : [];
+  const isMismatch = verification?.status === 'patient_details_mismatch' || mismatches.length > 0;
+  const mismatchSteps = [1, 2].filter((step) => mismatches.some((item) => item?.step === step));
+  const effectiveMismatchSteps = mismatchSteps.length ? mismatchSteps : [2];
+  const mismatchStepLabel = effectiveMismatchSteps.map((step) => `Step ${step}`).join(' and ');
+  const detectedPatientBirthdateOrAge = verification?.patientBirthdate
+    ? formatMedicalRecordDate(verification.patientBirthdate)
+    : verification?.patientAge !== null && verification?.patientAge !== undefined
+      ? `${verification.patientAge} years old`
+      : 'Not detected';
+  const verifiedAt = typeof documentValue === 'object'
+    ? documentValue?.medical_document_verified_at
+    : '';
+  const reviewStatus = isMismatch
+    ? `${mismatchStepLabel} details need correction`
+    : verification?.documentLegitimacy === 'requires_prc_staff_review'
+      ? 'PRC staff review pending'
+      : String(verification?.documentLegitimacy || 'Verification completed').replace(/[._-]+/g, ' ');
+  const detailItems = [
+    { icon: 'account-outline', label: 'Patient', value: verification?.patientName || 'Not detected' },
+    { icon: 'cake-variant-outline', label: 'Birthdate / age', value: detectedPatientBirthdateOrAge },
+    { icon: 'gender-male-female', label: 'Gender', value: verification?.patientGender || 'Not detected' },
+    { icon: 'hospital-building', label: 'Hospital / medical facility', value: detectedHospital || 'Not detected' },
+    { icon: 'medical-bag', label: 'Medical condition', value: detectedCondition || 'Not detected' },
+    { icon: 'calendar-check-outline', label: 'Diagnosis date', value: formatMedicalRecordDate(detectedDiagnosisDate) },
+    { icon: 'doctor', label: 'Doctor', value: verification?.doctorName || 'Not detected' },
+    { icon: 'card-account-details-outline', label: 'PRC / license number', value: verification?.licenseNumber || 'Not detected' },
+    { icon: 'file-document-outline', label: 'Document', value: fileName },
+    { icon: 'clock-check-outline', label: 'Verified on', value: formatMedicalRecordDate(verifiedAt) },
+    { icon: 'shield-check-outline', label: 'Review status', value: reviewStatus },
+  ];
+
+  useEffect(() => {
+    if (!visible) setIsImageViewerOpen(false);
+  }, [visible]);
+
+  return (
+    <>
+      <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+        <View style={styles.medicalResultModalOverlay}>
+          <View style={[styles.medicalResultModalCard, { backgroundColor: roles.pageBackground }]}>
+            <LinearGradient
+              colors={[theme.colors.palette.wine900, theme.colors.palette.wine700, theme.colors.palette.wine600]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.medicalResultModalHeader}
+            >
+              <View pointerEvents="none" style={styles.medicalResultModalGlow} />
+              <View style={styles.medicalResultHeaderIcon}>
+                <MaterialCommunityIcons name="file-check-outline" size={27} color={roles.primaryActionText} />
+              </View>
+              <View style={styles.medicalResultHeaderCopy}>
+                <Text style={[styles.medicalResultEyebrow, { color: roles.primaryActionText }]}>{isMismatch ? 'DETAILS NEED REVIEW' : 'OCR VERIFICATION COMPLETE'}</Text>
+                <Text style={[styles.medicalResultTitle, { color: roles.primaryActionText }]}>{isMismatch ? 'Medical details mismatch' : 'Medical record details'}</Text>
+                <Text style={[styles.medicalResultSubtitle, { color: roles.primaryActionText }]}>{isMismatch ? 'The certificate does not match information entered during patient setup.' : 'Review the extracted information against the original document.'}</Text>
+              </View>
+            </LinearGradient>
+
+            <ScrollView
+              style={styles.medicalResultScroll}
+              contentContainerStyle={styles.medicalResultBody}
+              showsVerticalScrollIndicator={false}
+            >
+              <View style={[styles.medicalResultSuccessBanner, isMismatch ? styles.medicalResultMismatchBanner : null]}>
+                <MaterialCommunityIcons name={isMismatch ? 'alert-circle-outline' : 'check-decagram-outline'} size={22} color={isMismatch ? '#9A5B00' : '#1E7A42'} />
+                <View style={styles.medicalResultSuccessCopy}>
+                  <Text style={[styles.medicalResultSuccessTitle, isMismatch ? styles.medicalResultMismatchTitle : null]}>{isMismatch ? `The document and ${mismatchStepLabel} do not match` : 'Certificate verified by OCR'}</Text>
+                  <Text style={[styles.medicalResultSuccessText, isMismatch ? styles.medicalResultMismatchText : null]}>{isMismatch ? `Please review the differences below, then correct ${mismatchStepLabel} or upload the correct certificate.` : 'Important fields were detected. Final PRC review may still be required.'}</Text>
+                </View>
+              </View>
+
+              {isMismatch ? (
+                <View style={styles.medicalResultMismatchList}>
+                  {mismatches.map((item) => (
+                    <View key={item.field} style={styles.medicalResultMismatchItem}>
+                      <Text style={styles.medicalResultMismatchField}>{item.field}</Text>
+                      <View style={styles.medicalResultMismatchValueRow}>
+                        <Text style={styles.medicalResultMismatchValueLabel}>STEP {item.step || effectiveMismatchSteps[0]}</Text>
+                        <Text style={styles.medicalResultMismatchValue}>{item.entered}</Text>
+                      </View>
+                      <View style={styles.medicalResultMismatchValueRow}>
+                        <Text style={styles.medicalResultMismatchValueLabel}>DOCUMENT</Text>
+                        <Text style={styles.medicalResultMismatchValue}>{item.detected}</Text>
+                      </View>
+                    </View>
+                  ))}
+                </View>
+              ) : null}
+
+              <View style={styles.medicalResultSectionHeader}>
+                <MaterialCommunityIcons name="file-eye-outline" size={19} color={roles.primaryActionBackground} />
+                <View style={styles.medicalResultSectionHeaderCopy}>
+                  <Text style={[styles.medicalResultSectionTitle, { color: roles.headingText }]}>Document preview</Text>
+                  <Text style={[styles.medicalResultSectionHint, { color: roles.metaText }]}>Tap the preview to enlarge the original certificate.</Text>
+                </View>
+              </View>
+
+              {isImageDocument && previewUri ? (
+                <Pressable
+                  accessibilityRole="imagebutton"
+                  accessibilityLabel="Enlarge medical certificate"
+                  onPress={() => setIsImageViewerOpen(true)}
+                  style={[styles.medicalResultImagePreview, { borderColor: roles.defaultCardBorder }]}
+                >
+                  <Image source={{ uri: previewUri }} style={styles.medicalResultImage} resizeMode="cover" />
+                  <View style={[styles.medicalResultExpandBadge, { backgroundColor: roles.primaryActionBackground }]}>
+                    <MaterialCommunityIcons name="fullscreen" size={16} color={roles.primaryActionText} />
+                    <Text style={[styles.medicalResultExpandText, { color: roles.primaryActionText }]}>Enlarge</Text>
+                  </View>
+                </Pressable>
+              ) : documentUri ? (
+                <LegalDocumentPreview
+                  document={{
+                    title: 'Medical Certificate',
+                    file_path: fileName,
+                    pdf_url: documentUri,
+                  }}
+                  roles={roles}
+                />
+              ) : (
+                <View style={[styles.medicalResultNoPreview, { borderColor: roles.defaultCardBorder }]}>
+                  <MaterialCommunityIcons name="file-alert-outline" size={28} color={roles.metaText} />
+                  <Text style={[styles.medicalResultNoPreviewText, { color: roles.metaText }]}>Document preview is unavailable.</Text>
+                </View>
+              )}
+
+              <View style={styles.medicalResultSectionHeader}>
+                <MaterialCommunityIcons name="clipboard-text-outline" size={19} color={roles.primaryActionBackground} />
+                <View style={styles.medicalResultSectionHeaderCopy}>
+                  <Text style={[styles.medicalResultSectionTitle, { color: roles.headingText }]}>Medical record summary</Text>
+                  <Text style={[styles.medicalResultSectionHint, { color: roles.metaText }]}>Important fields extracted from the uploaded certificate.</Text>
+                </View>
+              </View>
+
+              <View style={[styles.medicalResultDetails, { borderColor: roles.defaultCardBorder, backgroundColor: roles.defaultCardBackground }]}>
+                {detailItems.map((item, index) => (
+                  <View
+                    key={item.label}
+                    style={[
+                      styles.medicalResultDetailRow,
+                      index < detailItems.length - 1 ? { borderBottomColor: roles.defaultCardBorder, borderBottomWidth: 1 } : null,
+                    ]}
+                  >
+                    <View style={[styles.medicalResultDetailIcon, { backgroundColor: roles.iconPrimarySurface }]}>
+                      <MaterialCommunityIcons name={item.icon} size={18} color={roles.primaryActionBackground} />
+                    </View>
+                    <View style={styles.medicalResultDetailCopy}>
+                      <Text style={[styles.medicalResultDetailLabel, { color: roles.metaText }]}>{item.label}</Text>
+                      <Text selectable style={[styles.medicalResultDetailValue, { color: roles.headingText }]}>{item.value}</Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+
+            </ScrollView>
+
+            <View style={[styles.medicalResultFooter, { borderTopColor: roles.defaultCardBorder }]}>
+              {isMismatch ? (
+                <View style={styles.medicalResultMismatchActions}>
+                  {effectiveMismatchSteps.map((step) => (
+                    <View key={step} style={styles.medicalResultMismatchActionItem}>
+                      <AppButton
+                        title={`Fix Step ${step}`}
+                        onPress={() => onReviewMismatchStep?.(step)}
+                        backgroundColorOverride={roles.primaryActionBackground}
+                        borderColorOverride={roles.primaryActionBackground}
+                        textColorOverride={roles.primaryActionText}
+                      />
+                    </View>
+                  ))}
+                </View>
+              ) : (
+                <AppButton
+                  title="Done reviewing"
+                  onPress={onClose}
+                  backgroundColorOverride={roles.primaryActionBackground}
+                  borderColorOverride={roles.primaryActionBackground}
+                  textColorOverride={roles.primaryActionText}
+                />
+              )}
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={isImageViewerOpen} animationType="fade" onRequestClose={() => setIsImageViewerOpen(false)}>
+        <View style={styles.medicalResultImageViewer}>
+          <View style={styles.medicalResultImageViewerHeader}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Back to medical record details"
+              onPress={() => setIsImageViewerOpen(false)}
+              style={styles.medicalResultImageViewerBack}
+            >
+              <MaterialCommunityIcons name="arrow-left" size={23} color="#ffffff" />
+            </Pressable>
+            <Text numberOfLines={1} style={styles.medicalResultImageViewerTitle}>Medical Certificate</Text>
+            <View style={styles.medicalResultImageViewerSpacer} />
+          </View>
+          <Image source={{ uri: previewUri }} style={styles.medicalResultImageViewerImage} resizeMode="contain" />
+        </View>
+      </Modal>
+    </>
+  );
+}
+
+function MinorPatientConsentModal({
+  visible,
+  roles,
+  document,
+  isLoading,
+  error,
+  onRetry,
+  onCancel,
+  onConfirm,
+}) {
+  const [isAccepted, setIsAccepted] = useState(false);
+  const canAccept = Boolean(document?.legal_document_id && document?.pdf_url && !isLoading && !error);
+
+  useEffect(() => {
+    if (visible) setIsAccepted(false);
+  }, [document?.legal_document_id, visible]);
+
+  return (
+    <Modal transparent visible={visible} animationType="fade" onRequestClose={onCancel}>
+      <View style={styles.minorConsentModalOverlay}>
+        <Pressable style={styles.minorConsentModalBackdrop} onPress={onCancel} />
+        <View style={[styles.minorConsentModalCard, { backgroundColor: roles.pageBackground }]}>
+          <LinearGradient
+            colors={[theme.colors.palette.wine900, theme.colors.palette.wine700, theme.colors.palette.wine600]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.minorConsentModalHeader}
+          >
+            <View pointerEvents="none" style={styles.minorConsentModalGlow} />
+            <View style={styles.minorConsentModalHeaderIcon}>
+              <MaterialCommunityIcons name="shield-account-outline" size={26} color={roles.primaryActionText} />
+            </View>
+            <View style={styles.minorConsentModalHeaderCopy}>
+              <Text style={[styles.minorConsentModalEyebrow, { color: roles.primaryActionText }]}>MINOR ACCOUNT</Text>
+              <Text style={[styles.minorConsentModalTitle, { color: roles.primaryActionText }]}>Guardian consent</Text>
+              <Text style={[styles.minorConsentModalSubtitle, { color: roles.primaryActionText }]}>Review the current document before confirming.</Text>
+            </View>
+          </LinearGradient>
+
+          <ScrollView
+            style={styles.minorConsentModalScroll}
+            contentContainerStyle={styles.minorConsentModalBody}
+            showsVerticalScrollIndicator={false}
+          >
+            {isLoading ? (
+              <View style={styles.minorConsentModalLoading}>
+                <ActivityIndicator size="small" color={roles.primaryActionBackground} />
+                <Text style={[styles.minorConsentModalLoadingText, { color: roles.bodyText }]}>Loading minor consent...</Text>
+              </View>
+            ) : error ? (
+              <View style={styles.minorConsentModalErrorBlock}>
+                <MaterialCommunityIcons name="alert-circle-outline" size={24} color={theme.colors.textError} />
+                <Text style={styles.minorConsentModalErrorText}>{error}</Text>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={onRetry}
+                  style={[styles.minorConsentModalRetry, { borderColor: roles.primaryActionBackground }]}
+                >
+                  <MaterialCommunityIcons name="refresh" size={18} color={roles.primaryActionBackground} />
+                  <Text style={[styles.minorConsentModalRetryText, { color: roles.primaryActionBackground }]}>Try again</Text>
+                </Pressable>
+              </View>
+            ) : document ? (
+              <LegalDocumentPreview document={document} roles={roles} />
+            ) : null}
+
+            <Pressable
+              accessibilityRole="checkbox"
+              accessibilityLabel="Accept minor guardian consent"
+              accessibilityState={{ checked: isAccepted, disabled: !canAccept }}
+              disabled={!canAccept}
+              onPress={() => setIsAccepted((current) => !current)}
+              android_ripple={{ color: theme.colors.surfacePressed, borderless: false }}
+              style={[
+                styles.minorConsentAgreement,
+                {
+                  backgroundColor: roles.supportCardBackground,
+                  borderColor: roles.supportCardBorder,
+                },
+                !canAccept ? styles.minorConsentAgreementDisabled : null,
+              ]}
+            >
+              <View
+                style={[
+                  styles.minorConsentCheckbox,
+                  isAccepted
+                    ? {
+                        backgroundColor: roles.primaryActionBackground,
+                        borderColor: roles.primaryActionBackground,
+                      }
+                    : null,
+                ]}
+              >
+                {isAccepted ? (
+                  <MaterialCommunityIcons name="check" size={17} color={roles.primaryActionText} />
+                ) : null}
+              </View>
+              <View style={styles.minorConsentAgreementCopy}>
+                <Text style={[styles.minorConsentAgreementTitle, { color: roles.headingText }]}>Required confirmation</Text>
+                <Text style={[styles.minorConsentAgreementText, { color: roles.bodyText }]}>I am the parent or legal guardian and agree to the minor consent document shown above.</Text>
+              </View>
+            </Pressable>
+          </ScrollView>
+
+          <View style={[styles.minorConsentModalFooter, { borderTopColor: roles.defaultCardBorder }]}>
+            <View style={styles.minorConsentModalAction}>
+              <AppButton
+                title="Not now"
+                variant="outline"
+                onPress={onCancel}
+                backgroundColorOverride={roles.defaultCardBackground}
+                borderColorOverride={roles.secondaryActionBorder}
+                textColorOverride={roles.secondaryActionText}
+              />
+            </View>
+            <View style={styles.minorConsentModalAction}>
+              <AppButton
+                title="Confirm consent"
+                onPress={() => onConfirm(document)}
+                disabled={!canAccept || !isAccepted}
+                backgroundColorOverride={roles.primaryActionBackground}
+                borderColorOverride={roles.primaryActionBackground}
+                textColorOverride={roles.primaryActionText}
+              />
+            </View>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 function FirstTimeOnboarding() {
   const router = useRouter();
   const { user, profile, refreshProfile, resolvedTheme } = useAuth();
@@ -339,10 +748,16 @@ function FirstTimeOnboarding() {
   const [isUploadingPatientPicture, setIsUploadingPatientPicture] = useState(false);
   const [isUploadingMedicalDocument, setIsUploadingMedicalDocument] = useState(false);
   const [medicalDocumentVerification, setMedicalDocumentVerification] = useState(null);
+  const [isMedicalVerificationModalVisible, setIsMedicalVerificationModalVisible] = useState(false);
   const [manualImagePreview, setManualImagePreview] = useState(null);
+  const [isMinorConsentModalVisible, setIsMinorConsentModalVisible] = useState(false);
+  const [minorConsentDocument, setMinorConsentDocument] = useState(null);
+  const [isLoadingMinorConsent, setIsLoadingMinorConsent] = useState(false);
+  const [minorConsentError, setMinorConsentError] = useState('');
   const welcomeOpacity = useRef(new Animated.Value(0)).current;
   const startOpacity = useRef(new Animated.Value(0)).current;
   const patientCodeErrorModalTimerRef = useRef(null);
+  const promptedMinorBirthdateRef = useRef('');
 
   const manualPatientForm = useForm({
     resolver: zodResolver(patientOnboardingSchema),
@@ -376,6 +791,47 @@ function FirstTimeOnboarding() {
   });
 
   const getManualPatientFieldValue = (fieldName) => manualPatientForm.getValues(fieldName) ?? '';
+  const watchedManualBirthdate = manualPatientForm.watch('birthdate');
+  const watchedParentalConsent = manualPatientForm.watch('parental_consent');
+  const watchedMedicalDocument = manualPatientForm.watch('medical_document');
+
+  const loadMinorConsentDocument = async () => {
+    setIsLoadingMinorConsent(true);
+    setMinorConsentError('');
+    setMinorConsentDocument(null);
+    const result = await fetchActiveMinorConsentDocument();
+    setMinorConsentDocument(result.data || null);
+    setMinorConsentError(result.error?.message || '');
+    setIsLoadingMinorConsent(false);
+  };
+
+  useEffect(() => {
+    if (!isMinorConsentModalVisible) return;
+    loadMinorConsentDocument();
+  }, [isMinorConsentModalVisible]);
+
+  useEffect(() => {
+    const birthdateKey = String(watchedManualBirthdate || '').trim();
+    const age = calculateAgeFromBirthdate(birthdateKey);
+    const isMinor = age !== null && age < 18;
+
+    if (branchMode !== 'patient-manual' || !birthdateKey || !isMinor) {
+      promptedMinorBirthdateRef.current = '';
+      if (!isMinor && watchedParentalConsent) {
+        manualPatientForm.setValue('parental_consent', false, { shouldValidate: true });
+      }
+      if (branchMode !== 'patient-manual' || !isMinor) setIsMinorConsentModalVisible(false);
+      return;
+    }
+
+    if (promptedMinorBirthdateRef.current === birthdateKey) return;
+    promptedMinorBirthdateRef.current = birthdateKey;
+    manualPatientForm.setValue('parental_consent', false, {
+      shouldDirty: true,
+      shouldValidate: true,
+    });
+    setIsMinorConsentModalVisible(true);
+  }, [branchMode, manualPatientForm, watchedManualBirthdate, watchedParentalConsent]);
 
   useEffect(() => {
     const animation = Animated.sequence([
@@ -529,6 +985,40 @@ function FirstTimeOnboarding() {
       return;
     }
 
+    const currentVerification = getMedicalDocumentVerification(
+      values?.medical_document,
+      medicalDocumentVerification
+    );
+    const patientInputComparison = compareMedicalCertificateToPatientInput({
+      verification: currentVerification,
+      patientName: [values?.first_name, values?.middle_name, values?.last_name].filter(Boolean).join(' '),
+      birthdate: values?.birthdate,
+      gender: values?.gender,
+      medicalCondition: values?.medical_condition,
+      diagnosisDate: values?.date_of_diagnosis,
+    });
+    if (!patientInputComparison.matches) {
+      const mismatchVerification = {
+        ...currentVerification,
+        passed: false,
+        status: 'patient_details_mismatch',
+        patientInputComparison,
+        errorMessage: 'The certificate does not match the patient information entered in Step 1 or Step 2.',
+      };
+      if (values?.medical_document && typeof values.medical_document === 'object') {
+        manualPatientForm.setValue('medical_document', {
+          ...values.medical_document,
+          verification: mismatchVerification,
+          medical_document_verification_status: 'ocr_failed',
+        }, { shouldDirty: true, shouldValidate: true });
+      }
+      setMedicalDocumentVerification(mismatchVerification);
+      setScreenError('The certificate does not match the patient information entered during setup.');
+      setIsMedicalVerificationModalVisible(true);
+      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      return;
+    }
+
     await Haptics.selectionAsync();
     await finalizeOnboarding({
       mode: 'patient-manual',
@@ -571,6 +1061,15 @@ function FirstTimeOnboarding() {
     const result = await verifyMedicalCertificateAsset({
       authUserId: user?.id,
       patientId: null,
+      expectedPatientName: [
+        manualPatientForm.getValues('first_name'),
+        manualPatientForm.getValues('middle_name'),
+        manualPatientForm.getValues('last_name'),
+      ].filter(Boolean).join(' '),
+      expectedBirthdate: manualPatientForm.getValues('birthdate'),
+      expectedGender: manualPatientForm.getValues('gender'),
+      expectedMedicalCondition: manualPatientForm.getValues('medical_condition'),
+      expectedDiagnosisDate: manualPatientForm.getValues('date_of_diagnosis'),
       asset: {
         uri: mediaPayload.previewUri || mediaPayload.uri || '',
         mimeType: mediaPayload.contentType,
@@ -590,7 +1089,7 @@ function FirstTimeOnboarding() {
         ...mediaPayload,
         publicUrl: result.documentUrl || '',
         verification,
-        medical_document_verification_status: verification?.status || 'ocr_failed',
+        medical_document_verification_status: 'ocr_failed',
         medical_document_ocr_text: verification?.extractedText || '',
         medical_document_verified_at: new Date().toISOString(),
         doctor_name: verification?.doctorName || '',
@@ -601,6 +1100,9 @@ function FirstTimeOnboarding() {
       });
       setScreenError('');
       await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      if (verification?.status === 'patient_details_mismatch') {
+        setIsMedicalVerificationModalVisible(true);
+      }
       return false;
     }
 
@@ -608,7 +1110,10 @@ function FirstTimeOnboarding() {
       ...mediaPayload,
       publicUrl: result.documentUrl,
       verification,
-      medical_document_verification_status: verification?.status || 'ocr_passed_prc_pending',
+      medical_document_verification_status: getDatabaseSafeMedicalDocumentStatus(
+        verification?.status,
+        true
+      ),
       medical_document_ocr_text: verification?.extractedText || '',
       medical_document_verified_at: new Date().toISOString(),
       doctor_name: verification?.doctorName || '',
@@ -619,6 +1124,7 @@ function FirstTimeOnboarding() {
     });
     setScreenError('');
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    setIsMedicalVerificationModalVisible(true);
     return true;
   };
 
@@ -1090,7 +1596,7 @@ function FirstTimeOnboarding() {
       const medicalDocumentVerificationLabel = isUploadingMedicalDocument
         ? 'Verifying document...'
         : isMedicalDocumentVerificationPassed
-          ? 'Certificate verified by OCR. PRC review remains pending.'
+          ? 'Certificate verified. Tap to review the scanned record and document.'
           : activeMedicalDocumentVerification?.errorMessage
             ? activeMedicalDocumentVerification.errorMessage
           : activeMedicalDocumentVerification?.missing?.length
@@ -1183,14 +1689,11 @@ function FirstTimeOnboarding() {
 
       return (
         <View style={styles.patientManualPlainSection}>
-          <ScrollView
-            style={styles.patientManualFormScroll}
-            contentContainerStyle={[
-              styles.patientManualFormScrollContent,
-              manualPatientStep === 2 ? styles.patientManualFormScrollContentCompact : null,
-            ]}
-            keyboardShouldPersistTaps="always"
-            showsVerticalScrollIndicator={false}
+          <LinearGradient
+            colors={['#fffdfc', '#fbf7f5', '#f8f1ef']}
+            start={{ x: 0.1, y: 0 }}
+            end={{ x: 0.9, y: 1 }}
+            style={styles.patientManualStickyHeader}
           >
             <View style={styles.stepIndicatorRow}>
               <Text style={[styles.stepIndicator, manualPatientStep === 0 ? styles.stepIndicatorActive : null]}>Step 1</Text>
@@ -1202,7 +1705,17 @@ function FirstTimeOnboarding() {
               <Text style={[styles.patientManualTitle, { color: roles.primaryActionBackground }]}>Patient information</Text>
               <View style={styles.patientManualDivider} />
             </View>
+          </LinearGradient>
 
+          <ScrollView
+            style={styles.patientManualFormScroll}
+            contentContainerStyle={[
+              styles.patientManualFormScrollContent,
+              manualPatientStep === 2 ? styles.patientManualFormScrollContentCompact : null,
+            ]}
+            keyboardShouldPersistTaps="always"
+            showsVerticalScrollIndicator={false}
+          >
           <View style={manualPatientStep === 0 ? styles.manualStepPanel : styles.manualStepPanelHidden}>
               <Controller
                 control={manualPatientForm.control}
@@ -1330,27 +1843,55 @@ function FirstTimeOnboarding() {
                   control={manualPatientForm.control}
                   name="parental_consent"
                   defaultValue={Boolean(getManualPatientFieldValue('parental_consent'))}
-                  render={({ field: { onChange }, fieldState }) => (
+                  render={({ fieldState }) => (
                     <View style={styles.parentalConsentBlock}>
                       <Pressable
-                        accessibilityRole="checkbox"
-                        accessibilityState={{ checked: Boolean(parentalConsentValue), disabled: isSubmitting }}
+                        accessibilityRole="button"
+                        accessibilityLabel={parentalConsentValue ? 'Review confirmed guardian consent' : 'Open required guardian consent'}
+                        accessibilityState={{ disabled: isSubmitting }}
                         disabled={isSubmitting}
-                        onPress={() => onChange(!parentalConsentValue)}
-                        style={({ pressed }) => [
+                        onPress={() => setIsMinorConsentModalVisible(true)}
+                        android_ripple={{ color: theme.colors.surfacePressed, borderless: false }}
+                        style={[
                           styles.parentalConsentRow,
+                          {
+                            backgroundColor: parentalConsentValue ? '#EAF8EF' : '#FFF4D8',
+                            borderColor: parentalConsentValue ? '#BFE8CD' : '#F2D38B',
+                          },
                           fieldState.error ? styles.parentalConsentRowError : null,
-                          pressed ? styles.pressed : null,
                         ]}
                       >
-                        <MaterialCommunityIcons
-                          name={parentalConsentValue ? 'checkbox-marked' : 'checkbox-blank-outline'}
-                          size={24}
-                          color={parentalConsentValue ? roles.primaryActionBackground : roles.metaText}
-                        />
-                        <Text style={styles.parentalConsentText}>
-                          I confirm parent or guardian consent for this patient.
-                        </Text>
+                        <View
+                          style={[
+                            styles.parentalConsentIcon,
+                            { backgroundColor: parentalConsentValue ? 'rgba(30, 122, 66, 0.10)' : 'rgba(138, 90, 0, 0.10)' },
+                          ]}
+                        >
+                          <MaterialCommunityIcons
+                            name={parentalConsentValue ? 'shield-check-outline' : 'shield-account-outline'}
+                            size={19}
+                            color={parentalConsentValue ? '#1E7A42' : '#8A5A00'}
+                          />
+                        </View>
+                        <View style={styles.parentalConsentCopy}>
+                          <Text style={[styles.parentalConsentEyebrow, { color: parentalConsentValue ? '#1E7A42' : '#8A5A00' }]}>MINOR ACCOUNT</Text>
+                          <Text style={[styles.parentalConsentTitle, { color: parentalConsentValue ? '#1E7A42' : '#8A5A00' }]}>
+                            {parentalConsentValue ? 'Guardian consent confirmed' : 'Guardian consent required'}
+                          </Text>
+                          <Text style={styles.parentalConsentText}>
+                            {parentalConsentValue
+                              ? 'Consent is recorded. Tap to review the document again.'
+                              : 'A parent or legal guardian must review and confirm the consent document.'}
+                          </Text>
+                        </View>
+                        <View
+                          style={[
+                            styles.parentalConsentAction,
+                            { backgroundColor: parentalConsentValue ? 'rgba(30, 122, 66, 0.10)' : 'rgba(138, 90, 0, 0.10)' },
+                          ]}
+                        >
+                          <MaterialCommunityIcons name="chevron-right" size={18} color={parentalConsentValue ? '#1E7A42' : '#8A5A00'} />
+                        </View>
                       </Pressable>
                       {fieldState.error?.message ? (
                         <Text style={styles.parentalConsentError}>{fieldState.error.message}</Text>
@@ -1666,7 +2207,7 @@ function FirstTimeOnboarding() {
                     },
                   ]}
                 >
-                  <View style={styles.uploadCardCopy}>
+                  <View style={[styles.uploadCardCopy, styles.uploadCardCopyStacked]}>
                     <MaterialCommunityIcons name="file-document-outline" size={22} color={roles.primaryActionBackground} />
                     <View style={styles.uploadCardTextGroup}>
                       <Text style={[styles.uploadCardTitle, { color: roles.headingText }]}>Verify certificate</Text>
@@ -1676,31 +2217,57 @@ function FirstTimeOnboarding() {
                     </View>
                   </View>
                   <View style={styles.uploadActionGroup}>
-                    <AppButton
-                      title={medicalDocumentValue ? 'Change' : 'Upload'}
-                      size="sm"
-                      variant="outline"
-                      fullWidth={false}
-                      style={[styles.uploadActionButton, styles.uploadSplitActionButton]}
-                      loading={isUploadingMedicalDocument}
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={medicalDocumentValue ? 'Change medical certificate' : 'Upload medical certificate'}
                       disabled={isUploadingMedicalDocument || isSubmitting}
                       onPress={() => pickManualPatientAsset('medical_document', setIsUploadingMedicalDocument)}
-                      backgroundColorOverride={theme.colors.surfaceCard}
-                      borderColorOverride="#b87b44"
-                      textColorOverride={roles.primaryActionBackground}
-                    />
-                    <AppButton
-                      title="Scan"
-                      size="sm"
-                      variant="outline"
-                      fullWidth={false}
-                      style={[styles.uploadActionButton, styles.uploadSplitActionButton]}
+                      style={({ pressed }) => [
+                        styles.documentActionButton,
+                        isUploadingMedicalDocument || isSubmitting ? styles.documentActionButtonDisabled : null,
+                        pressed ? styles.documentActionButtonPressed : null,
+                      ]}
+                    >
+                      <LinearGradient
+                        colors={[theme.colors.palette.wine600, theme.colors.palette.wine800, theme.colors.palette.wine900]}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
+                        style={styles.documentActionGradient}
+                      >
+                        {isUploadingMedicalDocument ? (
+                          <ActivityIndicator size="small" color={roles.primaryActionText} />
+                        ) : (
+                          <MaterialCommunityIcons
+                            name={medicalDocumentValue ? 'file-replace-outline' : 'file-upload-outline'}
+                            size={19}
+                            color={roles.primaryActionText}
+                          />
+                        )}
+                        <Text style={[styles.documentActionText, { color: roles.primaryActionText }]}>{isUploadingMedicalDocument ? 'Processing' : medicalDocumentValue ? 'Change' : 'Upload'}</Text>
+                      </LinearGradient>
+                    </Pressable>
+
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Scan medical certificate with camera"
                       disabled={isUploadingMedicalDocument || isSubmitting}
                       onPress={scanManualPatientMedicalDocument}
-                      backgroundColorOverride={theme.colors.surfaceCard}
-                      borderColorOverride="#b87b44"
-                      textColorOverride={roles.primaryActionBackground}
-                    />
+                      style={({ pressed }) => [
+                        styles.documentActionButton,
+                        isUploadingMedicalDocument || isSubmitting ? styles.documentActionButtonDisabled : null,
+                        pressed ? styles.documentActionButtonPressed : null,
+                      ]}
+                    >
+                      <LinearGradient
+                        colors={[theme.colors.palette.wine800, theme.colors.palette.wine700, theme.colors.palette.wine600]}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 1 }}
+                        style={styles.documentActionGradient}
+                      >
+                        <MaterialCommunityIcons name="line-scan" size={19} color={roles.primaryActionText} />
+                        <Text style={[styles.documentActionText, { color: roles.primaryActionText }]}>Scan</Text>
+                      </LinearGradient>
+                    </Pressable>
                   </View>
                 </View>
               </View>
@@ -1732,7 +2299,14 @@ function FirstTimeOnboarding() {
                 </View>
               ) : null}
 
-              <View
+              <Pressable
+                accessibilityRole={isMedicalDocumentVerificationPassed ? 'button' : undefined}
+                accessibilityLabel={isMedicalDocumentVerificationPassed ? 'Open verified medical record details' : undefined}
+                disabled={!isMedicalDocumentVerificationPassed}
+                onPress={() => setIsMedicalVerificationModalVisible(true)}
+                android_ripple={isMedicalDocumentVerificationPassed
+                  ? { color: theme.colors.surfacePressed, borderless: false }
+                  : undefined}
                 style={[
                   styles.documentVerificationRow,
                   isMedicalDocumentVerificationPassed ? styles.documentVerificationRowSuccess : null,
@@ -1775,7 +2349,12 @@ function FirstTimeOnboarding() {
                     </Pressable>
                   ) : null}
                 </View>
-              </View>
+                {isMedicalDocumentVerificationPassed ? (
+                  <View style={styles.documentVerificationOpenAction}>
+                    <MaterialCommunityIcons name="chevron-right" size={18} color="#2f6b45" />
+                  </View>
+                ) : null}
+              </Pressable>
 
               {screenError ? (
                 <Text style={styles.errorText}>{screenError}</Text>
@@ -2068,6 +2647,39 @@ function FirstTimeOnboarding() {
 
         </LinearGradient>
       </View>
+
+      <MinorPatientConsentModal
+        visible={isMinorConsentModalVisible}
+        roles={roles}
+        document={minorConsentDocument}
+        isLoading={isLoadingMinorConsent}
+        error={minorConsentError}
+        onRetry={loadMinorConsentDocument}
+        onCancel={() => setIsMinorConsentModalVisible(false)}
+        onConfirm={async () => {
+          manualPatientForm.setValue('parental_consent', true, {
+            shouldDirty: true,
+            shouldTouch: true,
+            shouldValidate: true,
+          });
+          setScreenError('');
+          setIsMinorConsentModalVisible(false);
+          await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        }}
+      />
+
+      <MedicalVerificationResultModal
+        visible={isMedicalVerificationModalVisible}
+        roles={roles}
+        verification={getMedicalDocumentVerification(watchedMedicalDocument, medicalDocumentVerification)}
+        documentValue={watchedMedicalDocument}
+        onClose={() => setIsMedicalVerificationModalVisible(false)}
+        onReviewMismatchStep={(stepNumber) => {
+          setIsMedicalVerificationModalVisible(false);
+          setManualPatientStep(stepNumber - 1);
+          setScreenError(`Update the Step ${stepNumber} information so it matches the certificate, then verify the document again.`);
+        }}
+      />
     </ScreenContainer>
   );
 }
@@ -2728,6 +3340,16 @@ const styles = StyleSheet.create({
   patientManualFormScrollContentCompact: {
     paddingBottom: 104,
   },
+  patientManualStickyHeader: {
+    width: '100%',
+    zIndex: 30,
+    paddingTop: 2,
+    paddingHorizontal: theme.spacing.xs,
+    paddingBottom: theme.spacing.md,
+    borderBottomLeftRadius: 18,
+    borderBottomRightRadius: 18,
+    overflow: 'hidden',
+  },
   patientInputLabel: {
     fontSize: 11,
     letterSpacing: 0.9,
@@ -2853,7 +3475,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     gap: theme.spacing.sm,
-    marginBottom: theme.spacing.lg,
+    marginBottom: theme.spacing.md,
   },
   stepIndicator: {
     flex: 1,
@@ -2874,7 +3496,7 @@ const styles = StyleSheet.create({
   patientManualHeader: {
     width: '100%',
     alignItems: 'center',
-    marginBottom: theme.spacing.lg,
+    marginBottom: 0,
   },
   patientManualTitle: {
     textAlign: 'center',
@@ -2884,11 +3506,11 @@ const styles = StyleSheet.create({
     fontWeight: theme.typography.weights.semibold,
   },
   patientManualDivider: {
-    width: '100%',
-    height: 1,
-    marginTop: theme.spacing.xs,
-    marginBottom: theme.spacing.sm,
-    backgroundColor: '#ead6d1',
+    width: 54,
+    height: 3,
+    marginTop: theme.spacing.sm,
+    borderRadius: theme.radius.full,
+    backgroundColor: '#dfc3c3',
   },
   actionStack: {
     width: '100%',
@@ -3019,32 +3641,238 @@ const styles = StyleSheet.create({
   },
   parentalConsentBlock: {
     gap: theme.spacing.xs,
+    marginTop: theme.spacing.xs,
+    marginBottom: theme.spacing.sm,
   },
   parentalConsentRow: {
+    minHeight: 92,
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: theme.spacing.sm,
+    alignItems: 'center',
+    gap: theme.spacing.md,
     padding: theme.spacing.md,
     borderWidth: 1,
-    borderRadius: theme.radius.lg,
+    borderRadius: 18,
     borderColor: theme.colors.borderMuted,
     backgroundColor: theme.colors.surfaceSoft,
+    overflow: 'hidden',
   },
   parentalConsentRowError: {
     borderColor: theme.colors.textError,
   },
-  parentalConsentText: {
+  parentalConsentIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  parentalConsentCopy: {
     flex: 1,
+    minWidth: 0,
+  },
+  parentalConsentEyebrow: {
+    marginBottom: 2,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 1,
+  },
+  parentalConsentTitle: {
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.bodySm,
-    lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.normal,
-    color: theme.colors.textPrimary,
+    fontWeight: theme.typography.weights.bold,
+    lineHeight: 18,
+  },
+  parentalConsentText: {
+    marginTop: 3,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: theme.typography.compact.caption * theme.typography.lineHeights.relaxed,
+    color: theme.colors.textSecondary,
+  },
+  parentalConsentAction: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
   },
   parentalConsentError: {
-    marginLeft: 34,
+    marginLeft: theme.spacing.md,
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.caption,
     color: theme.colors.textError,
+  },
+  minorConsentModalOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.xl,
+    backgroundColor: theme.colors.overlay,
+  },
+  minorConsentModalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  minorConsentModalCard: {
+    width: '100%',
+    maxWidth: 520,
+    maxHeight: '92%',
+    alignSelf: 'center',
+    borderRadius: 28,
+    overflow: 'hidden',
+    ...theme.shadows.card,
+  },
+  minorConsentModalHeader: {
+    minHeight: 120,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    overflow: 'hidden',
+  },
+  minorConsentModalGlow: {
+    position: 'absolute',
+    width: 150,
+    height: 150,
+    borderRadius: 75,
+    right: -44,
+    top: -84,
+    backgroundColor: 'rgba(255, 255, 255, 0.10)',
+  },
+  minorConsentModalHeaderIcon: {
+    width: 52,
+    height: 52,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.22)',
+    flexShrink: 0,
+  },
+  minorConsentModalHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  minorConsentModalEyebrow: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 10,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 1.1,
+    opacity: 0.78,
+  },
+  minorConsentModalTitle: {
+    marginTop: 2,
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.titleSm,
+    fontWeight: theme.typography.weights.bold,
+  },
+  minorConsentModalSubtitle: {
+    marginTop: 3,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 16,
+    opacity: 0.84,
+  },
+  minorConsentModalScroll: {
+    minHeight: 0,
+  },
+  minorConsentModalBody: {
+    padding: theme.spacing.lg,
+    gap: theme.spacing.lg,
+  },
+  minorConsentModalLoading: {
+    minHeight: 160,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
+  },
+  minorConsentModalLoadingText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+  },
+  minorConsentModalErrorBlock: {
+    minHeight: 150,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
+  },
+  minorConsentModalErrorText: {
+    maxWidth: 290,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+    lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.relaxed,
+    color: theme.colors.textError,
+    textAlign: 'center',
+  },
+  minorConsentModalRetry: {
+    minHeight: 40,
+    paddingHorizontal: theme.spacing.md,
+    borderRadius: theme.radius.pill,
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.xs,
+  },
+  minorConsentModalRetryText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+    fontWeight: theme.typography.weights.bold,
+  },
+  minorConsentAgreement: {
+    minHeight: 82,
+    padding: theme.spacing.md,
+    borderRadius: 18,
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: theme.spacing.md,
+    overflow: 'hidden',
+  },
+  minorConsentAgreementDisabled: {
+    opacity: 0.5,
+  },
+  minorConsentCheckbox: {
+    width: 24,
+    height: 24,
+    marginTop: 2,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: theme.colors.borderStrong,
+    backgroundColor: theme.colors.surfaceCard,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  minorConsentAgreementCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  minorConsentAgreementTitle: {
+    marginBottom: 3,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+    fontWeight: theme.typography.weights.bold,
+  },
+  minorConsentAgreementText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+    lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.relaxed,
+  },
+  minorConsentModalFooter: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.md,
+    paddingBottom: theme.spacing.lg,
+    borderTopWidth: 1,
+    flexDirection: 'row',
+    gap: theme.spacing.sm,
+  },
+  minorConsentModalAction: {
+    flex: 1,
+    minWidth: 0,
   },
   pressed: {
     opacity: 0.75,
@@ -3183,6 +4011,7 @@ const styles = StyleSheet.create({
   manualStepPanel: {
     width: '100%',
     gap: 0,
+    paddingTop: theme.spacing.lg,
   },
   manualStepPanelHidden: {
     width: '100%',
@@ -3193,6 +4022,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: theme.spacing.sm,
+  },
+  uploadCardCopyStacked: {
+    flex: 0,
   },
   uploadCardTextGroup: {
     flex: 1,
@@ -3217,16 +4049,42 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: 1.2,
   },
-  uploadSplitActionButton: {
-    flex: 1,
-    minWidth: 0,
-  },
   uploadActionGroup: {
     width: '100%',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: theme.spacing.sm,
-    justifyContent: 'space-between',
+    gap: 10,
+  },
+  documentActionButton: {
+    flex: 1,
+    minWidth: 0,
+    borderRadius: 14,
+    overflow: 'hidden',
+    ...theme.shadows.soft,
+  },
+  documentActionButtonDisabled: {
+    opacity: 0.55,
+  },
+  documentActionButtonPressed: {
+    opacity: 0.86,
+    transform: [{ scale: 0.98 }],
+  },
+  documentActionGradient: {
+    minHeight: 46,
+    paddingHorizontal: theme.spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.18)',
+  },
+  documentActionText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 0.15,
   },
   uploadPreviewImage: {
     width: '100%',
@@ -3353,6 +4211,16 @@ const styles = StyleSheet.create({
     color: theme.colors.textSecondary,
     lineHeight: theme.typography.compact.caption * theme.typography.lineHeights.normal,
   },
+  documentVerificationOpenAction: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignSelf: 'center',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(30, 122, 66, 0.10)',
+    flexShrink: 0,
+  },
   documentRetryButton: {
     alignSelf: 'flex-start',
     minHeight: 30,
@@ -3370,6 +4238,307 @@ const styles = StyleSheet.create({
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.caption,
     fontWeight: theme.typography.weights.semibold,
+  },
+  medicalResultModalOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.lg,
+    backgroundColor: theme.colors.overlay,
+  },
+  medicalResultModalCard: {
+    width: '100%',
+    maxWidth: 540,
+    maxHeight: '94%',
+    alignSelf: 'center',
+    borderRadius: 28,
+    overflow: 'hidden',
+    ...theme.shadows.card,
+  },
+  medicalResultModalHeader: {
+    minHeight: 126,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    overflow: 'hidden',
+  },
+  medicalResultModalGlow: {
+    position: 'absolute',
+    width: 160,
+    height: 160,
+    borderRadius: 80,
+    right: -48,
+    top: -92,
+    backgroundColor: 'rgba(255, 255, 255, 0.10)',
+  },
+  medicalResultHeaderIcon: {
+    width: 54,
+    height: 54,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.22)',
+    flexShrink: 0,
+  },
+  medicalResultHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  medicalResultEyebrow: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 1.05,
+    opacity: 0.78,
+  },
+  medicalResultTitle: {
+    marginTop: 2,
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.titleSm,
+    fontWeight: theme.typography.weights.bold,
+  },
+  medicalResultSubtitle: {
+    marginTop: 3,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 16,
+    opacity: 0.84,
+  },
+  medicalResultScroll: {
+    minHeight: 0,
+  },
+  medicalResultBody: {
+    padding: theme.spacing.lg,
+    gap: theme.spacing.md,
+  },
+  medicalResultSuccessBanner: {
+    padding: theme.spacing.md,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#BFE8CD',
+    backgroundColor: '#EAF8EF',
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: theme.spacing.sm,
+  },
+  medicalResultSuccessCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  medicalResultSuccessTitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+    fontWeight: theme.typography.weights.bold,
+    color: '#1E7A42',
+  },
+  medicalResultSuccessText: {
+    marginTop: 2,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 16,
+    color: '#315F43',
+  },
+  medicalResultMismatchBanner: {
+    borderColor: '#EDC46C',
+    backgroundColor: '#FFF5DA',
+  },
+  medicalResultMismatchTitle: {
+    color: '#7A4700',
+  },
+  medicalResultMismatchText: {
+    color: '#6B4B17',
+  },
+  medicalResultMismatchList: {
+    gap: theme.spacing.sm,
+  },
+  medicalResultMismatchItem: {
+    padding: theme.spacing.md,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#E7C98A',
+    backgroundColor: '#FFFAEE',
+    gap: theme.spacing.xs,
+  },
+  medicalResultMismatchField: {
+    marginBottom: 2,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+    fontWeight: theme.typography.weights.bold,
+    color: '#6D3F00',
+  },
+  medicalResultMismatchValueRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: theme.spacing.sm,
+  },
+  medicalResultMismatchValueLabel: {
+    width: 68,
+    paddingTop: 2,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 0.65,
+    color: '#9A6B1C',
+  },
+  medicalResultMismatchValue: {
+    flex: 1,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 17,
+    color: '#4F3A18',
+  },
+  medicalResultSectionHeader: {
+    marginTop: theme.spacing.xs,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  medicalResultSectionHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  medicalResultSectionTitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+    fontWeight: theme.typography.weights.bold,
+  },
+  medicalResultSectionHint: {
+    marginTop: 1,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 16,
+  },
+  medicalResultImagePreview: {
+    height: 178,
+    borderRadius: 20,
+    borderWidth: 1,
+    overflow: 'hidden',
+    backgroundColor: theme.colors.surfaceSoft,
+    ...theme.shadows.soft,
+  },
+  medicalResultImage: {
+    width: '100%',
+    height: '100%',
+  },
+  medicalResultExpandBadge: {
+    position: 'absolute',
+    right: theme.spacing.sm,
+    top: theme.spacing.sm,
+    minHeight: 30,
+    paddingHorizontal: theme.spacing.sm,
+    borderRadius: theme.radius.pill,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.xs,
+  },
+  medicalResultExpandText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    fontWeight: theme.typography.weights.bold,
+  },
+  medicalResultNoPreview: {
+    minHeight: 110,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
+  },
+  medicalResultNoPreviewText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+  },
+  medicalResultDetails: {
+    borderRadius: 18,
+    borderWidth: 1,
+    overflow: 'hidden',
+  },
+  medicalResultDetailRow: {
+    minHeight: 64,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+  },
+  medicalResultDetailIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  medicalResultDetailCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  medicalResultDetailLabel: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    fontWeight: theme.typography.weights.semibold,
+    textTransform: 'uppercase',
+    letterSpacing: 0.55,
+  },
+  medicalResultDetailValue: {
+    marginTop: 2,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+    lineHeight: theme.typography.compact.bodySm * theme.typography.lineHeights.relaxed,
+    fontWeight: theme.typography.weights.medium,
+  },
+  medicalResultFooter: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.md,
+    paddingBottom: theme.spacing.lg,
+    borderTopWidth: 1,
+  },
+  medicalResultMismatchActions: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: theme.spacing.sm,
+  },
+  medicalResultMismatchActionItem: {
+    flex: 1,
+    minWidth: 0,
+  },
+  medicalResultImageViewer: {
+    flex: 1,
+    backgroundColor: '#11080c',
+  },
+  medicalResultImageViewerHeader: {
+    minHeight: 68,
+    paddingHorizontal: theme.spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: theme.colors.palette.wine900,
+  },
+  medicalResultImageViewerBack: {
+    width: 48,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  medicalResultImageViewerTitle: {
+    flex: 1,
+    textAlign: 'center',
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.body,
+    fontWeight: theme.typography.weights.bold,
+    color: '#ffffff',
+  },
+  medicalResultImageViewerSpacer: {
+    width: 48,
+  },
+  medicalResultImageViewerImage: {
+    flex: 1,
+    width: '100%',
   },
   errorText: {
     textAlign: 'center',

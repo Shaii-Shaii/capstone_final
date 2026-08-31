@@ -39,6 +39,7 @@ export const AppInput = ({
   errorTextStyle: errorTextStyleOverride,
   leftIcon,
   leftIconColor,
+  leftIconContainerStyle,
   ...props
 }) => {
   const { resolvedTheme } = useAuth();
@@ -112,12 +113,13 @@ export const AppInput = ({
         ]}
       >
         {leftIcon ? (
-          <MaterialCommunityIcons
-            name={leftIcon}
-            size={18}
-            color={leftIconColor || secondaryTextColor}
-            style={styles.leftIcon}
-          />
+          <View style={[styles.leftIconWrap, leftIconContainerStyle]} pointerEvents="none">
+            <MaterialCommunityIcons
+              name={leftIcon}
+              size={18}
+              color={leftIconColor || secondaryTextColor}
+            />
+          </View>
         ) : null}
         <TextInput
           style={[
@@ -181,9 +183,14 @@ const styles = StyleSheet.create({
     shadowRadius: 14,
     elevation: 2,
   },
-  leftIcon: {
+  leftIconWrap: {
     position: 'absolute',
     left: theme.spacing.md,
+    top: 0,
+    width: 20,
+    height: theme.inputs.minHeightCompact,
+    alignItems: 'center',
+    justifyContent: 'center',
     zIndex: 1,
   },
   focusedShell: {
@@ -199,7 +206,7 @@ const styles = StyleSheet.create({
     paddingVertical: theme.spacing.inputPaddingYCompact,
   },
   inputWithIcon: {
-    paddingLeft: 52,
+    paddingLeft: 56,
   },
   helperText: {
     marginTop: theme.spacing.xs,

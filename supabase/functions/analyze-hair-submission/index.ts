@@ -41,6 +41,12 @@ const analysisSchema = {
           type: 'number',
           nullable: true,
         },
+        length_measurable: {
+          type: 'boolean',
+        },
+        length_limit_reason: {
+          type: 'string',
+        },
         detected_color: {
           type: 'string',
         },
@@ -159,6 +165,8 @@ const analysisSchema = {
         'missing_views',
         'per_view_notes',
         'estimated_length',
+        'length_measurable',
+        'length_limit_reason',
         'detected_color',
         'detected_texture',
         'detected_density',
@@ -204,6 +212,8 @@ const lengthFallbackSchema = {
       properties: {
         is_hair_detected: { type: 'boolean' },
         estimated_length: { type: 'number', nullable: true },
+        length_measurable: { type: 'boolean' },
+        length_limit_reason: { type: 'string' },
         length_assessment: { type: 'string' },
         detected_color: { type: 'string' },
         detected_texture: { type: 'string' },
@@ -215,6 +225,8 @@ const lengthFallbackSchema = {
       required: [
         'is_hair_detected',
         'estimated_length',
+        'length_measurable',
+        'length_limit_reason',
         'length_assessment',
         'detected_color',
         'detected_texture',
@@ -496,6 +508,8 @@ const instructions = [
   'CRITICAL RULE 1: The uploaded photos are the PRIMARY and MOST IMPORTANT source of truth. Questionnaire answers are ONLY supporting context.',
   'CRITICAL RULE 2: You MUST describe what you ACTUALLY SEE in the photos. Do not rely on questionnaire answers alone.',
   'CRITICAL RULE 3: Every recommendation MUST be based on VISIBLE observations from the photos, not generic hair care advice.',
+  'CRITICAL RULE 4: Complete a two-pass review. First record evidence from every required view, then cross-check those observations before selecting the condition, numeric levels, summary, and recommendations.',
+  'CRITICAL RULE 5: Do not invent a concern to fill a recommendation slot. When evidence is uncertain or the hair appears healthy, give conservative maintenance guidance and state the visibility limit through confidence_score or the summary.',
   '',
   'OBSERVATION CHECKLIST — examine each photo for:',
   '1. SCALP: Is the scalp visible? Is it oily (shiny, greasy appearance)? Dry (flaky, tight)? Clean? Any visible flaking, dandruff-like flakes, buildup, or visible lice/nits attached to hair shafts near the scalp?',
@@ -547,11 +561,13 @@ const instructions = [
 
   // Length estimation
   'Estimate DONATION LENGTH as a numeric estimated_length in centimeters for storage, but write all user-facing length wording in inches only.',
+  'Set length_measurable=true only when a usable length view clearly shows the lower cheek/neck or nape cut-start area and the naturally hanging lowest ends.',
+  'Set length_measurable=false, estimated_length=null, and explain length_limit_reason when hair is tied back, in a bun or ponytail, folded upward, held by a claw clip/hair clip/tie/scrunchie, or when the natural lowest ends are hidden, cropped, blocked, or covered. Never measure to the clip, bun, or tied section.',
   'Donation length starts at the likely cut-start area around the lower cheek, jawline, or neck ("bandang leeg"), not from the scalp, hairline, or root. Measure the visible hanging length from that cheek/neck start point down to the lowest clearly visible hair ends.',
   'Use the Front View Photo, Side Profile Photo, Right Side Photo, and Back Hair Photo together when available. The back-side photo is important for confirming the lowest visible ends and true hanging length. The hairline/root does not need to be visible for donation length if the cheek/neck or nape start area and lowest ends are visible.',
   'IMPORTANT LENGTH RULE: Do not return null just because there is no ruler. Make a conservative practical visual estimate using face/head scale and body landmarks. Approximate donation length from lower cheek/neck to ends: shoulder-length is usually about 4-8 inches, collarbone is usually about 6-10 inches, upper chest is usually about 8-12 inches, armpit is usually about 10-14 inches, mid-back is usually about 15-24 inches, waist is usually about 24-32 inches. Store the rounded numeric estimate in centimeters.',
   'Do NOT mark the donor eligible when the visible ends only reach the shoulder, collarbone, or upper chest. For eligibility, the visible lower cheek/neck-to-ends length must clearly exceed the current database minimum hair length requirement and usually needs to reach at least around armpit or longer in the side/front view.',
-  'Return null for estimated_length only when the lower cheek/neck cut-start area or the lowest visible ends are not visible enough to estimate at all. If hair is too short for donation, still return the best numeric estimate instead of null.',
+  'Return null for estimated_length whenever length_measurable=false. If loose, naturally hanging hair is clearly visible but simply too short for donation, still return the best conservative numeric estimate instead of null.',
   'In length_assessment, explicitly mention that the estimate starts around the lower cheek/neck/cut-start area and name the visible endpoint landmark, such as shoulder, collarbone, armpit, mid-back, waist, or "lowest visible ends". Use inches only in this text.',
 
   // Detected fields
@@ -659,6 +675,7 @@ const analysisInstructions = [
   'Never reuse or copy prior saved results, prior recommendations, or generic template wording as the current result.',
   'History context, when present, is only for trend comparison and must never replace the current image observations.',
   'Treat each required image role separately and use the correct evidence from that view before deciding the final result.',
+  'Use a two-pass assessment: inspect and record each required view independently, then reconcile the six view notes into one internally consistent result before generating care guidance.',
   'Use Front View Photo, Side Profile Photo, Right Side Photo, and Back Hair Photo together for donation length assessment from the lower cheek/neck or nape cut-start area to the lowest visible ends. Back Hair Photo should strengthen or correct the length estimate when it shows the lowest ends more clearly than front or side views. Hair Scalp is the main basis for visible scalp coverage, crown/part line density, flakes, oiliness, buildup, and root condition. Hair Ends Close-Up is the main basis for split ends and end damage.',
   'Before estimating length or generating recommendations, compare the required views using visible hair consistency only. Do not identify the person. Since photo validation already passed, do not reject the submission; return the closest conservative hair assessment.',
   'For every provided required view, return one per_view_notes entry using the exact canonical label: Front View Photo, Side Profile Photo, Right Side Photo, Hair Scalp, Hair Ends Close-Up, or Back Hair Photo.',
@@ -676,9 +693,9 @@ const analysisInstructions = [
   'Estimate visible donation length only. Donation length means the visible hanging length from the lower cheek/jawline/neck cut-start area to the lowest clearly visible hair end, not scalp-to-end or root-to-end length.',
   'Use the front, side, right-side, and back hair views together to assess visible cheek/neck or nape-to-ends donation length when those views are available.',
   'Use length_assessment to explain how the visible donation length was judged from the current images and to state any visibility limits honestly. Mention the lower cheek/neck start area, visible ends, and the body landmark used for approximation. Use inches only in this text.',
-  'When the lower cheek/neck cut-start area and ends are visible but no measuring ruler is present, return a conservative approximate estimated_length in centimeters for storage using visible face/head/body proportions. Round to the nearest whole centimeter. Return null only when the lower cheek/neck cut-start area or lowest visible ends are completely blocked/cropped.',
+  'When loose hair, the lower cheek/neck cut-start area, and the naturally hanging ends are visible but no ruler is present, return a conservative approximate estimated_length in centimeters using visible face/head/body proportions. Round to the nearest whole centimeter.',
   'If the hair appears short, shoulder-length, or below the donation threshold, return the approximate short length in centimeters instead of null.',
-  'Do not invent fake precision when the hair is curled, tied, blocked, cropped, blurry, or lacks reliable scale. Prefer an approximate rounded estimate with lower confidence over null when the lower cheek/neck start area and ends are visible.',
+  'Do not invent fake precision. Curled hair may receive a conservative estimate only when its naturally hanging ends remain visible. Tied, clipped, folded, blocked, covered, or cropped hair is not measurable and must return estimated_length=null.',
   'Donation suitability must respect the current database minimum hair length requirement measured from the lower cheek/neck cut-start area to the lowest visible ends.',
   `Set decision to exactly one of: "${ELIGIBLE_STATUS}" or "${NOT_ELIGIBLE_STATUS}".`,
   `Use "${ELIGIBLE_STATUS}" only when the visible donation length clearly exceeds the current database minimum hair length requirement, the visible endpoint is around armpit or longer, the visible condition appears suitable for donation, and confidence_score is at least ${MIN_ELIGIBILITY_CONFIDENCE}.`,
@@ -699,6 +716,7 @@ const analysisInstructions = [
   'recommendations must focus on improving hair condition, maintaining healthy hair, supporting longer healthier growth if the hair is too short, and reducing visible damage.',
   'Return exactly 3 recommendations when hair is visible enough to analyze.',
   'Recommendations should be specific to the observed condition, such as reducing heat exposure, improving scalp care, adjusting wash routine, improving moisture care, trimming damaged ends when appropriate, and avoiding harsh chemical processing.',
+  'Each recommendation must address an observation supported by the current per_view_notes or a questionnaire answer that is consistent with those images. Never invent damage, dryness, flakes, lice, thinning, oiliness, or chemical treatment merely to produce three different steps.',
   'If the visible hair is too short for donation, include guidance about length retention, healthy growth habits, or reducing breakage. If the hair is dry, recommendations must address dryness. If the hair appears healthy, recommendations must focus on maintenance rather than damage repair.',
   'Do not use recommendation slots for camera, upload, lighting, retake, photo framing, or recheck instructions. Those belong before analysis, not in hair-care recommendations.',
   'Do not recommend or advertise products. Do not name brands, companies, stores, marketplaces, shopping links, product lines, countries, country-made products, or country-specific options. Mention only neutral ingredients that clearly match the observed concern, and skip ingredients when the recommendation is only about length, maintenance, retaking photos, or rechecking.',
@@ -1005,6 +1023,21 @@ const hasShortEndpointLandmark = (value: string) => {
     'chin-length',
     'jaw-length',
   ]);
+};
+
+const hasUnmeasurableLengthEvidence = (value: string) => {
+  const normalized = normalizeString(value).replace(/\s+/g, ' ').toLowerCase();
+  if (!normalized) return false;
+
+  return [
+    /\b(?:hair\s+(?:is|appears|looks)\s+)?(?:tied|pulled)\s+back\b/,
+    /\b(?:ponytail|bun|updo)\b/,
+    /\b(?:secured|held|fastened)\s+(?:back\s+)?with\s+(?:a\s+)?(?:claw\s+)?clip\b/,
+    /\b(?:claw clip|hair clip|scrunchie|hair tie)\s+(?:is\s+)?(?:holding|securing|blocking|covering|obstructing)\b/,
+    /\b(?:lowest\s+)?(?:hair\s+)?ends?\s+(?:are|is|remain|were)?\s*(?:not visible|hidden|blocked|covered|cropped|obstructed)\b/,
+    /\b(?:cannot|can't|unable to|could not)\s+(?:clearly\s+)?(?:see|identify|confirm|measure)\s+(?:the\s+)?(?:lowest\s+)?(?:hair\s+)?ends?\b/,
+    /\b(?:length|donation length)\s+(?:cannot|can't|could not|is not able to be)\s+(?:be\s+)?(?:measured|estimated|confirmed)\b/,
+  ].some((pattern) => pattern.test(normalized));
 };
 
 const hasCrossViewConsistencyIssue = (value: string) => {
@@ -1408,10 +1441,12 @@ const runFocusedLengthFallback = async ({
         'Return valid JSON only.',
         'Your main job is to estimate visible donation length from the lower cheek/neck cut-start area to the lowest visible ends in the current images.',
         'Use the front and side profile images for donation length. Use the Hair Scalp only to assess scalp/crown coverage and root/scalp condition.',
-        'If the lower cheek/neck cut-start area and the lowest visible ends are visible, return a conservative approximate estimated_length in centimeters for storage even when no ruler is present.',
+        'Set length_measurable=true only when loose or naturally hanging hair shows both the lower cheek/neck cut-start area and the lowest natural ends. Otherwise set length_measurable=false.',
+        'If hair is tied back, clipped, folded into a bun, held by a tie/scrunchie, or its natural ends are hidden, return estimated_length=null and explain the obstruction in length_limit_reason. Never measure the distance to a clip, bun, or tied section.',
+        'If length_measurable=true, return a conservative approximate estimated_length in centimeters for storage even when no ruler is present.',
         'Use face/head/body proportions and landmarks for donation length from lower cheek/neck to ends: shoulder-length is usually about 4-8 inches, collarbone about 6-10 inches, upper chest about 8-12 inches, armpit about 10-14 inches, mid-back about 15-24 inches, waist about 24-32 inches.',
         'Do not estimate eligible donation length when the visible ends only reach the shoulder, collarbone, or upper chest. Eligibility requires a clear lower cheek/neck-to-ends length above the current database minimum hair length requirement.',
-        'Return null only if the lower cheek/neck cut-start area or lowest visible ends are completely blocked or cropped.',
+        'Return null whenever length_measurable=false or the lower cheek/neck cut-start area or natural lowest ends are blocked, tied, clipped, covered, or cropped.',
         'Write length_assessment in inches only and mention the lower cheek/neck start point.',
         'Do not reject ordinary eyeglasses unless they hide the hairline or hair.',
       ].join('\n'),
@@ -1426,7 +1461,9 @@ const runFocusedLengthFallback = async ({
       ? fallbackResult.parsed.analysis
       : fallbackResult?.parsed;
     const focused = (source && typeof source === 'object' ? source : {}) as Record<string, unknown>;
-    const estimatedLength = normalizeNumber(focused?.estimated_length);
+    const lengthMeasurable = focused?.length_measurable !== false;
+    const lengthLimitReason = normalizeString(focused?.length_limit_reason);
+    const estimatedLength = lengthMeasurable ? normalizeNumber(focused?.estimated_length) : null;
     const lengthAssessment = normalizeString(focused?.length_assessment);
 
     console.info('[analyze-hair-submission] focused length fallback completed', {
@@ -1449,6 +1486,8 @@ const runFocusedLengthFallback = async ({
         notes: lengthAssessment || 'Focused length fallback reviewed this view for visible cheek/neck-to-ends donation length.',
       })),
       estimated_length: estimatedLength,
+      length_measurable: lengthMeasurable && estimatedLength != null,
+      length_limit_reason: lengthLimitReason,
       detected_color: normalizeString(focused?.detected_color) || 'Black',
       detected_texture: normalizeString(focused?.detected_texture) || 'Straight',
       detected_density: normalizeString(focused?.detected_density) || 'Medium',
@@ -1764,15 +1803,20 @@ const normalizeAnalysisPayload = (
   const visibleDamageNotes = normalizeString(analysis?.visible_damage_notes);
   const confidenceScore = normalizeConfidence(analysis?.confidence_score);
   const lengthAssessment = normalizeString(analysis?.length_assessment);
+  const lengthLimitReason = normalizeString(analysis?.length_limit_reason);
   const lengthEvidenceText = [
     lengthAssessment,
+    lengthLimitReason,
     normalizeString(analysis?.summary),
     visibleDamageNotes,
     ...normalizedViewNotes.map((item) => item.notes),
   ].join(' ');
   const approximateLengthFromText = inferApproximateLengthFromText(lengthEvidenceText);
-  const estimatedLength = normalizeEstimatedLengthCm(analysis?.estimated_length, lengthEvidenceText)
-    ?? approximateLengthFromText;
+  const lengthMeasurable = analysis?.length_measurable !== false
+    && !hasUnmeasurableLengthEvidence(lengthEvidenceText);
+  const estimatedLength = lengthMeasurable
+    ? normalizeEstimatedLengthCm(analysis?.estimated_length, lengthEvidenceText) ?? approximateLengthFromText
+    : null;
   const rawShineLevel = normalizeLevel10(analysis?.shine_level, detectedCondition.toLowerCase().includes('healthy') ? 7 : 5);
   const rawFrizzLevel = normalizeLevel10(analysis?.frizz_level, detectedCondition.toLowerCase().includes('frizz') ? 8 : 3);
   const rawDrynessLevel = normalizeLevel10(analysis?.dryness_level, detectedCondition.toLowerCase().includes('dry') ? 8 : 3);
@@ -1844,9 +1888,11 @@ const normalizeAnalysisPayload = (
     (minimumDonationLengthCm != null && approximateLengthFromText != null && approximateLengthFromText < minimumDonationLengthCm)
     || hasShortEndpointLandmark(endpointEvidenceText)
   );
-  const finalEstimatedLength = hasBelowThresholdEndpointLandmark && estimatedLength != null
-    ? Math.min(estimatedLength, approximateLengthFromText ?? (minimumDonationLengthCm != null ? minimumDonationLengthCm - 0.1 : estimatedLength))
-    : estimatedLength;
+  const finalEstimatedLength = !lengthMeasurable
+    ? null
+    : hasBelowThresholdEndpointLandmark && estimatedLength != null
+      ? Math.min(estimatedLength, approximateLengthFromText ?? (minimumDonationLengthCm != null ? minimumDonationLengthCm - 0.1 : estimatedLength))
+      : estimatedLength;
   const donationReadinessNote = normalizeString(analysis?.donation_readiness_note);
   const historyAssessment = normalizeString(analysis?.history_assessment) || inferHistoryAssessment(
     historyContext,
@@ -1919,7 +1965,11 @@ const normalizeAnalysisPayload = (
     invalid_image_reason: finalInvalidImageReason,
     missing_views: missingViews,
     per_view_notes: normalizedViewNotes,
-    estimated_length: finalEstimatedLength ?? 0,
+    estimated_length: finalEstimatedLength,
+    length_measurable: lengthMeasurable && finalEstimatedLength != null,
+    length_limit_reason: lengthMeasurable
+      ? ''
+      : lengthLimitReason || 'Hair was tied, clipped, covered, cropped, or did not show the naturally hanging lowest ends clearly enough for a reliable measurement.',
     detected_color: detectedColor || 'Black',
     detected_texture: detectedTexture || 'Straight',
     detected_density: detectedDensity || 'Medium',
@@ -1959,13 +2009,15 @@ const normalizeAnalysisPayload = (
     improvement_recommendation: finalImprovementRecommendation,
     decision,
     summary,
-    length_assessment: lengthAssessment || buildLengthAssessment({
-      estimatedLength: finalEstimatedLength,
-      providedViews,
-      missingViews,
-      isHairDetected,
-      perViewNotes: normalizedViewNotes,
-    }),
+    length_assessment: !lengthMeasurable
+      ? lengthLimitReason || 'Hair length could not be measured because the hair was tied, clipped, covered, cropped, or the naturally hanging lowest ends were not visible. Retake the length views with loose hair and no accessories.'
+      : lengthAssessment || buildLengthAssessment({
+        estimatedLength: finalEstimatedLength,
+        providedViews,
+        missingViews,
+        isHairDetected,
+        perViewNotes: normalizedViewNotes,
+      }),
     donation_readiness_note: finalDonationReadinessNote,
     history_assessment: [historyAssessment, questionnaireAssessment].filter(Boolean).join(' '),
     recommendations: normalizedRecommendations,
@@ -2094,6 +2146,7 @@ Deno.serve(async (request) => {
       '- Required angle: Is the Front View face-forward? Are the Side Profile and Right Side Photo actually side views? Does the Hair Scalp show the scalp/crown or part line clearly? Does Back Hair Photo show hair from behind when provided?',
       '- Cross-view consistency: Do all provided photos appear to show the same current hair from one person? Check visible hair color, length, texture, density, ends, hairline/parting when visible, back-side fullness, and clothing/shoulder area when visible. Do not identify the person; only check whether the submission is visually consistent.',
       '- Accessories: Are glasses, sunglasses, masks, face shields, caps, hats, headbands, clips, pins, hair ties, scrunchies, scarves, headphones, hoods, hands, towels, or fabric visible on the face or blocking the hairline, shaft, length, or ends?',
+      '- Hair authenticity screening: Look conservatively for visible wig, hairpiece, topper, or extension evidence such as a lace edge, wig cap, exposed track/weft, tape or bond, attachment seam, or abrupt unmatched density/texture. Do not infer artificial hair from styling, high density, straightening, curling, or color alone. Record only visible evidence in per_view_notes and lower confidence when roots or the hairline are obscured.',
       '- Scalp condition, roots, hair shaft shine or dullness, texture, density, ends condition',
       '- Score levels: shine, frizz, dryness, oiliness, damage from 1-10',
       'Use per_view_notes to record what you observe in each view.',
@@ -2135,7 +2188,7 @@ Deno.serve(async (request) => {
 
     validImages.forEach((image, index) => {
       multimodalParts.push({
-        text: `Image ${index + 1}: ${image.viewLabel || image.viewKey || `Photo ${index + 1}`} - examine this photo carefully for the correct required angle, environment quality (lighting, dark areas), subject detection, background, obstructing items on the hair, scalp condition, hair shine or dullness, straight/wavy/curly/coily texture pattern, density, ends condition, visible cheek/neck or nape-to-ends donation length, back-side length when this is the back view, and consistency with the other required views. If the lower cheek/neck or nape cut-start area and lowest visible ends are visible, estimate approximate donation length in centimeters for storage using face/head/body proportions even without a ruler, but write any length explanation in inches only.`,
+        text: `Image ${index + 1}: ${image.viewLabel || image.viewKey || `Photo ${index + 1}`} - examine this photo carefully for the correct required angle, environment quality (lighting, dark areas), subject detection, background, obstructing items on the hair, scalp condition, hair shine or dullness, straight/wavy/curly/coily texture pattern, density, ends condition, visible cheek/neck or nape-to-ends donation length, back-side length when this is the back view, and consistency with the other required views. Estimate donation length only when loose or naturally hanging hair clearly shows the lower cheek/neck or nape cut-start area and the lowest natural ends. If hair is tied, clipped, folded, covered, or the ends are hidden, set length_measurable=false and estimated_length=null.`,
       });
       multimodalParts.push({
         inlineData: {
@@ -2356,7 +2409,16 @@ Deno.serve(async (request) => {
       rawAnalysis = focusedFallbackAnalysis;
     }
 
-    const isEstimatedLengthMissing = normalizeNumber(rawAnalysis?.estimated_length) == null;
+    const rawLengthEvidence = [
+      normalizeString(rawAnalysis?.length_assessment),
+      normalizeString(rawAnalysis?.length_limit_reason),
+      normalizeString(rawAnalysis?.summary),
+      ...normalizePerViewNotes(rawAnalysis?.per_view_notes).map((item) => item.notes),
+    ].join(' ');
+    const rawLengthUnmeasurable = rawAnalysis?.length_measurable === false
+      || hasUnmeasurableLengthEvidence(rawLengthEvidence);
+    const isEstimatedLengthMissing = normalizeNumber(rawAnalysis?.estimated_length) == null
+      && !rawLengthUnmeasurable;
     if (isEstimatedLengthMissing && !focusedLengthFallbackRan) {
       console.warn('[analyze-hair-submission] estimated length missing; running focused length fallback', {
         concernType,
@@ -2379,6 +2441,8 @@ Deno.serve(async (request) => {
         rawAnalysis = {
           ...rawAnalysis,
           estimated_length: fallbackLength,
+          length_measurable: focusedFallbackAnalysis.length_measurable !== false,
+          length_limit_reason: normalizeString(focusedFallbackAnalysis.length_limit_reason),
           length_assessment: normalizeString(focusedFallbackAnalysis.length_assessment)
             || normalizeString(rawAnalysis.length_assessment)
             || `Focused fallback estimated visible cheek/neck-to-ends donation length at about ${formatLengthInches(fallbackLength)}.`,

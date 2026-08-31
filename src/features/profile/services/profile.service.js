@@ -3,6 +3,21 @@ import { logAppError, logAppEvent, writeAuditLog } from '../../../utils/appError
 import { profileCompletionFieldLabels, profileCompletionSections } from '../../../constants/profile';
 
 const SYSTEM_ROLE_KEYS = new Set(['id', 'created_at', 'updated_at', 'user_id', 'profile_id']);
+const DATABASE_MEDICAL_DOCUMENT_STATUSES = new Set([
+  'not_submitted',
+  'ocr_failed',
+  'ocr_passed_prc_pending',
+  'prc_verified',
+  'rejected',
+  'verified',
+]);
+
+const normalizeMedicalDocumentVerificationStatus = (status) => {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (!normalized) return null;
+  if (DATABASE_MEDICAL_DOCUMENT_STATUSES.has(normalized)) return normalized;
+  return 'ocr_failed';
+};
 
 const normalizeOptionalString = (value) => {
   if (value === undefined) return undefined;
@@ -451,10 +466,11 @@ export const completePostLoginOnboarding = async ({
         guardian_relationship: manualPatientDetails?.guardian_relationship || '',
         guardian_contact_number: manualPatientDetails?.guardian_contact_number || '',
         medical_document: medicalDocumentUrl || '',
-        medical_document_verification_status:
+        medical_document_verification_status: normalizeMedicalDocumentVerificationStatus(
           medicalDocumentMeta.medical_document_verification_status
           || medicalDocumentVerification.status
-          || null,
+          || null
+        ),
         medical_document_ocr_text:
           medicalDocumentMeta.medical_document_ocr_text
           || medicalDocumentVerification.extractedText

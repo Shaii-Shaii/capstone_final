@@ -8,13 +8,15 @@ import {
   StyleSheet,
   Text,
   View,
-  useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Print from 'expo-print';
+import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { DashboardLayout } from '../../src/components/layout/DashboardLayout';
+import { DashboardHeaderSurface } from '../../src/components/layout/DashboardHeaderSurface';
+import { DonorTopBar } from '../../src/components/donor/DonorTopBar';
 import { AppIcon } from '../../src/components/ui/AppIcon';
 import { EmptyDataState } from '../../src/components/ui/EmptyDataState';
 import { SectionTitleRow } from '../../src/components/ui/SectionTitleRow';
@@ -146,45 +148,6 @@ const getCertificateCanvasNameFontSize = (value = '') => {
   if (length > 18) return 20;
   return 22;
 };
-
-function AchievementsTopBar({ title, onBack, styles }) {
-  const { resolvedTheme } = useAuth();
-  const colors = useMemo(() => buildCertificateColors(resolvedTheme), [resolvedTheme]);
-  const { height } = useWindowDimensions();
-  const horizontalInset = height < theme.layout.shortScreenHeight
-    ? theme.layout.screenPaddingXCompact
-    : theme.layout.screenPaddingX;
-
-  return (
-    <View
-      style={[
-        styles.topBar,
-        {
-          backgroundColor: colors.primaryContainer,
-          marginHorizontal: -horizontalInset,
-          paddingHorizontal: 0,
-        },
-      ]}
-    >
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Go back"
-        onPress={onBack}
-        style={({ pressed }) => [
-          styles.topBarButton,
-          { backgroundColor: 'rgba(255, 255, 255, 0.10)' },
-          pressed ? styles.pressed : null,
-        ]}
-      >
-        <AppIcon name="arrowLeft" state="inverse" color={colors.onPrimary} />
-      </Pressable>
-      <Text numberOfLines={1} style={[styles.topBarTitle, { color: colors.onPrimary }]}>
-        {title}
-      </Text>
-      <View style={styles.topBarSpacer} />
-    </View>
-  );
-}
 
 function CertificateCanvas({ certificate, colors, styles }) {
   const recipientName = certificate?.donorName || 'Full name required';
@@ -735,7 +698,18 @@ export default function DonorAchievementsScreen() {
       activeNavKey="profile"
       navVariant="donor"
       onNavPress={handleNavPress}
-      header={<AchievementsTopBar title="Achievements" onBack={() => router.back()} styles={styles} />}
+      header={(
+        <DashboardHeaderSurface>
+          <DonorTopBar
+            title="Achievements"
+            subtitle="Certificates and milestones"
+            showBack
+            showNotificationsAction={false}
+            showLogoutAction={false}
+            onBackPress={() => router.back()}
+          />
+        </DashboardHeaderSurface>
+      )}
     >
       <View style={styles.screen}>
         {feedback ? (
@@ -748,9 +722,17 @@ export default function DonorAchievementsScreen() {
           />
         ) : null}
 
-          <View style={styles.impactBanner}>
+          <LinearGradient
+            colors={[colors.primaryContainer, theme.colors.palette.wine700, theme.colors.palette.wine600]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.impactBanner}
+          >
+            <View pointerEvents="none" style={styles.impactBannerGlow} />
             <View style={styles.bannerHeader}>
-              <MaterialCommunityIcons name="trophy" size={38} color={colors.onPrimary} />
+              <View style={styles.bannerIconWrap}>
+                <MaterialCommunityIcons name="trophy-outline" size={25} color={colors.onPrimary} />
+              </View>
               <Text style={styles.bannerTitle}>Donation Impact</Text>
             </View>
             <View style={styles.statsGrid}>
@@ -758,7 +740,7 @@ export default function DonorAchievementsScreen() {
               <StatBlock value={String(patientsHelped)} label="Patients Helped" styles={styles} />
             </View>
             <MaterialCommunityIcons name="trophy" size={128} color={colors.bannerWatermark} style={styles.bannerWatermark} />
-          </View>
+          </LinearGradient>
 
         <View style={[styles.achievementTabs, { borderBottomColor: colors.outlineVariant }]}>
           {ACHIEVEMENT_TABS.map((tab) => {
@@ -899,30 +881,6 @@ const makeStyles = (colors) => StyleSheet.create({
     gap: 20,
     paddingBottom: 24,
   },
-  topBar: {
-    minHeight: 64,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  topBarButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  topBarTitle: {
-    flex: 1,
-    textAlign: 'center',
-    fontFamily: theme.typography.fontFamilyDisplay,
-    fontSize: theme.typography.semantic.body,
-    fontWeight: '700',
-  },
-  topBarSpacer: {
-    width: 40,
-    height: 40,
-  },
   achievementTabs: {
     minHeight: 44,
     marginHorizontal: -theme.spacing.md,
@@ -956,20 +914,40 @@ const makeStyles = (colors) => StyleSheet.create({
   impactBanner: {
     position: 'relative',
     overflow: 'hidden',
-    gap: 12,
-    padding: 18,
-    borderRadius: 12,
-    backgroundColor: colors.primaryContainer,
+    gap: theme.spacing.md,
+    padding: theme.spacing.lg,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: withOpacity(colors.onPrimary, 0.2),
     shadowColor: colors.shadow,
-    shadowOpacity: 1,
-    shadowRadius: 18,
+    shadowOpacity: 0.34,
+    shadowRadius: 16,
     shadowOffset: { width: 0, height: 8 },
     elevation: 4,
+  },
+  impactBannerGlow: {
+    position: 'absolute',
+    width: 170,
+    height: 170,
+    borderRadius: 85,
+    right: -56,
+    top: -94,
+    backgroundColor: withOpacity(colors.onPrimary, 0.11),
   },
   bannerHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: theme.spacing.sm,
+  },
+  bannerIconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: withOpacity(colors.onPrimary, 0.14),
+    borderWidth: 1,
+    borderColor: withOpacity(colors.onPrimary, 0.2),
   },
   bannerTitle: {
     fontFamily: theme.typography.fontFamily,
@@ -988,7 +966,15 @@ const makeStyles = (colors) => StyleSheet.create({
   },
   statBlock: {
     flex: 1,
-    gap: 2,
+    minHeight: 68,
+    justifyContent: 'center',
+    gap: 1,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: withOpacity(colors.onPrimary, 0.18),
+    backgroundColor: withOpacity(colors.onPrimary, 0.1),
   },
   statValue: {
     fontFamily: theme.typography.fontFamilyDisplay,
@@ -1212,6 +1198,11 @@ const makeStyles = (colors) => StyleSheet.create({
     justifyContent: 'center',
     gap: 8,
     paddingVertical: 48,
+    paddingHorizontal: theme.spacing.md,
+    borderWidth: 1,
+    borderColor: colors.outlineVariant,
+    borderRadius: 20,
+    backgroundColor: colors.surface,
   },
   stateText: {
     textAlign: 'center',
@@ -1221,7 +1212,11 @@ const makeStyles = (colors) => StyleSheet.create({
   },
   emptyState: {
     gap: 0,
-    paddingVertical: 24,
+    paddingVertical: 32,
+    borderWidth: 1,
+    borderColor: colors.outlineVariant,
+    borderRadius: 20,
+    backgroundColor: colors.surface,
   },
   emptyTitle: {
     fontFamily: theme.typography.fontFamily,

@@ -1059,27 +1059,134 @@ function HairCalendarWidget({ registeredEventDrives = [], onOpenDate }) {
 
 const getHairLogMood = getHairScreeningMood;
 
-function FinishSetupCard({ completionMeta, onManageProfile }) {
+function ProfileCompletionModal({ visible, completionMeta, onClose, onComplete }) {
   const { resolvedTheme } = useAuth();
   const roles = resolveThemeRoles(resolvedTheme);
   const bodyFont = resolvedTheme?.fontFamily || theme.typography.fontFamily;
+  const headingFont = resolvedTheme?.secondaryFontFamily || theme.typography.fontFamilyDisplay;
   const missingCount = completionMeta?.missingFieldLabels?.length || 0;
+  const completionPercentage = Math.max(0, Math.min(100, Number(completionMeta?.percentage) || 0));
+  const visibleMissingFields = (completionMeta?.missingFieldLabels || []).slice(0, 4);
+  const remainingFieldCount = Math.max(0, missingCount - visibleMissingFields.length);
 
   return (
-    <Pressable
-      onPress={onManageProfile}
-      style={({ pressed }) => [
-        styles.setupInlineBar,
-        { backgroundColor: roles.pageBackground, borderColor: roles.defaultCardBorder },
-        pressed ? styles.cardPressed : null,
-      ]}
+    <Modal
+      transparent
+      statusBarTranslucent
+      visible={visible}
+      animationType="fade"
+      onRequestClose={onClose}
     >
-      <MaterialCommunityIcons name="account-edit-outline" size={15} color={roles.primaryActionBackground} />
-      <Text style={[styles.setupInlineText, { color: roles.bodyText, fontFamily: bodyFont }]} numberOfLines={1}>
-        Complete your profile — {missingCount} field{missingCount !== 1 ? 's' : ''} missing
-      </Text>
-      <MaterialCommunityIcons name="chevron-right" size={15} color={roles.metaText} />
-    </Pressable>
+      <View style={styles.profileCompletionOverlay}>
+        <Pressable style={StyleSheet.absoluteFillObject} onPress={onClose} />
+
+        <View
+          style={[
+            styles.profileCompletionCard,
+            {
+              backgroundColor: roles.defaultCardBackground,
+              borderColor: withOpacity(roles.primaryActionBackground, 0.18),
+            },
+          ]}
+        >
+          <LinearGradient
+            colors={['#4d0712', '#781228', '#a52f52']}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.profileCompletionHero}
+          >
+            <View pointerEvents="none" style={styles.profileCompletionGlowLarge} />
+            <View pointerEvents="none" style={styles.profileCompletionGlowSmall} />
+            <View style={styles.profileCompletionIconWrap}>
+              <MaterialCommunityIcons name="account-heart-outline" size={28} color="#FFFFFF" />
+            </View>
+            <Text style={[styles.profileCompletionEyebrow, { fontFamily: bodyFont }]}>ACCOUNT SETUP</Text>
+            <Text style={[styles.profileCompletionTitle, { fontFamily: headingFont }]}>Complete your profile</Text>
+            <Text style={[styles.profileCompletionSubtitle, { fontFamily: bodyFont }]}>
+              Add your details to personalize your experience and prepare for future donations.
+            </Text>
+          </LinearGradient>
+
+          <View style={styles.profileCompletionBody}>
+            <View style={styles.profileCompletionProgressHeader}>
+              <View>
+                <Text style={[styles.profileCompletionProgressLabel, { color: roles.headingText, fontFamily: bodyFont }]}>Your progress</Text>
+                <Text style={[styles.profileCompletionProgressMeta, { color: roles.metaText, fontFamily: bodyFont }]}>
+                  {missingCount} field{missingCount !== 1 ? 's' : ''} remaining
+                </Text>
+              </View>
+              <View style={[styles.profileCompletionPercentPill, { backgroundColor: roles.iconPrimarySurface }]}>
+                <Text style={[styles.profileCompletionPercentText, { color: roles.primaryActionBackground, fontFamily: bodyFont }]}>
+                  {completionPercentage}%
+                </Text>
+              </View>
+            </View>
+
+            <View style={[styles.profileCompletionProgressTrack, { backgroundColor: withOpacity(roles.primaryActionBackground, 0.1) }]}>
+              <LinearGradient
+                colors={['#8a111d', '#b84063']}
+                start={{ x: 0, y: 0.5 }}
+                end={{ x: 1, y: 0.5 }}
+                style={[styles.profileCompletionProgressFill, { width: `${completionPercentage}%` }]}
+              />
+            </View>
+
+            <View style={[styles.profileCompletionMissingCard, { backgroundColor: roles.pageBackground, borderColor: roles.defaultCardBorder }]}>
+              <Text style={[styles.profileCompletionMissingLabel, { color: roles.metaText, fontFamily: bodyFont }]}>DETAILS TO ADD</Text>
+              <View style={styles.profileCompletionFieldList}>
+                {visibleMissingFields.map((fieldLabel) => (
+                  <View key={fieldLabel} style={[styles.profileCompletionFieldChip, { backgroundColor: roles.iconPrimarySurface }]}>
+                    <MaterialCommunityIcons name="plus-circle-outline" size={15} color={roles.primaryActionBackground} />
+                    <Text numberOfLines={1} style={[styles.profileCompletionFieldText, { color: roles.bodyText, fontFamily: bodyFont }]}>
+                      {fieldLabel}
+                    </Text>
+                  </View>
+                ))}
+                {remainingFieldCount > 0 ? (
+                  <View style={[styles.profileCompletionFieldChip, { backgroundColor: roles.iconPrimarySurface }]}>
+                    <Text style={[styles.profileCompletionMoreText, { color: roles.primaryActionBackground, fontFamily: bodyFont }]}>
+                      +{remainingFieldCount} more
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+            </View>
+
+            <View style={styles.profileCompletionActions}>
+              <GradientActionButton
+                title="Complete profile"
+                onPress={onComplete}
+                size="md"
+                textColor="#FFFFFF"
+                leading={<MaterialCommunityIcons name="account-edit-outline" size={19} color="#FFFFFF" />}
+                trailing={<MaterialCommunityIcons name="arrow-right" size={19} color="#FFFFFF" />}
+                style={styles.profileCompletionPrimaryAction}
+                buttonStyle={styles.profileCompletionPrimaryButton}
+              />
+
+              <Pressable
+                accessibilityRole="button"
+                onPress={onClose}
+                style={({ pressed }) => [styles.profileCompletionLaterAction, pressed ? styles.profileCompletionPressed : null]}
+              >
+                <LinearGradient
+                  colors={[roles.defaultCardBackground, roles.iconPrimarySurface]}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={[styles.profileCompletionLaterGradient, { borderColor: withOpacity(roles.primaryActionBackground, 0.18) }]}
+                >
+                  <View style={[styles.profileCompletionLaterIcon, { backgroundColor: withOpacity(roles.primaryActionBackground, 0.1) }]}>
+                    <MaterialCommunityIcons name="clock-outline" size={18} color={roles.primaryActionBackground} />
+                  </View>
+                  <Text style={[styles.profileCompletionLaterText, { color: roles.primaryActionBackground, fontFamily: bodyFont }]}>I’ll do this later</Text>
+                  <MaterialCommunityIcons name="chevron-right" size={20} color={roles.primaryActionBackground} />
+                </LinearGradient>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -2115,6 +2222,8 @@ export default function DonorHomeScreen() {
   const [privateUnlockMessage, setPrivateUnlockMessage] = React.useState('');
   const [privateUnlockVariant, setPrivateUnlockVariant] = React.useState('info');
   const [certificateToastMessage, setCertificateToastMessage] = React.useState('');
+  const [isProfileCompletionModalVisible, setIsProfileCompletionModalVisible] = React.useState(false);
+  const hasPresentedProfileCompletionRef = React.useRef(false);
 
   const profileCompletionMeta = React.useMemo(() => buildProfileCompletionMeta({
     photo_path: profile?.photo_path || profile?.avatar_url || '',
@@ -2146,6 +2255,23 @@ export default function DonorHomeScreen() {
     profile?.street,
   ]);
   const areCredentialsCompleted = profileCompletionMeta.isComplete;
+  React.useEffect(() => {
+    if (areCredentialsCompleted) {
+      setIsProfileCompletionModalVisible(false);
+      return;
+    }
+
+    if (!isLoadingHome && user?.id && !hasPresentedProfileCompletionRef.current) {
+      hasPresentedProfileCompletionRef.current = true;
+      setIsProfileCompletionModalVisible(true);
+    }
+  }, [areCredentialsCompleted, isLoadingHome, user?.id]);
+
+  const handleOpenProfileCompletion = React.useCallback(() => {
+    setIsProfileCompletionModalVisible(false);
+    router.navigate('/profile');
+  }, [router]);
+
   const normalizedDonationEventSearchQuery = React.useMemo(
     () => normalizeDonationEventSearchText(donationEventSearchQuery),
     [donationEventSearchQuery],
@@ -2766,15 +2892,6 @@ export default function DonorHomeScreen() {
               )}
             </AnimatedHomeSection>
 
-            {!areCredentialsCompleted ? (
-              <AnimatedHomeSection delay={60} animate={shouldAnimateHomeSections}>
-                <FinishSetupCard
-                  completionMeta={profileCompletionMeta}
-                  onManageProfile={() => router.navigate('/profile')}
-                />
-              </AnimatedHomeSection>
-            ) : null}
-
             <AnimatedHomeSection
               delay={90}
               style={styles.section}
@@ -2875,6 +2992,13 @@ export default function DonorHomeScreen() {
           </AppCard>
         </View>
       </Modal>
+
+      <ProfileCompletionModal
+        visible={isProfileCompletionModalVisible && !areCredentialsCompleted}
+        completionMeta={profileCompletionMeta}
+        onClose={() => setIsProfileCompletionModalVisible(false)}
+        onComplete={handleOpenProfileCompletion}
+      />
 
     </DashboardLayout>
   );
@@ -4762,19 +4886,208 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255, 255, 255, 0.12)',
   },
   // ─── Setup Inline Bar ──────────────────────────────────────────────────────
-  setupInlineBar: {
-    minHeight: 38,
-    borderRadius: 10,
+  profileCompletionOverlay: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.xl,
+    backgroundColor: 'rgba(24, 11, 15, 0.66)',
+  },
+  profileCompletionCard: {
+    width: '100%',
+    maxWidth: 420,
+    borderRadius: 28,
+    borderWidth: 1,
+    overflow: 'hidden',
+    shadowColor: '#2C0710',
+    shadowOffset: { width: 0, height: 16 },
+    shadowOpacity: 0.28,
+    shadowRadius: 28,
+    elevation: 14,
+  },
+  profileCompletionHero: {
+    minHeight: 216,
+    alignItems: 'center',
+    paddingHorizontal: theme.spacing.xl,
+    paddingTop: 26,
+    paddingBottom: theme.spacing.xl,
+    overflow: 'hidden',
+  },
+  profileCompletionGlowLarge: {
+    position: 'absolute',
+    width: 190,
+    height: 190,
+    borderRadius: 95,
+    top: -104,
+    right: -55,
+    backgroundColor: 'rgba(255, 255, 255, 0.10)',
+  },
+  profileCompletionGlowSmall: {
+    position: 'absolute',
+    width: 110,
+    height: 110,
+    borderRadius: 55,
+    bottom: -60,
+    left: -28,
+    backgroundColor: 'rgba(245, 180, 197, 0.10)',
+  },
+  profileCompletionIconWrap: {
+    width: 58,
+    height: 58,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: theme.spacing.md,
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.24)',
+  },
+  profileCompletionEyebrow: {
+    color: 'rgba(255, 255, 255, 0.72)',
+    fontSize: theme.typography.compact.caption,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 1.4,
+    marginBottom: 4,
+  },
+  profileCompletionTitle: {
+    color: '#FFFFFF',
+    fontSize: 24,
+    lineHeight: 30,
+    fontWeight: theme.typography.weights.bold,
+    textAlign: 'center',
+  },
+  profileCompletionSubtitle: {
+    maxWidth: 300,
+    marginTop: theme.spacing.sm,
+    color: 'rgba(255, 255, 255, 0.82)',
+    fontSize: theme.typography.compact.bodySm,
+    lineHeight: 19,
+    textAlign: 'center',
+  },
+  profileCompletionBody: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.lg,
+    paddingBottom: theme.spacing.md,
+  },
+  profileCompletionProgressHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: theme.spacing.md,
+  },
+  profileCompletionProgressLabel: {
+    fontSize: theme.typography.semantic.body,
+    fontWeight: theme.typography.weights.bold,
+  },
+  profileCompletionProgressMeta: {
+    marginTop: 2,
+    fontSize: theme.typography.compact.caption,
+  },
+  profileCompletionPercentPill: {
+    minWidth: 54,
+    minHeight: 34,
+    borderRadius: 17,
+    paddingHorizontal: theme.spacing.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  profileCompletionPercentText: {
+    fontSize: theme.typography.compact.bodySm,
+    fontWeight: theme.typography.weights.bold,
+  },
+  profileCompletionProgressTrack: {
+    height: 7,
+    marginTop: theme.spacing.md,
+    borderRadius: theme.radius.full,
+    overflow: 'hidden',
+  },
+  profileCompletionProgressFill: {
+    height: '100%',
+    minWidth: 7,
+    borderRadius: theme.radius.full,
+  },
+  profileCompletionMissingCard: {
+    marginTop: theme.spacing.lg,
+    borderRadius: 18,
+    borderWidth: 1,
+    padding: theme.spacing.md,
+  },
+  profileCompletionMissingLabel: {
+    fontSize: 10,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 1.1,
+    marginBottom: theme.spacing.sm,
+  },
+  profileCompletionFieldList: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: theme.spacing.xs,
+  },
+  profileCompletionFieldChip: {
+    maxWidth: '100%',
+    minHeight: 30,
+    borderRadius: 15,
+    paddingHorizontal: theme.spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  profileCompletionFieldText: {
+    flexShrink: 1,
+    fontSize: theme.typography.compact.caption,
+    fontWeight: theme.typography.weights.medium,
+  },
+  profileCompletionMoreText: {
+    fontSize: theme.typography.compact.caption,
+    fontWeight: theme.typography.weights.bold,
+  },
+  profileCompletionActions: {
+    width: '100%',
+    marginTop: theme.spacing.lg,
+    gap: 12,
+  },
+  profileCompletionPrimaryAction: {
+    width: '100%',
+    marginTop: 0,
+    borderRadius: 18,
+  },
+  profileCompletionPrimaryButton: {
+    minHeight: 52,
+    borderRadius: 16,
+  },
+  profileCompletionLaterAction: {
+    width: '100%',
+    marginTop: 0,
+    borderRadius: 16,
+    overflow: 'hidden',
+  },
+  profileCompletionLaterGradient: {
+    width: '100%',
+    minHeight: 48,
+    borderRadius: 16,
     borderWidth: 1,
     paddingHorizontal: theme.spacing.md,
     flexDirection: 'row',
     alignItems: 'center',
     gap: theme.spacing.sm,
   },
-  setupInlineText: {
+  profileCompletionLaterIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  profileCompletionLaterText: {
     flex: 1,
-    fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.compact.bodySm,
+    fontWeight: theme.typography.weights.semibold,
+    textAlign: 'left',
+  },
+  profileCompletionPressed: {
+    opacity: 0.72,
+    transform: [{ scale: 0.98 }],
   },
   // ─── Monthly Calendar ───────────────────────────────────────────────────────
   donationRequirementsCard: {

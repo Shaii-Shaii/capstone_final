@@ -20,6 +20,7 @@ import { AppButton } from '../../../src/components/ui/AppButton';
 import { AppIcon } from '../../../src/components/ui/AppIcon';
 import { LocalQrCode } from '../../../src/components/ui/LocalQrCode';
 import { StatusBanner } from '../../../src/components/ui/StatusBanner';
+import { ProfileCompletionGateModal } from '../../../src/components/donor/ProfileCompletionGateModal';
 import { useAuth } from '../../../src/providers/AuthProvider';
 import {
   createDonationDriveRegistration,
@@ -32,6 +33,7 @@ import {
   isDonationParticipantRegistration,
 } from '../../../src/features/donorDonations.service';
 import { DONOR_PERMISSION_REASONS } from '../../../src/features/donorCompliance.service';
+import { buildProfileCompletionMeta } from '../../../src/features/profile/services/profile.service';
 import { supabase } from '../../../src/api/supabase/client';
 import { resolveThemeRoles, theme } from '../../../src/design-system/theme';
 import { useOpenStreetMapAvailability } from '../../../src/hooks/useOpenStreetMapAvailability';
@@ -595,6 +597,7 @@ export default function DonorDriveDetailRoute() {
   const [feedbackVariant, setFeedbackVariant] = React.useState('info');
   const [isSubmittingRsvp, setIsSubmittingRsvp] = React.useState(false);
   const [isSubmittingAttendOnly, setIsSubmittingAttendOnly] = React.useState(false);
+  const [isProfileCompletionModalVisible, setIsProfileCompletionModalVisible] = React.useState(false);
   const [donationFlowState, setDonationFlowState] = React.useState({
     hasOngoingDonation: false,
     ongoingDonationMessage: '',
@@ -607,6 +610,36 @@ export default function DonorDriveDetailRoute() {
   });
 
   const driveImageUrl = drive?.event_image_url || drive?.organization_logo_url || '';
+  const profileCompletionMeta = React.useMemo(() => buildProfileCompletionMeta({
+    photo_path: profile?.photo_path || profile?.avatar_url || '',
+    first_name: profile?.first_name || '',
+    last_name: profile?.last_name || '',
+    birthdate: profile?.birthdate || '',
+    gender: profile?.gender || '',
+    contact_number: profile?.contact_number || profile?.phone || '',
+    street: profile?.street || '',
+    barangay: profile?.barangay || '',
+    city: profile?.city || '',
+    province: profile?.province || '',
+    region: profile?.region || '',
+    country: profile?.country || 'Philippines',
+  }), [
+    profile?.avatar_url,
+    profile?.barangay,
+    profile?.birthdate,
+    profile?.city,
+    profile?.contact_number,
+    profile?.country,
+    profile?.first_name,
+    profile?.gender,
+    profile?.last_name,
+    profile?.phone,
+    profile?.photo_path,
+    profile?.province,
+    profile?.region,
+    profile?.street,
+  ]);
+  const isProfileComplete = profileCompletionMeta.isComplete;
   const hasOngoingDonation = Boolean(donationFlowState.hasOngoingDonation);
   const hasHairScanLog = Boolean(donationFlowState.hasHairScanLog);
   const hasSubmittedDonationForDrive = Boolean(donationFlowState.hasSubmittedDonationForDrive);
@@ -828,6 +861,11 @@ export default function DonorDriveDetailRoute() {
   const handleDriveRsvp = React.useCallback(async () => {
     if (!drive?.donation_drive_id || ended) return;
 
+    if (!isProfileComplete) {
+      setIsProfileCompletionModalVisible(true);
+      return;
+    }
+
     if ((!hasHairScanLog || !donationFlowState.isAiEligible) && !drive.registration?.registration_id) {
       setFeedbackMessage(hairEligibilityMessage);
       setFeedbackVariant('info');
@@ -875,7 +913,7 @@ export default function DonorDriveDetailRoute() {
 
     if (result.error || !result.data?.registration_id) {
       if (result.error?.code === DONOR_PERMISSION_REASONS.profileIncomplete) {
-        router.navigate('/profile');
+        setIsProfileCompletionModalVisible(true);
         return;
       }
       if (result.error?.code === DONOR_PERMISSION_REASONS.guardianConsentRequired) {
@@ -902,6 +940,7 @@ export default function DonorDriveDetailRoute() {
     donationFlowState.isAiEligible,
     canViewDonationProgress,
     hasSubmittedDonationForDrive,
+    isProfileComplete,
     loadRegistrationCount,
     ongoingDonationMessage,
     profile?.user_id,
@@ -911,6 +950,11 @@ export default function DonorDriveDetailRoute() {
 
   const handleAttendOnlyRsvp = React.useCallback(async () => {
     if (!drive?.donation_drive_id || ended) return;
+
+    if (!isProfileComplete) {
+      setIsProfileCompletionModalVisible(true);
+      return;
+    }
 
     if (drive.registration?.registration_id) {
       setFeedbackMessage('You are already registered for this event.');
@@ -933,6 +977,10 @@ export default function DonorDriveDetailRoute() {
     setIsSubmittingAttendOnly(false);
 
     if (result.error || !result.data?.registration_id) {
+      if (result.error?.code === DONOR_PERMISSION_REASONS.profileIncomplete) {
+        setIsProfileCompletionModalVisible(true);
+        return;
+      }
       setFeedbackMessage(result.error?.message || 'Attendance RSVP could not be saved right now.');
       setFeedbackVariant('error');
       return;
@@ -946,6 +994,7 @@ export default function DonorDriveDetailRoute() {
   }, [
     drive,
     ended,
+    isProfileComplete,
     loadRegistrationCount,
     profile?.user_id,
     refreshDriveRegistration,
@@ -1075,6 +1124,16 @@ export default function DonorDriveDetailRoute() {
       )}
 
       </ScrollView>
+
+      <ProfileCompletionGateModal
+        visible={isProfileCompletionModalVisible && !isProfileComplete}
+        completionMeta={profileCompletionMeta}
+        onClose={() => setIsProfileCompletionModalVisible(false)}
+        onComplete={() => {
+          setIsProfileCompletionModalVisible(false);
+          router.navigate('/profile');
+        }}
+      />
     </ScreenContainer>
   );
 }

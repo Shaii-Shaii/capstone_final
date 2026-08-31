@@ -283,22 +283,33 @@ export default function VerifyEmailScreen() {
             resolvedTheme={resolvedTheme}
           />
 
-          <Pressable
-            onPress={() => router.replace('/auth/signup')}
-            style={({ pressed }) => [
-              styles.backLink,
-              {
-                backgroundColor: theme.colors.surfaceCard,
-                borderColor: roles.defaultCardBorder,
-              },
-              pressed ? styles.backBtnPressed : null,
+          <LinearGradient
+            colors={[
+              theme.colors.palette.wine900,
+              theme.colors.palette.wine700,
+              theme.colors.palette.blush200,
             ]}
-            accessibilityRole="button"
-            accessibilityLabel="Go back"
+            start={{ x: 0, y: 0.5 }}
+            end={{ x: 1, y: 0.5 }}
+            style={styles.backGradientBorder}
           >
-            <MaterialCommunityIcons name="arrow-left" size={18} color={roles.primaryActionBackground} />
-            <Text style={[styles.backText, { color: roles.primaryActionBackground }]}>Back to Sign Up</Text>
-          </Pressable>
+            <Pressable
+              onPress={() => router.replace('/auth/signup')}
+              android_ripple={{ color: theme.colors.surfacePressed, borderless: false }}
+              style={[styles.backLink, { backgroundColor: theme.colors.surfaceSoft }]}
+              accessibilityRole="button"
+              accessibilityLabel="Back to sign up"
+              accessibilityHint="Returns to account creation so you can change your details"
+            >
+              <View style={[styles.backIconSurface, { backgroundColor: roles.iconPrimarySurface }]}>
+                <MaterialCommunityIcons name="arrow-left" size={19} color={roles.primaryActionBackground} />
+              </View>
+              <View style={styles.backCopy}>
+                <Text style={[styles.backText, { color: roles.primaryActionBackground }]}>Back to sign up</Text>
+                <Text style={[styles.backHelper, { color: roles.metaText }]}>Change your email or account details</Text>
+              </View>
+            </Pressable>
+          </LinearGradient>
         </View>
       </View>
 
@@ -472,25 +483,46 @@ const styles = StyleSheet.create({
     lineHeight: theme.typography.semantic.bodySm * theme.typography.lineHeights.relaxed,
     maxWidth: 340,
   },
-  backLink: {
+  backGradientBorder: {
     marginTop: theme.spacing.lg,
-    minHeight: 48,
-    borderRadius: 14,
-    borderWidth: 1,
-    paddingHorizontal: theme.spacing.lg,
+    width: '100%',
+    borderRadius: 18,
+    padding: 1.5,
+    overflow: 'hidden',
+    ...theme.shadows.soft,
+  },
+  backLink: {
+    minHeight: 62,
+    borderRadius: 16.5,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
     flexDirection: 'row',
     alignItems: 'center',
+    gap: theme.spacing.md,
+    overflow: 'hidden',
+  },
+  backIconSurface: {
+    width: 38,
+    height: 38,
+    borderRadius: 13,
+    alignItems: 'center',
     justifyContent: 'center',
-    gap: theme.spacing.sm,
-    alignSelf: 'center',
+    flexShrink: 0,
+  },
+  backCopy: {
+    flex: 1,
+    minWidth: 0,
   },
   backText: {
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.semantic.bodySm,
-    fontWeight: theme.typography.weights.semibold,
+    fontWeight: theme.typography.weights.bold,
   },
-  backBtnPressed: {
-    opacity: 0.7,
+  backHelper: {
+    marginTop: 2,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 16,
   },
   noticeOverlay: {
     flex: 1,

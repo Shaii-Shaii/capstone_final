@@ -1,6 +1,11 @@
 import { supabase } from '../api/supabase/client';
 import { logAppError, logAppEvent } from '../utils/appErrors';
-import { canSubmitHairDonation, mapDonationPermissionError } from './donorCompliance.service';
+import {
+  canSubmitHairDonation,
+  DONOR_PERMISSION_REASONS,
+  mapDonationPermissionError,
+} from './donorCompliance.service';
+import { buildProfileCompletionMeta } from './profile/services/profile.service';
 import { createNotifications, sendPushNotificationsByIds } from './notification.api';
 import { notificationTypes } from './notification.constants';
 
@@ -761,7 +766,41 @@ export const createDonationDriveRegistration = async ({
   if (!driveId || !effectiveDatabaseUserId) {
     return {
       data: null,
-      error: new Error('Donation drive and donor account are required before joining a drive.'),
+      error: new Error('Donation event and account are required before joining.'),
+      alreadyRegistered: false,
+    };
+  }
+
+  const profileResult = await supabase
+    .from('user_details')
+    .select('first_name,last_name,birthdate,gender,contact_number,street,barangay,city,province,region,country')
+    .eq('user_id', effectiveDatabaseUserId)
+    .order('updated_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (profileResult.error) {
+    const verificationError = new Error('Your profile could not be verified right now. Please try again.');
+    verificationError.code = DONOR_PERMISSION_REASONS.databaseFailure;
+    return {
+      data: null,
+      error: verificationError,
+      alreadyRegistered: false,
+    };
+  }
+
+  const profileCompletion = buildProfileCompletionMeta({
+    ...(profileResult.data || {}),
+    country: profileResult.data?.country || 'Philippines',
+  });
+
+  if (!profileCompletion.isComplete) {
+    const incompleteProfileError = new Error('Complete your profile before attending or participating in a donation event.');
+    incompleteProfileError.code = DONOR_PERMISSION_REASONS.profileIncomplete;
+    incompleteProfileError.missingFieldLabels = profileCompletion.missingFieldLabels;
+    return {
+      data: null,
+      error: incompleteProfileError,
       alreadyRegistered: false,
     };
   }
@@ -846,9 +885,12 @@ export const createDonationDriveRegistration = async ({
 
   if (existingResult.data?.registration_id) {
     if (attendanceOnly) {
+      const attendeeTypeResult = existingResult.data.attendee_type === 'Voluntary'
+        ? { data: existingResult.data, error: null }
+        : await updateDriveRegistrationAttendeeType(existingResult.data.registration_id, 'Voluntary');
       return {
-        data: existingResult.data,
-        error: null,
+        data: attendeeTypeResult.data || existingResult.data,
+        error: attendeeTypeResult.error,
         alreadyRegistered: true,
       };
     }
@@ -903,9 +945,12 @@ export const createDonationDriveRegistration = async ({
     const duplicateLookupResult = await findExistingDriveRegistration(driveId, effectiveDatabaseUserId);
     if (duplicateLookupResult.data?.registration_id) {
       if (attendanceOnly) {
+        const attendeeTypeResult = duplicateLookupResult.data.attendee_type === 'Voluntary'
+          ? { data: duplicateLookupResult.data, error: null }
+          : await updateDriveRegistrationAttendeeType(duplicateLookupResult.data.registration_id, 'Voluntary');
         return {
-          data: duplicateLookupResult.data,
-          error: null,
+          data: attendeeTypeResult.data || duplicateLookupResult.data,
+          error: attendeeTypeResult.error,
           alreadyRegistered: true,
         };
       }

@@ -11,12 +11,34 @@ const nearlyEqual = (left, right) => (
 
 const roundLengthCm = (value) => Math.round(value * 10) / 10;
 
+export const hasUnmeasurableHairLengthEvidence = (value = '') => {
+  const normalized = String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!normalized) return false;
+
+  return [
+    /\b(?:hair\s+(?:is|appears|looks)\s+)?(?:tied|pulled)\s+back\b/,
+    /\b(?:ponytail|bun|updo)\b/,
+    /\b(?:secured|held|fastened)\s+(?:back\s+)?with\s+(?:a\s+)?(?:claw\s+)?clip\b/,
+    /\b(?:claw clip|hair clip|scrunchie|hair tie)\s+(?:is\s+)?(?:holding|securing|blocking|covering|obstructing)\b/,
+    /\b(?:lowest\s+)?(?:hair\s+)?ends?\s+(?:are|is|remain|were)?\s*(?:not visible|hidden|blocked|covered|cropped|obstructed)\b/,
+    /\b(?:cannot|can't|unable to|could not)\s+(?:clearly\s+)?(?:see|identify|confirm|measure)\s+(?:the\s+)?(?:lowest\s+)?(?:hair\s+)?ends?\b/,
+    /\b(?:length|donation length)\s+(?:cannot|can't|could not|is not able to be)\s+(?:be\s+)?(?:measured|estimated|confirmed)\b/,
+  ].some((pattern) => pattern.test(normalized));
+};
+
 const collectLengthEvidence = (screening = {}) => [
   screening?.length_assessment,
   screening?.donation_readiness_note,
   screening?.summary,
+  ...(Array.isArray(screening?.per_view_notes)
+    ? screening.per_view_notes.map((item) => item?.notes)
+    : []),
   screening?.analysis_result?.length_assessment,
   screening?.analysis_result?.donation_readiness_note,
+  screening?.analysis_result?.summary,
+  ...(Array.isArray(screening?.analysis_result?.per_view_notes)
+    ? screening.analysis_result.per_view_notes.map((item) => item?.notes)
+    : []),
 ].filter(Boolean).join(' ');
 
 /**
@@ -36,6 +58,7 @@ export const resolveEstimatedLengthCm = (screeningOrValue, evidence = '') => {
     evidence || (isScreening ? collectLengthEvidence(screeningOrValue) : ''),
   );
 
+  if (hasUnmeasurableHairLengthEvidence(evidenceText)) return null;
   if (!rawLength || !evidenceText.trim()) return rawLength;
 
   const measurementPattern = /(\d+(?:\.\d+)?)\s*(inches?|in\.?|centimet(?:er|re)s?|cm)\b/gi;

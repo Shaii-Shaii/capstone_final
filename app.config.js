@@ -105,7 +105,24 @@ module.exports = {
     ],
     '@config-plugins/react-native-blob-util',
     '@config-plugins/react-native-pdf',
-    '@react-native-community/datetimepicker',
+    [
+      '@react-native-community/datetimepicker',
+      {
+        android: {
+          datePicker: {
+            colorAccent: { light: '#681a2e', dark: '#f4d8de' },
+            colorControlActivated: { light: '#681a2e', dark: '#f4d8de' },
+            colorControlHighlight: { light: '#f4d8de', dark: '#92294a' },
+            textColor: { light: '#171114', dark: '#fff5f7' },
+            textColorPrimary: { light: '#171114', dark: '#fff5f7' },
+            textColorPrimaryInverse: { light: '#ffffff', dark: '#171114' },
+            textColorSecondary: { light: '#4f4148', dark: '#f0dce2' },
+            textColorSecondaryInverse: { light: '#ffffff', dark: '#171114' },
+            windowBackground: { light: '#fffaf7', dark: '#171114' },
+          },
+        },
+      },
+    ],
   ],
   experiments: {
     typedRoutes: true,

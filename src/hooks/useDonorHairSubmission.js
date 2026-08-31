@@ -226,8 +226,12 @@ const mapAnalysisError = (message = '', extras = {}) => {
     || normalized.includes('headphones')
     || normalized.includes('headbands')
     || normalized.includes('clips')
+    || normalized.includes('wig')
+    || normalized.includes('hairpiece')
+    || normalized.includes('extensions')
+    || normalized.includes('extension track')
   ) {
-    return createErrorState('Retake photos', 'The scan needs clearer hair visibility. Please retake the required views in bright light with your hair centered.');
+    return createErrorState('Hair Verification Needed', 'Remove blocking accessories and show the natural hairline, roots, length, and ends clearly. Retake the affected views for verification.');
   }
 
   if (

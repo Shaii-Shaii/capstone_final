@@ -132,7 +132,7 @@ export default function SignupScreen() {
       scrollable
       safeArea={false}
       variant="auth"
-      contentStyle={[styles.screenContent, { backgroundColor: roles.pageBackground }]}
+      contentStyle={[styles.screenContent, { backgroundColor: theme.colors.surfaceCard }]}
     >
       <View style={styles.page}>
 
@@ -206,34 +206,36 @@ export default function SignupScreen() {
             resolvedTheme={resolvedTheme}
           />
 
-          {/* OR divider */}
-          <View style={[styles.dividerRow, isCompactViewport ? styles.dividerRowCompact : null]}>
-            <View style={[styles.dividerLine, { backgroundColor: roles.supportCardBorder }]} />
-            <Text style={[styles.dividerText, { color: roles.headingText }]}>OR</Text>
-            <View style={[styles.dividerLine, { backgroundColor: roles.supportCardBorder }]} />
-          </View>
+          <View style={styles.authFooter}>
+            {/* OR divider */}
+            <View style={[styles.dividerRow, isCompactViewport ? styles.dividerRowCompact : null]}>
+              <View style={[styles.dividerLine, { backgroundColor: roles.supportCardBorder }]} />
+              <Text style={[styles.dividerText, { color: roles.headingText }]}>OR</Text>
+              <View style={[styles.dividerLine, { backgroundColor: roles.supportCardBorder }]} />
+            </View>
 
-          {/* Google sign-up */}
-          <GoogleButton
-            onPress={handleGoogleAuth}
-            disabled={isLoading}
-            loading={isGoogleLoading}
-            roles={roles}
-          />
+            {/* Google sign-up */}
+            <GoogleButton
+              onPress={handleGoogleAuth}
+              disabled={isLoading}
+              loading={isGoogleLoading}
+              roles={roles}
+            />
 
-          {/* Log-in link */}
-          <View style={styles.loginRow}>
-            <Text style={[styles.loginText, { color: roles.headingText }]}>
-              Already have an account?{' '}
-            </Text>
-            <Pressable
-              onPress={() => router.replace('/auth/access')}
-              style={({ pressed }) => (pressed ? styles.pressed : null)}
-            >
-              <Text style={[styles.loginLink, styles.loginLinkColor]}>
-                Log In
+            {/* Log-in link */}
+            <View style={styles.loginRow}>
+              <Text style={[styles.loginText, { color: roles.headingText }]}>
+                Already have an account?{' '}
               </Text>
-            </Pressable>
+              <Pressable
+                onPress={() => router.replace('/auth/access')}
+                style={({ pressed }) => (pressed ? styles.pressed : null)}
+              >
+                <Text style={[styles.loginLink, styles.loginLinkColor]}>
+                  Log In
+                </Text>
+              </Pressable>
+            </View>
           </View>
 
         </View>
@@ -247,14 +249,17 @@ export default function SignupScreen() {
 const styles = StyleSheet.create({
 
   screenContent: {
-    flexGrow: 1,
+    flex: 0,
+    flexGrow: 0,
+    flexShrink: 0,
     paddingHorizontal: 0,
     paddingTop: 0,
     paddingBottom: 0,
   },
 
   page: {
-    flex: 1,
+    flexGrow: 0,
+    flexShrink: 0,
     width: '100%',
     backgroundColor: theme.colors.surfaceCard,
   },
@@ -384,8 +389,9 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 32,
     paddingHorizontal: theme.spacing.lg,
     paddingTop: theme.spacing.xl,
-    paddingBottom: theme.spacing.section,
-    flex: 1,
+    paddingBottom: theme.spacing.xl,
+    flexGrow: 0,
+    flexShrink: 0,
   },
   formPanelCompact: {
     paddingTop: theme.spacing.lg,
@@ -407,12 +413,17 @@ const styles = StyleSheet.create({
   },
 
   // OR divider
+  authFooter: {
+    width: '100%',
+    flexGrow: 0,
+    flexShrink: 0,
+  },
   dividerRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: theme.spacing.md,
-    marginTop: theme.spacing.lg,
-    marginBottom: theme.spacing.md,
+    marginTop: theme.spacing.md,
+    marginBottom: theme.spacing.sm,
   },
   dividerRowCompact: {
     marginTop: theme.spacing.md,
@@ -467,7 +478,8 @@ const styles = StyleSheet.create({
   loginRow: {
     flexDirection: 'row',
     justifyContent: 'center',
-    marginTop: theme.spacing.xl,
+    marginTop: theme.spacing.md,
+    marginBottom: theme.spacing.sm,
     flexWrap: 'wrap',
   },
   loginText: {
