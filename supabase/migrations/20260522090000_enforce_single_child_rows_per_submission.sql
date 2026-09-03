@@ -15,7 +15,6 @@ delete from public."AI_Screenings" ai
 using ranked_screenings rs
 where ai."AI_Screening_ID" = rs."AI_Screening_ID"
   and rs.rn > 1;
-
 with ranked_details as (
   select
     "Submission_Detail_ID",
@@ -43,7 +42,6 @@ update public."Hair_Submission_Images" hsi
 set "Submission_Detail_ID" = kept_details.keep_detail_id
 from kept_details
 where hsi."Submission_Detail_ID" = kept_details."Submission_Detail_ID";
-
 with ranked_details as (
   select
     "Submission_Detail_ID",
@@ -57,13 +55,10 @@ delete from public."Hair_Submission_Details" hsd
 using ranked_details rd
 where hsd."Submission_Detail_ID" = rd."Submission_Detail_ID"
   and rd.rn > 1;
-
 create unique index if not exists uq_ai_screenings_submission
 on public."AI_Screenings" ("Submission_ID");
-
 create unique index if not exists uq_hair_submission_details_submission
 on public."Hair_Submission_Details" ("Submission_ID");
-
 drop policy if exists "donors_update_own_hair_submission_details" on public."Hair_Submission_Details";
 create policy "donors_update_own_hair_submission_details"
 on public."Hair_Submission_Details"
@@ -86,7 +81,6 @@ with check (
       and hs."User_ID" = public.current_app_user_id()
   )
 );
-
 drop policy if exists "donors_update_own_ai_screenings" on public."AI_Screenings";
 create policy "donors_update_own_ai_screenings"
 on public."AI_Screenings"

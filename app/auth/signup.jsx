@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Dimensions,
   Image,
   Platform,
   Pressable,
@@ -106,7 +107,10 @@ function GoogleButton({ onPress, disabled, loading, roles }) {
 export default function SignupScreen() {
   const router = useRouter();
   const { height: viewportHeight } = useWindowDimensions();
-  const isCompactViewport = viewportHeight < 800;
+  const stableViewportHeight = Platform.OS === 'android'
+    ? Dimensions.get('screen').height
+    : viewportHeight;
+  const isCompactViewport = stableViewportHeight < 800;
   const {
     handleSignup,
     handleGoogleAuth,

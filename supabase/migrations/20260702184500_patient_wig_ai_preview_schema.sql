@@ -15,11 +15,8 @@ create table if not exists public."Wig_Request_Specifications" (
   "Created_At" timestamp without time zone not null default now(),
   "Updated_At" timestamp without time zone not null default now()
 );
-
 alter table public."Wig_Request_Specifications" enable row level security;
-
 grant select, insert, update on public."Wig_Request_Specifications" to authenticated;
-
 do $$
 begin
   if to_regclass('public."Wig_Request_Specifications_Req_Spec_ID_seq"') is not null then
@@ -27,7 +24,6 @@ begin
   end if;
 end;
 $$;
-
 drop policy if exists "patients_read_own_wig_request_specifications" on public."Wig_Request_Specifications";
 create policy "patients_read_own_wig_request_specifications"
 on public."Wig_Request_Specifications"
@@ -42,7 +38,6 @@ using (
       and p."User_ID" = public.current_app_user_id()
   )
 );
-
 drop policy if exists "patients_insert_own_wig_request_specifications" on public."Wig_Request_Specifications";
 create policy "patients_insert_own_wig_request_specifications"
 on public."Wig_Request_Specifications"
@@ -57,7 +52,6 @@ with check (
       and lower(trim(coalesce(wr."Status", 'pending'))) = 'pending'
   )
 );
-
 drop policy if exists "patients_update_own_wig_request_specifications" on public."Wig_Request_Specifications";
 create policy "patients_update_own_wig_request_specifications"
 on public."Wig_Request_Specifications"
@@ -84,7 +78,6 @@ with check (
       and lower(trim(coalesce(wr."Status", 'pending'))) = 'pending'
   )
 );
-
 create or replace function public.set_wig_request_code()
 returns trigger
 language plpgsql
@@ -97,7 +90,6 @@ begin
   return new;
 end;
 $$;
-
 drop trigger if exists set_wig_request_code_before_insert on public."Wig_Requests";
 create trigger set_wig_request_code_before_insert
 before insert on public."Wig_Requests"

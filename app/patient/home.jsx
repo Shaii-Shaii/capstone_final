@@ -2,7 +2,7 @@ import React from "react";
 import { useRouter } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
-import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Image, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { DonorTopBar } from "../../src/components/donor/DonorTopBar";
 import { DashboardHeaderSurface } from "../../src/components/layout/DashboardHeaderSurface";
@@ -10,9 +10,8 @@ import { DashboardLayout } from "../../src/components/layout/DashboardLayout";
 import { PatientTutorialModal } from "../../src/components/patient/PatientTutorialModal";
 import { StatusBanner } from "../../src/components/ui/StatusBanner";
 import { patientDashboardNavItems } from "../../src/constants/dashboard";
-import { resolveThemeRoles, theme } from "../../src/design-system/theme";
+import { resolvePatientThemeRoles, theme } from "../../src/design-system/theme";
 import { useNotifications } from "../../src/hooks/useNotifications";
-import { usePatientWigRequest } from "../../src/hooks/usePatientWigRequest";
 import { useProcessTracking } from "../../src/hooks/useProcessTracking";
 import { useAuth } from "../../src/providers/AuthProvider";
 import { fetchUpcomingDonationDrives } from "../../src/features/donorHome.api";
@@ -53,27 +52,6 @@ const getEventDateBadge = (startDate) => {
     day: new Intl.DateTimeFormat('en-PH', { day: 'numeric' }).format(date),
   };
 };
-
-const emptyJourneySteps = [
-  { key: "request", icon: "clipboard-text-outline", label: "Submit request" },
-  { key: "review", icon: "shield-search-outline", label: "Record review" },
-  { key: "match", icon: "creation-outline", label: "Wig matching" },
-];
-
-const journeyStepIcons = {
-  approval: "clipboard-check-outline",
-  preparing: "creation-outline",
-  dropoff: "truck-delivery-outline",
-  received: "account-check-outline",
-};
-
-const getJourneyStepIcon = (step = {}) => (
-  journeyStepIcons[step.key]
-  || (String(step.title || "").toLowerCase().includes("prepar") ? "creation-outline" : null)
-  || (String(step.title || "").toLowerCase().includes("dropoff") ? "truck-delivery-outline" : null)
-  || (String(step.title || "").toLowerCase().includes("received") ? "account-check-outline" : null)
-  || "clipboard-text-clock-outline"
-);
 
 function PatientEventCard({ drive, roles, onPress }) {
   const [imageFailed, setImageFailed] = React.useState(false);
@@ -181,25 +159,44 @@ export default function PatientHomeScreen() {
     userId: user?.id,
     databaseUserId: profile?.user_id,
   });
-  const {
-    hasSubmittedRequest,
-    isLoadingContext,
-    error,
-  } = usePatientWigRequest({ userId: user?.id });
   const { tracker, trackingError, isLoadingTracking } = useProcessTracking({
     role: "patient",
     userId: user?.id,
     databaseUserId: profile?.user_id,
   });
 
-  const roles = resolveThemeRoles(resolvedTheme);
-  const trackingSteps = tracker?.steps || [];
-  const hasActiveRequest = Boolean(hasSubmittedRequest);
+  const roles = resolvePatientThemeRoles(resolvedTheme);
+  const trackingSteps = React.useMemo(() => tracker?.steps || [], [tracker?.steps]);
+  const hasActiveRequest = Boolean(tracker?.hasActiveRequest);
+  const currentJourneyStepIndex = React.useMemo(() => {
+    if (!trackingSteps.length) return 0;
+    const highlightedIndex = trackingSteps.findIndex((step) => (
+      step?.state === "current" || step?.state === "attention"
+    ));
+    if (highlightedIndex >= 0) return highlightedIndex;
+    const nextStepIndex = trackingSteps.findIndex((step) => step?.state !== "completed");
+    return nextStepIndex >= 0 ? nextStepIndex : trackingSteps.length - 1;
+  }, [trackingSteps]);
+  const currentJourneyStep = trackingSteps[currentJourneyStepIndex] || null;
+  const requestProgressPercent = trackingSteps.length
+    ? Math.min(100, Math.max(0, ((currentJourneyStepIndex + 1) / trackingSteps.length) * 100))
+    : 0;
+  const requestOverviewGradientColors = React.useMemo(() => [
+    theme.colors.palette.wine900,
+    theme.colors.palette.wine700,
+    theme.colors.palette.wine600,
+  ], []);
+  const patientReferenceValue = String(tracker?.summary?.referenceValue || "").trim();
+  const shouldShowPatientReference = Boolean(
+    patientReferenceValue
+    && !["not assigned", "pending", "not available", "n/a"].includes(patientReferenceValue.toLowerCase())
+  );
   const primaryTextColor = resolvedTheme?.primaryTextColor || roles.headingText;
   const [isTutorialOpen, setIsTutorialOpen] = React.useState(false);
   const [donationEvents, setDonationEvents] = React.useState([]);
   const [isLoadingEvents, setIsLoadingEvents] = React.useState(true);
   const [eventsError, setEventsError] = React.useState("");
+  const eventsFetchMetaRef = React.useRef({ databaseUserId: null, fetchedAt: 0 });
   const [eventSearchQuery, setEventSearchQuery] = React.useState("");
   const firstName = String(profile?.first_name || "").trim();
   const lastName = String(profile?.last_name || "").trim();
@@ -207,6 +204,14 @@ export default function PatientHomeScreen() {
   const greeting = React.useMemo(getGreeting, []);
 
   useFocusEffect(React.useCallback(() => {
+    const cachedMeta = eventsFetchMetaRef.current;
+    if (
+      cachedMeta.databaseUserId === (profile?.user_id || null)
+      && cachedMeta.fetchedAt
+      && Date.now() - cachedMeta.fetchedAt < 30 * 1000
+    ) {
+      return undefined;
+    }
     let isMounted = true;
 
     const loadDonationEvents = async () => {
@@ -216,6 +221,12 @@ export default function PatientHomeScreen() {
       if (!isMounted) return;
       setDonationEvents(result.data || []);
       setEventsError(result.error?.message || "");
+      if (!result.error) {
+        eventsFetchMetaRef.current = {
+          databaseUserId: profile?.user_id || null,
+          fetchedAt: Date.now(),
+        };
+      }
       setIsLoadingEvents(false);
     };
 
@@ -251,6 +262,59 @@ export default function PatientHomeScreen() {
         .includes(query)
     ));
   }, [donationEvents, eventSearchQuery]);
+
+  const activeJourneyContent = hasActiveRequest ? (
+    <View style={styles.journeyLeadingHost}>
+      <LinearGradient
+        colors={requestOverviewGradientColors}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.timelineSection}
+      >
+        <View pointerEvents="none" style={styles.timelineGradientShade} />
+        <View pointerEvents="none" style={styles.timelineHeaderGlow} />
+
+        <View style={styles.timelineHeadingRow}>
+          <View style={styles.timelineHeadingIdentity}>
+            <View style={styles.timelineHeadingIcon}>
+              <MaterialCommunityIcons name="clipboard-text-clock-outline" size={22} color="#FFFFFF" />
+            </View>
+            <View style={styles.timelineHeadingCopy}>
+              <Text style={styles.timelineEyebrow}>WIG REQUEST</Text>
+              <Text style={styles.timelineHeading}>Request overview</Text>
+            </View>
+          </View>
+        </View>
+
+        <View style={styles.timelineCurrentCopy}>
+          <Text style={styles.timelineCurrentLabel}>CURRENT STAGE</Text>
+          <Text numberOfLines={2} style={styles.timelineCurrentTitle}>
+            {currentJourneyStep?.title || tracker?.summary?.label || "Request in progress"}
+          </Text>
+          {shouldShowPatientReference ? (
+            <View style={styles.timelineReferenceRow}>
+              <MaterialCommunityIcons name="account-card-outline" size={15} color="#FFFFFF" />
+              <Text numberOfLines={1} style={styles.timelineReferenceText}>
+                {tracker?.summary?.referenceLabel || "Patient code"}: {patientReferenceValue}
+              </Text>
+            </View>
+          ) : null}
+        </View>
+
+        <View style={styles.timelineProgressBlock}>
+          <View style={styles.timelineProgressHeader}>
+            <Text style={styles.timelineProgressLabel}>Request progress</Text>
+            <Text style={styles.timelineProgressCount}>
+              Step {Math.min(currentJourneyStepIndex + 1, Math.max(trackingSteps.length, 1))} of {Math.max(trackingSteps.length, 1)}
+            </Text>
+          </View>
+          <View style={styles.timelineProgressTrack}>
+            <View style={[styles.timelineProgressFill, { width: `${requestProgressPercent}%` }]} />
+          </View>
+        </View>
+      </LinearGradient>
+    </View>
+  ) : null;
 
   const compactJourneyContent = !hasActiveRequest ? (
     <View style={styles.journeyLeadingHost}>
@@ -335,7 +399,7 @@ export default function PatientHomeScreen() {
       activeNavKey="home"
       navVariant="patient"
       onNavPress={handleNavPress}
-      leadingContent={compactJourneyContent}
+      leadingContent={activeJourneyContent || compactJourneyContent}
       stickyContent={stickyEventSearch}
       header={
         <DashboardHeaderSurface>
@@ -358,7 +422,7 @@ export default function PatientHomeScreen() {
         tabKey="home"
         onClose={() => setIsTutorialOpen(false)}
       />
-      {isLoadingContext || isLoadingTracking ? (
+      {isLoadingTracking ? (
         <StatusBanner
           title="Loading request status"
           message="Checking your latest wig request."
@@ -369,11 +433,10 @@ export default function PatientHomeScreen() {
         />
       ) : null}
 
-      {error || trackingError ? (
+      {trackingError ? (
         <StatusBanner
           title="Status unavailable"
           message={
-            error?.message ||
             trackingError ||
             "We could not load your request status right now."
           }
@@ -385,207 +448,6 @@ export default function PatientHomeScreen() {
       ) : null}
 
       <View style={styles.stack}>
-        {hasActiveRequest ? (
-        <LinearGradient
-          colors={[theme.colors.palette.white, theme.colors.palette.blush100]}
-          start={{ x: 0.08, y: 0 }}
-          end={{ x: 0.92, y: 1 }}
-          style={[styles.timelineSection, { borderColor: roles.defaultCardBorder }]}
-        >
-          <View pointerEvents="none" style={styles.timelineSectionGlow} />
-          <View style={styles.timelineHeadingRow}>
-            <View style={styles.timelineHeadingIdentity}>
-              <LinearGradient
-                colors={[theme.colors.palette.wine600, theme.colors.palette.wine900]}
-                style={styles.timelineHeadingIcon}
-              >
-                <MaterialCommunityIcons name="timeline-clock-outline" size={21} color="#FFFFFF" />
-              </LinearGradient>
-              <View style={styles.timelineHeadingCopy}>
-                <Text style={[styles.timelineEyebrow, { color: roles.primaryActionBackground }]}>YOUR WIG JOURNEY</Text>
-                <Text style={[styles.timelineHeading, { color: primaryTextColor }]}>Journey timeline</Text>
-                <Text style={[styles.timelineHeadingHint, { color: roles.metaText }]}>Swipe to follow every step of your request.</Text>
-              </View>
-            </View>
-            {hasActiveRequest ? (
-              <View style={styles.timelineStatusPill}>
-                <View style={[styles.timelineStatusDot, { backgroundColor: roles.primaryActionBackground }]} />
-                <Text style={[styles.timelineStatus, { color: roles.primaryActionBackground }]}>{tracker?.summary?.label || "Pending"}</Text>
-              </View>
-            ) : null}
-          </View>
-
-          {hasActiveRequest ? (
-            <View style={styles.timelineList}>
-              <View style={styles.timelineSwipeHint}>
-                <MaterialCommunityIcons name="gesture-swipe-horizontal" size={17} color={roles.primaryActionBackground} />
-                <Text style={[styles.timelineSwipeHintText, { color: roles.bodyText }]}>Swipe to see all stages</Text>
-              </View>
-              <ScrollView
-                horizontal
-                nestedScrollEnabled
-                showsHorizontalScrollIndicator={false}
-                snapToInterval={202}
-                decelerationRate="fast"
-                contentContainerStyle={styles.timelineHorizontalContent}
-              >
-                {trackingSteps.map((step, index) => {
-                  const isCompleted = step.state === "completed";
-                  const isCurrent = step.state === "current";
-                  const isAttention = step.state === "attention";
-                  const isHighlighted = isCompleted || isCurrent || isAttention;
-                  const markerColor = isAttention
-                    ? theme.colors.palette.amber700
-                    : roles.primaryActionBackground;
-                  const markerIcon = isCompleted ? "check" : getJourneyStepIcon(step);
-                  return (
-                    <View key={step.key || `${step.title}-${index}`} style={styles.timelineHorizontalStep}>
-                      <View style={styles.timelineStepRail}>
-                        <LinearGradient
-                          colors={isHighlighted
-                            ? [markerColor, theme.colors.palette.wine900]
-                            : [theme.colors.palette.blueGray200, theme.colors.palette.blueGray500]}
-                          style={styles.timelineMarker}
-                        >
-                          <MaterialCommunityIcons name={markerIcon} size={17} color="#FFFFFF" />
-                        </LinearGradient>
-                        {index < trackingSteps.length - 1 ? (
-                          <View style={[
-                            styles.timelineConnector,
-                            {
-                              backgroundColor: isCompleted
-                                ? roles.primaryActionBackground
-                                : roles.defaultCardBorder,
-                            },
-                          ]} />
-                        ) : null}
-                      </View>
-
-                      <LinearGradient
-                        colors={isCurrent
-                          ? [theme.colors.palette.blush100, theme.colors.palette.white]
-                          : [theme.colors.palette.white, theme.colors.palette.warm50]}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}
-                        style={[
-                          styles.timelineCard,
-                          {
-                            borderColor: isHighlighted
-                              ? markerColor
-                              : roles.defaultCardBorder,
-                          },
-                        ]}
-                      >
-                        <View style={styles.timelineCardTopRow}>
-                          <Text style={[styles.timelineStepNumber, { color: markerColor }]}>STEP {index + 1}</Text>
-                          <View style={[
-                            styles.timelineLabelPill,
-                            { backgroundColor: isHighlighted ? roles.iconPrimarySurface : roles.defaultCardBackground },
-                          ]}>
-                            <Text numberOfLines={1} style={[styles.timelineLabel, { color: isHighlighted ? markerColor : roles.metaText }]}>
-                              {step.label}
-                            </Text>
-                          </View>
-                        </View>
-                        <Text numberOfLines={2} style={[styles.timelineTitle, { color: primaryTextColor }]}>{step.title}</Text>
-                        {step.description ? (
-                          <Text numberOfLines={2} style={[styles.timelineDescription, { color: roles.bodyText }]}>
-                            {step.description}
-                          </Text>
-                        ) : null}
-                      </LinearGradient>
-                    </View>
-                  );
-                })}
-              </ScrollView>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="View full wig request details"
-                onPress={() => router.navigate("/patient/requests")}
-                style={({ pressed }) => [
-                  styles.timelineDetailsLink,
-                  { backgroundColor: roles.primaryActionBackground },
-                  pressed ? styles.timelineDetailsLinkPressed : null,
-                ]}
-              >
-                <View style={styles.timelineDetailsIcon}>
-                  <MaterialCommunityIcons name="file-eye-outline" size={18} color={roles.primaryActionText} />
-                </View>
-                <Text style={[styles.timelineDetailsText, { color: roles.primaryActionText }]}>View full request details</Text>
-                <MaterialCommunityIcons name="arrow-right" size={19} color={roles.primaryActionText} />
-              </Pressable>
-            </View>
-          ) : (
-            <View style={styles.emptyJourney}>
-              <LinearGradient
-                colors={[roles.defaultCardBackground, roles.supportCardBackground]}
-                start={{ x: 0.1, y: 0 }}
-                end={{ x: 0.9, y: 1 }}
-                style={[styles.emptyJourneyCard, { borderColor: roles.defaultCardBorder }]}
-              >
-                <View style={styles.emptyJourneyArtwork}>
-                  <View style={[styles.emptyJourneyArtworkRing, { borderColor: roles.defaultCardBorder }]} />
-                  <View style={[styles.emptyJourneyIcon, { backgroundColor: roles.iconPrimarySurface }]}>
-                    <MaterialCommunityIcons name="account-heart-outline" size={38} color={roles.primaryActionBackground} />
-                  </View>
-                  <View style={[styles.emptyJourneySparkle, { backgroundColor: roles.primaryActionBackground }]}>
-                    <MaterialCommunityIcons name="creation" size={13} color={roles.primaryActionText} />
-                  </View>
-                </View>
-
-                <View style={styles.emptyJourneyCopy}>
-                  <Text style={[styles.emptyJourneyTitle, { color: primaryTextColor }]}>Start your wig journey</Text>
-                  <Text style={[styles.emptyJourneyMessage, { color: roles.bodyText }]}>Request a wig and we’ll guide you through document review, matching, and release updates.</Text>
-                </View>
-
-                <View style={styles.emptyJourneySteps}>
-                  {emptyJourneySteps.map((step, index) => (
-                    <React.Fragment key={step.key}>
-                      <View style={styles.emptyJourneyStep}>
-                        <View style={[styles.emptyJourneyStepIcon, { backgroundColor: roles.iconPrimarySurface }]}>
-                          <MaterialCommunityIcons name={step.icon} size={17} color={roles.primaryActionBackground} />
-                        </View>
-                        <Text numberOfLines={2} style={[styles.emptyJourneyStepLabel, { color: roles.bodyText }]}>{step.label}</Text>
-                      </View>
-                      {index < emptyJourneySteps.length - 1 ? (
-                        <MaterialCommunityIcons name="chevron-right" size={16} color={roles.metaText} />
-                      ) : null}
-                    </React.Fragment>
-                  ))}
-                </View>
-
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Request a wig"
-                  onPress={() => router.navigate("/patient/request-wig")}
-                  style={({ pressed }) => [styles.requestButton, pressed ? styles.requestButtonPressed : null]}
-                >
-                  <LinearGradient
-                    colors={[theme.colors.palette.wine600, theme.colors.palette.wine800, theme.colors.palette.wine900]}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={styles.requestButtonGradient}
-                  >
-                    <MaterialCommunityIcons name="clipboard-plus-outline" size={20} color={roles.primaryActionText} />
-                    <Text style={[styles.requestButtonText, { color: roles.primaryActionText }]}>Request a wig</Text>
-                    <MaterialCommunityIcons name="arrow-right" size={20} color={roles.primaryActionText} />
-                  </LinearGradient>
-                </Pressable>
-
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Learn how the wig request works"
-                  onPress={() => setIsTutorialOpen(true)}
-                  style={({ pressed }) => [styles.learnMoreButton, pressed ? styles.learnMoreButtonPressed : null]}
-                >
-                  <MaterialCommunityIcons name="help-circle-outline" size={18} color={roles.primaryActionBackground} />
-                  <Text style={[styles.learnMoreText, { color: roles.primaryActionBackground }]}>How the process works</Text>
-                </Pressable>
-              </LinearGradient>
-            </View>
-          )}
-        </LinearGradient>
-        ) : null}
 
         <View style={styles.eventsSection}>
           <View style={styles.eventsHeadingRow}>
@@ -1029,23 +891,27 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     gap: theme.spacing.md,
     borderWidth: 1,
-    borderRadius: 24,
+    borderColor: "rgba(255,255,255,0.16)",
+    borderRadius: 22,
     padding: theme.spacing.md,
     ...theme.shadows.card,
   },
-  timelineSectionGlow: {
+  timelineGradientShade: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(23,17,20,0.12)",
+  },
+  timelineHeaderGlow: {
     position: "absolute",
-    width: 148,
-    height: 148,
-    borderRadius: 74,
-    right: -58,
-    top: -96,
-    backgroundColor: "rgba(146,41,74,0.08)",
+    width: 150,
+    height: 150,
+    borderRadius: 75,
+    right: -45,
+    top: -92,
+    backgroundColor: "rgba(255,255,255,0.09)",
   },
   timelineHeadingRow: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    alignItems: "flex-start",
+    alignItems: "center",
     justifyContent: "space-between",
     gap: theme.spacing.sm,
   },
@@ -1057,38 +923,34 @@ const styles = StyleSheet.create({
     gap: theme.spacing.sm,
   },
   timelineHeadingIcon: {
-    width: 46,
-    height: 46,
-    borderRadius: 16,
+    width: 38,
+    height: 38,
+    borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
     flexShrink: 0,
-    ...theme.shadows.soft,
+    backgroundColor: "rgba(255,255,255,0.14)",
   },
   timelineHeadingCopy: {
     flex: 1,
     minWidth: 0,
   },
   timelineEyebrow: {
+    color: "rgba(255,255,255,0.76)",
     fontFamily: theme.typography.fontFamily,
     fontSize: 9,
     fontWeight: theme.typography.weights.bold,
     letterSpacing: 0.9,
   },
   timelineHeading: {
+    color: "#FFFFFF",
     fontFamily: theme.typography.fontFamilyDisplay,
-    fontSize: theme.typography.semantic.titleSm,
+    fontSize: theme.typography.semantic.body,
     fontWeight: theme.typography.weights.bold,
-    lineHeight: 27,
-  },
-  timelineHeadingHint: {
-    marginTop: 1,
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.compact.caption,
-    lineHeight: 16,
+    lineHeight: 22,
   },
   timelineStatusPill: {
-    maxWidth: 132,
+    maxWidth: 214,
     minHeight: 32,
     paddingHorizontal: theme.spacing.sm,
     borderRadius: theme.radius.full,
@@ -1096,10 +958,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 5,
-    backgroundColor: "rgba(255,255,255,0.92)",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.borderSubtle,
-    ...theme.shadows.soft,
+    borderWidth: 1,
   },
   timelineStatusDot: {
     width: 7,
@@ -1109,8 +968,78 @@ const styles = StyleSheet.create({
   timelineStatus: {
     flexShrink: 1,
     fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 14,
+    fontWeight: theme.typography.weights.semibold,
+  },
+  timelineCurrentCopy: {
+    gap: 4,
+  },
+  timelineCurrentLabel: {
+    color: "rgba(255,255,255,0.76)",
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 1,
+    opacity: 0.78,
+  },
+  timelineCurrentTitle: {
+    color: "#FFFFFF",
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.titleSm,
+    fontWeight: theme.typography.weights.bold,
+    lineHeight: 27,
+  },
+  timelineReferenceRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 2,
+  },
+  timelineReferenceText: {
+    flex: 1,
+    minWidth: 0,
+    color: "rgba(255,255,255,0.82)",
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 15,
+    opacity: 0.78,
+  },
+  timelineProgressBlock: {
+    gap: 8,
+  },
+  timelineProgressHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: theme.spacing.sm,
+  },
+  timelineProgressLabel: {
+    color: "rgba(255,255,255,0.88)",
+    fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.semantic.caption,
     fontWeight: theme.typography.weights.semibold,
+    opacity: 0.82,
+  },
+  timelineProgressCount: {
+    color: "rgba(255,255,255,0.88)",
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    opacity: 0.82,
+  },
+  timelineProgressTrack: {
+    width: "100%",
+    height: 7,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.34)",
+    borderRadius: theme.radius.full,
+    backgroundColor: "rgba(23,17,20,0.24)",
+  },
+  timelineProgressFill: {
+    height: "100%",
+    borderRadius: theme.radius.full,
+    backgroundColor: "#FFFFFF",
   },
   timelineList: {
     gap: theme.spacing.sm,
@@ -1207,26 +1136,27 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
   timelineDetailsLink: {
-    minHeight: 52,
+    minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "center",
     gap: theme.spacing.sm,
-    borderRadius: 17,
-    paddingHorizontal: theme.spacing.md,
-    ...theme.shadows.soft,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.22)",
+    borderRadius: 14,
+    backgroundColor: "rgba(255,255,255,0.1)",
+    paddingHorizontal: theme.spacing.sm,
   },
   timelineDetailsLinkPressed: {
     opacity: 0.88,
     transform: [{ scale: 0.985 }],
   },
   timelineDetailsIcon: {
-    width: 30,
-    height: 30,
+    width: 32,
+    height: 32,
     alignItems: "center",
     justifyContent: "center",
     borderRadius: 10,
-    backgroundColor: "rgba(255,255,255,0.14)",
+    backgroundColor: "rgba(255,255,255,0.12)",
   },
   timelineDetailsText: {
     flex: 1,

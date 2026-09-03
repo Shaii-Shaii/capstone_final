@@ -5,7 +5,6 @@ alter table public."AI_Screenings"
   add column if not exists "Lice_Detected" boolean not null default false,
   add column if not exists "Lice_Confidence" text not null default 'none',
   add column if not exists "Lice_Notes" text not null default 'No visible lice or nit-like signs were observed in the uploaded views.';
-
 update public."AI_Screenings"
 set
   "Dandruff_Severity" = coalesce(nullif(trim("Dandruff_Severity"), ''), 'none'),

@@ -187,6 +187,8 @@ export function AddressOptionSheet({
   selectedValue,
   onClose,
   onSelect,
+  allowDeselect = false,
+  onClearSelection,
 }) {
   const { resolvedTheme } = useAuth();
   const roles = resolveThemeRoles(resolvedTheme);
@@ -219,7 +221,11 @@ export function AddressOptionSheet({
             </View>
             <View style={styles.sheetHeaderCopy}>
               <Text style={[styles.sheetTitle, { color: roles.headingText }]}>{title}</Text>
-              <Text style={[styles.sheetSubtitle, { color: roles.bodyText }]}>Choose the option that matches your profile.</Text>
+              <Text style={[styles.sheetSubtitle, { color: roles.bodyText }]}>
+                {allowDeselect
+                  ? 'Choose an option, or tap the selected option to clear it.'
+                  : 'Choose the option that matches your profile.'}
+              </Text>
             </View>
             <Pressable
               accessibilityRole="button"
@@ -261,7 +267,7 @@ export function AddressOptionSheet({
             <Text style={[styles.sheetResultsText, { color: roles.metaText }]}>
               {filteredOptions.length} {filteredOptions.length === 1 ? 'option' : 'options'}
             </Text>
-            {selectedValue ? (
+            {selectedValue && !allowDeselect ? (
               <View style={[styles.sheetSelectedPill, { backgroundColor: roles.iconPrimarySurface }]}>
                 <Text numberOfLines={1} style={[styles.sheetSelectedText, { color: roles.iconPrimaryColor }]}>Selected: {selectedValue}</Text>
               </View>
@@ -281,8 +287,17 @@ export function AddressOptionSheet({
                 return (
                   <Pressable
                     key={`${title}-${option.code || option.value || 'option'}-${index}`}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected: isSelected }}
+                    accessibilityLabel={isSelected && allowDeselect
+                      ? `${option.label}, selected. Tap to unselect.`
+                      : option.label}
                     onPress={() => {
-                      onSelect(option);
+                      if (isSelected && allowDeselect) {
+                        onClearSelection?.();
+                      } else {
+                        onSelect(option);
+                      }
                       onClose();
                     }}
                     style={({ pressed }) => [
@@ -836,8 +851,10 @@ const styles = StyleSheet.create({
     minHeight: 28,
     paddingHorizontal: theme.spacing.sm,
     borderRadius: theme.radius.pill,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 4,
   },
   sheetSelectedText: {
     fontFamily: theme.typography.fontFamily,

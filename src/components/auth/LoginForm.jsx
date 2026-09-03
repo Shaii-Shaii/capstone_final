@@ -45,6 +45,12 @@ export const LoginForm = ({
     },
   });
   const roles = resolveThemeRoles(resolvedTheme);
+  const isConnectionError = [
+    'REQUEST_TIMEOUT',
+    'NETWORK_ERROR',
+    'ACCOUNT_LOAD_FAILED',
+    'LOGIN_SECURITY_UNAVAILABLE',
+  ].includes(submitErrorCode);
   const isSubmitLoading = isLoading && activeAuthAction === 'login';
 
   React.useEffect(() => {
@@ -106,6 +112,14 @@ export const LoginForm = ({
           message={submitError.replace(/^Account temporarily locked\.\s*/i, '')}
           variant="error"
           icon="lock-alert-outline"
+          style={styles.lockoutBanner}
+        />
+      ) : submitError && isConnectionError ? (
+        <StatusBanner
+          title="System maintenance"
+          message={submitError}
+          variant="error"
+          icon="tools"
           style={styles.lockoutBanner}
         />
       ) : submitError ? (

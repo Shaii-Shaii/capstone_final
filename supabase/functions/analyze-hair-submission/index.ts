@@ -1,5 +1,6 @@
 import { createJsonResponse, handleCorsPreflight } from '../_shared/cors.ts';
-import { createStructuredResponse } from '../_shared/ai-vision.ts';
+import { createStructuredResponse, resolveOpenRouterHairVisionModel } from '../_shared/ai-vision.ts';
+import { verifyHairPhotoVerificationToken } from '../_shared/hair-photo-verification.ts';
 
 const analysisSchema = {
   type: 'object',
@@ -94,6 +95,7 @@ const analysisSchema = {
         },
         shedding_level: {
           type: 'string',
+          enum: ['none', 'mild', 'moderate', 'severe'],
         },
         visible_scalp_area: {
           type: 'string',
@@ -283,7 +285,7 @@ const coreAnalysisSchema = {
           items: { type: 'string' },
         },
         hair_density_score: { type: 'number', nullable: true },
-        shedding_level: { type: 'string' },
+        shedding_level: { type: 'string', enum: ['none', 'mild', 'moderate', 'severe'] },
         visible_scalp_area: { type: 'string' },
         scalp_coverage_notes: { type: 'string' },
         dandruff_detected: { type: 'boolean' },
@@ -333,6 +335,7 @@ type HairImage = {
 
 type ComplianceContext = {
   acknowledged?: boolean;
+  photo_verification_token?: string;
 };
 
 type DonationRequirementContext = {
@@ -730,6 +733,26 @@ const analysisInstructions = [
 const normalizeString = (value: unknown) => (
   typeof value === 'string' ? value.trim() : ''
 );
+
+const normalizeSheddingLevel = (value: unknown, fallback: 'none' | 'mild' = 'mild') => {
+  const normalized = normalizeString(value).toLowerCase();
+  if (!normalized) return fallback;
+
+  if (/^(none|no|absent|normal)$/.test(normalized) || /\b(no|without)\s+(visible\s+)?(hair\s+)?(fall|loss|shedding)\b/.test(normalized)) {
+    return 'none';
+  }
+  if (/^(mild|low|minimal|slight|light)$/.test(normalized) || /\b(mild|low|minimal|slight|light)\b/.test(normalized)) {
+    return 'mild';
+  }
+  if (/^(moderate|medium|average)$/.test(normalized) || /\b(moderate|medium|average)\b/.test(normalized)) {
+    return 'moderate';
+  }
+  if (/^(severe|high|heavy|excessive|significant)$/.test(normalized) || /\b(severe|high|heavy|excessive|significant)\b/.test(normalized)) {
+    return 'severe';
+  }
+
+  return fallback;
+};
 
 const hasVisibleDandruffEvidence = (value = '') => {
   const normalized = String(value || '').toLowerCase();
@@ -1435,6 +1458,7 @@ const runFocusedLengthFallback = async ({
 }) => {
   try {
     const fallbackResult = await createStructuredResponse({
+      providerMode: 'openrouter-only',
       model,
       systemInstruction: [
         'You are a focused hair length estimator for a hair donation app.',
@@ -1451,8 +1475,9 @@ const runFocusedLengthFallback = async ({
         'Do not reject ordinary eyeglasses unless they hide the hairline or hair.',
       ].join('\n'),
       responseJsonSchema: lengthFallbackSchema,
-      maxOutputTokens: 900,
+      maxOutputTokens: 1600,
       temperature: 0.1,
+      reasoningEffort: 'minimal',
       includeDiagnostics: true,
       contents,
     }) as { parsed: Record<string, unknown>; diagnostics: Record<string, unknown> };
@@ -1827,10 +1852,9 @@ const normalizeAnalysisPayload = (
   const finalAffectedRegions = affectedRegions.length ? affectedRegions : ['none'];
   const rawDensityScore = normalizeNumber(analysis?.hair_density_score);
   const hairDensityScore = rawDensityScore == null ? 50 : Math.max(0, Math.min(100, rawDensityScore));
-  const questionnaireHairFall = normalizeString(questionnaireAnswers?.hair_fall);
-  const sheddingLevel = normalizeString(analysis?.shedding_level) || (
-    questionnaireHairFall === 'yes' ? 'mild' : questionnaireHairFall === 'no' ? 'none' : 'mild'
-  );
+  const questionnaireHairFall = normalizeString(questionnaireAnswers?.hair_fall).toLowerCase();
+  const fallbackSheddingLevel = questionnaireHairFall === 'no' ? 'none' : 'mild';
+  const sheddingLevel = normalizeSheddingLevel(analysis?.shedding_level, fallbackSheddingLevel);
   const visibleScalpArea = normalizeString(analysis?.visible_scalp_area) || (baldSpotsPresent ? 'moderate' : 'none');
   const scalpCoverageNotes = normalizeString(analysis?.scalp_coverage_notes);
   const scalpFindingEvidenceText = [
@@ -2085,6 +2109,19 @@ Deno.serve(async (request) => {
     }
 
     const validImages = images.filter((image) => typeof image?.dataUrl === 'string' && image.dataUrl.startsWith('data:'));
+    const photosVerified = await verifyHairPhotoVerificationToken({
+      token: normalizeString(complianceContext?.photo_verification_token),
+      images,
+    });
+    if (!photosVerified) {
+      return createJsonResponse({
+        error: 'Your photo check is missing or has expired. Please verify the captured photos again before analysis.',
+        error_type: 'photo_verification_required',
+        edge_function_invoked: true,
+        provider_request_attempted: false,
+      }, 422);
+    }
+
     const providedViews = new Set(
       validImages
         .flatMap((image) => getImageCanonicalViewLabels(image))
@@ -2100,15 +2137,10 @@ Deno.serve(async (request) => {
       }, 422);
     }
 
-    const model = Deno.env.get('GOOGLE_AI_HAIR_ANALYSIS_MODEL')
-      || Deno.env.get('GOOGLE_AI_VISION_MODEL')
-      || Deno.env.get('GOOGLE_AI_MODEL')
-      || Deno.env.get('GEMINI_MODEL')
-      || 'gemini-2.5-flash';
-    const hasGoogleAiKey = Boolean(
-      Deno.env.get('GOOGLE_AI_API_KEY')
+    const model = resolveOpenRouterHairVisionModel(
+      Deno.env.get('OPENROUTER_HAIR_ANALYSIS_MODEL'),
     );
-    const hasOpenAiKey = Boolean(Deno.env.get('OPENAI_API_KEY'));
+    const hasOpenRouterKey = Boolean(Deno.env.get('OPENROUTER_API_KEY'));
 
     console.info('[analyze-hair-submission] invoked', {
       concernType,
@@ -2121,8 +2153,7 @@ Deno.serve(async (request) => {
       hasDonationRequirementContext: Boolean(donationRequirementContext),
       hasSubmissionContext: Boolean(submissionContext?.submission_id),
       historyEntryCount: Array.isArray(historyContext?.entries) ? historyContext.entries.length : 0,
-      hasGoogleAiKey,
-      hasOpenAiKey,
+      hasOpenRouterKey,
       model,
     });
 
@@ -2204,7 +2235,7 @@ Deno.serve(async (request) => {
       return createJsonResponse({ error: 'No valid image payload was provided.' }, 400);
     }
 
-    console.info('[analyze-hair-submission] google ai request prepared', {
+    console.info('[analyze-hair-submission] OpenRouter request prepared', {
       model,
       textPartCount: multimodalParts.filter((p) => 'text' in p).length,
       imagePartCount: multimodalParts.filter((p) => 'inlineData' in p).length,
@@ -2216,11 +2247,13 @@ Deno.serve(async (request) => {
 
     try {
       providerResult = await createStructuredResponse({
+        providerMode: 'openrouter-only',
         model,
         systemInstruction: analysisInstructions,
         responseJsonSchema: analysisSchema,
-        maxOutputTokens: 3600,
+        maxOutputTokens: 5000,
         temperature: 0.2,
+        reasoningEffort: 'minimal',
         includeDiagnostics: true,
         contents,
       }) as { parsed: Record<string, unknown>; diagnostics: Record<string, unknown> };
@@ -2321,7 +2354,7 @@ Deno.serve(async (request) => {
 
           return createJsonResponse({
             success: true,
-            provider: String(diagnostics.provider || 'gemini'),
+            provider: String(diagnostics.provider || 'openrouter'),
             provider_model: diagnostics.provider_model || null,
             edge_function_invoked: true,
             provider_request_attempted: diagnostics.provider_request_attempted ?? true,
@@ -2353,14 +2386,14 @@ Deno.serve(async (request) => {
 
     const result = providerResult?.parsed || {};
     const diagnostics = providerResult?.diagnostics || {
-      provider: 'gemini',
+      provider: 'openrouter',
       provider_request_attempted: true,
       provider_response_status: null,
       provider_parse_success: false,
       provider_model: model,
     };
 
-    console.info('[analyze-hair-submission] google ai response parsed successfully', {
+    console.info('[analyze-hair-submission] OpenRouter response parsed successfully', {
       model: diagnostics.provider_model,
       responseKeys: result && typeof result === 'object' ? Object.keys(result) : [],
       hasAnalysisEnvelope: Boolean(result?.analysis),
@@ -2398,7 +2431,7 @@ Deno.serve(async (request) => {
         return createJsonResponse({
           error: 'The AI provider returned an incomplete hair analysis. Please tap Try again so the photos can be analyzed by the provider again.',
           edge_function_invoked: true,
-          provider: String(diagnostics.provider || 'gemini'),
+          provider: String(diagnostics.provider || 'openrouter'),
           provider_request_attempted: diagnostics.provider_request_attempted ?? true,
           provider_response_status: diagnostics.provider_response_status ?? null,
           provider_parse_success: diagnostics.provider_parse_success ?? false,
@@ -2491,7 +2524,7 @@ Deno.serve(async (request) => {
 
     return createJsonResponse({
       success: true,
-      provider: String(diagnostics.provider || 'gemini'),
+      provider: String(diagnostics.provider || 'openrouter'),
       provider_model: diagnostics.provider_model || null,
       edge_function_invoked: true,
       provider_request_attempted: diagnostics.provider_request_attempted,
@@ -2509,6 +2542,8 @@ Deno.serve(async (request) => {
       provider_parse_success?: boolean;
       provider_model?: string | null;
       provider_error_type?: string;
+      provider_finish_reason?: string | null;
+      provider_native_finish_reason?: string | null;
       fallback_from_provider?: string | null;
       fallback_from_provider_error_type?: string | null;
       fallback_from_provider_response_status?: number | null;
@@ -2519,12 +2554,14 @@ Deno.serve(async (request) => {
     return createJsonResponse({
       error: safeError.message,
       edge_function_invoked: true,
-      provider: diagnostics?.provider || 'gemini',
+      provider: diagnostics?.provider || 'openrouter',
       provider_model: diagnostics?.provider_model || null,
       provider_request_attempted: diagnostics?.provider_request_attempted ?? false,
       provider_response_status: diagnostics?.provider_response_status ?? null,
       provider_parse_success: diagnostics?.provider_parse_success ?? false,
       error_type: diagnostics?.provider_error_type || null,
+      provider_finish_reason: diagnostics?.provider_finish_reason || null,
+      provider_native_finish_reason: diagnostics?.provider_native_finish_reason || null,
       fallback_from_provider: diagnostics?.fallback_from_provider || null,
       fallback_from_provider_error_type: diagnostics?.fallback_from_provider_error_type || null,
       fallback_from_provider_response_status: diagnostics?.fallback_from_provider_response_status ?? null,

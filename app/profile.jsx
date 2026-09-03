@@ -15,7 +15,6 @@ import { AppButton } from '../src/components/ui/AppButton';
 import { AppIcon } from '../src/components/ui/AppIcon';
 import { DatePickerField } from '../src/components/ui/DatePickerField';
 import { StatusBanner } from '../src/components/ui/StatusBanner';
-import { DashboardSectionHeader } from '../src/components/ui/DashboardSectionHeader';
 import { AddressOptionSheet, AddressSelectField, SignupAddressSection } from '../src/components/auth/SignupAddressSection';
 import { DonorTopBar } from '../src/components/donor/DonorTopBar';
 import { LegalDocumentPreview } from '../src/components/legal/LegalDocumentPreview';
@@ -23,8 +22,7 @@ import { useProfileActions } from '../src/hooks/useProfileActions';
 import { useNotifications } from '../src/hooks/useNotifications';
 import { useAuth } from '../src/providers/AuthProvider';
 import { useLanguage } from '../src/providers/LanguageProvider';
-import { useTextSize } from '../src/providers/TextSizeProvider';
-import { resolveThemeRoles, theme } from '../src/design-system/theme';
+import { resolvePatientThemeRoles, resolveThemeRoles, theme } from '../src/design-system/theme';
 import { getPasswordStrengthMessage } from '../src/utils/passwordRules';
 import { logAppEvent } from '../src/utils/appErrors';
 import {
@@ -36,9 +34,8 @@ import {
 import { changePasswordSchema, profileUpdateSchema } from '../src/features/profile/profile.schema';
 import { donorDashboardNavItems, patientDashboardNavItems } from '../src/constants/dashboard';
 import {
-  ensureCertificatesForScannedEventDonations,
   fetchDonationCertificatesByUserId,
-  fetchHairSubmissionsByUserId,
+  fetchHairSubmissionProgressSummariesByUserId,
   hasDonationFlowProgress,
   isCompletedDonationSubmission,
 } from '../src/features/hairSubmission.api';
@@ -302,9 +299,8 @@ export default function ProfileScreen() {
   const { width, height: viewportHeight } = useWindowDimensions();
   const { resolvedTheme } = useAuth();
   const { language, setLanguage, supportedLanguages, t } = useLanguage();
-  const { textSize, setTextSize, textSizeOptions } = useTextSize();
   const isMobileViewport = width < 768;
-  const roles = resolveThemeRoles(resolvedTheme, { isMobile: isMobileViewport });
+  const baseRoles = resolveThemeRoles(resolvedTheme, { isMobile: isMobileViewport });
   const {
     user,
     profile,
@@ -321,14 +317,18 @@ export default function ProfileScreen() {
   } = useProfileActions();
   const normalizedRole = String(profile?.role || '').trim().toLowerCase();
   const resolvedRole = normalizedRole === 'patient' ? 'patient' : 'donor';
+  const roles = resolvedRole === 'patient'
+    ? resolvePatientThemeRoles(resolvedTheme, { isMobile: isMobileViewport })
+    : baseRoles;
   const { unreadCount } = useNotifications({ role: resolvedRole, userId: user?.id, databaseUserId: profile?.user_id });
-  const primaryTextColor = resolvedTheme?.primaryTextColor || theme.colors.textPrimary;
+  const primaryTextColor = resolvedRole === 'patient'
+    ? roles.headingText
+    : resolvedTheme?.primaryTextColor || theme.colors.textPrimary;
 
   const [mode, setMode] = useState('view');
   const [feedback, setFeedback] = useState(null);
   const [isLogoutConfirmationOpen, setIsLogoutConfirmationOpen] = useState(false);
   const [isLanguageModalOpen, setIsLanguageModalOpen] = useState(false);
-  const [isTextSizeModalOpen, setIsTextSizeModalOpen] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [passwordSuccess, setPasswordSuccess] = useState(false);
@@ -413,9 +413,10 @@ export default function ProfileScreen() {
         return;
       }
 
-      const submissionsResult = await fetchHairSubmissionsByUserId(user.id, 100);
-      await ensureCertificatesForScannedEventDonations(user.id, 100);
-      const certificatesResult = await fetchDonationCertificatesByUserId(user.id, 100);
+      const [submissionsResult, certificatesResult] = await Promise.all([
+        fetchHairSubmissionProgressSummariesByUserId(user.id, 100),
+        fetchDonationCertificatesByUserId(user.id, 100),
+      ]);
 
       if (!isMounted) return;
 
@@ -488,12 +489,12 @@ export default function ProfileScreen() {
   ];
   const profileEditFieldLabel = [styles.profileEditFieldLabel, { color: primaryTextColor }];
   const profileEditFieldText = [styles.profileEditFieldText, { color: primaryTextColor }];
-  const profileEditFieldPlaceholder = [styles.profileEditFieldText, { color: roles.metaText }];
+  const profileEditFieldPlaceholder = [styles.profileEditFieldText, { color: theme.colors.textMuted }];
   const profileEditFieldHelper = [styles.profileEditFieldHelper, { color: primaryTextColor }];
   const profileEditFieldError = [styles.profileEditFieldError];
   const profileEditInputProps = {
     variant: 'default',
-    placeholderTextColor: roles.metaText,
+    placeholderTextColor: theme.colors.textMuted,
     style: styles.profileEditFieldContainer,
     labelStyle: profileEditFieldLabel,
     shellStyle: profileEditFieldShell,
@@ -1075,14 +1076,6 @@ export default function ProfileScreen() {
           />
           <ProfileMoreRow
             roles={roles}
-            icon="format-size"
-            title={t('profile.textSize')}
-            subtitle={t(`textSize.${textSize}`)}
-            textColor={primaryTextColor}
-            onPress={() => setIsTextSizeModalOpen(true)}
-          />
-          <ProfileMoreRow
-            roles={roles}
             icon="bell-outline"
             title={t('profile.notifications')}
             subtitle={t('profile.notificationsSubtitle')}
@@ -1260,14 +1253,6 @@ export default function ProfileScreen() {
               textColor={primaryTextColor}
             />
             <ProfileMenuRow
-              icon="format-size"
-              title={t('profile.textSize')}
-              subtitle={t(`textSize.${textSize}`)}
-              onPress={() => setIsTextSizeModalOpen(true)}
-              roles={roles}
-              textColor={primaryTextColor}
-            />
-            <ProfileMenuRow
               icon="help-circle-outline"
               title={t('profile.helpGuide')}
               subtitle={t('profile.helpGuideSubtitle')}
@@ -1327,10 +1312,18 @@ export default function ProfileScreen() {
       >
         {role === 'donor' ? renderDonorProfileContent() : renderPatientProfileContent()}
 
-        <Modal transparent visible={isPopupVisible} animationType="fade" onRequestClose={handleModalClose}>
+        <Modal
+          transparent
+          statusBarTranslucent
+          navigationBarTranslucent
+          visible={isPopupVisible}
+          animationType="fade"
+          onRequestClose={handleModalClose}
+        >
           <KeyboardAvoidingView
             style={styles.modalKeyboardWrap}
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior="padding"
+            enabled={Platform.OS === 'ios'}
           >
             <View style={styles.modalOverlay}>
               <Pressable style={styles.modalBackdrop} onPress={handleModalClose} />
@@ -1338,11 +1331,17 @@ export default function ProfileScreen() {
               <AppCard
                 variant="elevated"
                 radius="md"
-                padding={mode === 'edit' ? 'none' : 'lg'}
-                style={[styles.modalCard, { maxHeight: modalMaxHeight }]}
+                padding={mode === 'edit' || mode === 'password' ? 'none' : 'lg'}
+                style={[
+                  styles.modalCard,
+                  mode === 'edit' ? styles.editProfileModalCard : null,
+                  mode === 'password' ? styles.passwordModalCard : null,
+                  { maxHeight: modalMaxHeight },
+                ]}
                 contentStyle={[
                   styles.modalCardContent,
                   mode === 'edit' ? styles.editModalCardContent : null,
+                  mode === 'password' ? styles.passwordModalCardContent : null,
                 ]}
               >
                 {mode === 'edit' ? (
@@ -1567,7 +1566,15 @@ export default function ProfileScreen() {
                                       placeholder="Search suffix"
                                       options={profileSuffixOptions}
                                       selectedValue={controllerField.value}
+                                      allowDeselect
                                       onClose={() => setActiveProfilePicker('')}
+                                      onClearSelection={() => {
+                                        profileForm.setValue('suffix', '', {
+                                          shouldDirty: true,
+                                          shouldTouch: true,
+                                          shouldValidate: true,
+                                        });
+                                      }}
                                       onSelect={(option) => {
                                         profileForm.setValue('suffix', option.value, {
                                           shouldDirty: true,
@@ -1679,33 +1686,57 @@ export default function ProfileScreen() {
 
                 {mode === 'password' ? (
                   <>
-                    <View style={styles.modalHeaderBlock}>
-                      <DashboardSectionHeader
-                        title="Change Password"
-                        description=""
-                        style={styles.sectionHeaderCompact}
-                        showAccent={false}
-                      />
-                    </View>
+                    <LinearGradient
+                      colors={role === 'patient'
+                        ? [theme.colors.dashboardPatientFrom, theme.colors.dashboardPatientTo]
+                        : [theme.colors.dashboardDonorFrom, theme.colors.dashboardDonorTo]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                      style={[
+                        styles.passwordModalHeader,
+                        { borderBottomColor: roles.primaryActionBackground },
+                      ]}
+                    >
+                      <View pointerEvents="none" style={styles.editModalHeaderGlow} />
+                      <View style={styles.passwordModalHeaderIcon}>
+                        <AppIcon name="lock-outline" size="md" color={roles.primaryActionText} />
+                      </View>
+                      <View style={styles.passwordModalHeaderCopy}>
+                        <Text style={[styles.passwordModalTitle, { color: roles.primaryActionText }]}>Change password</Text>
+                        <Text style={[styles.passwordModalSubtitle, { color: roles.primaryActionText }]}>Create a secure password for your account.</Text>
+                      </View>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="Close change password"
+                        onPress={handleModalClose}
+                        hitSlop={8}
+                        style={({ pressed }) => [
+                          styles.editModalCloseButton,
+                          { backgroundColor: 'rgba(255,255,255,0.16)', opacity: pressed ? 0.72 : 1 },
+                        ]}
+                      >
+                        <AppIcon name="close" size="sm" color={roles.primaryActionText} />
+                      </Pressable>
+                    </LinearGradient>
 
                     <ScrollView
-                      style={[styles.modalBodyScroll, { maxHeight: modalMaxHeight - 130 }]}
-                      contentContainerStyle={styles.modalBodyContent}
-                      showsVerticalScrollIndicator={true}
+                      style={[styles.passwordModalBodyScroll, { maxHeight: modalMaxHeight - 92 }]}
+                      contentContainerStyle={styles.passwordModalBodyContent}
+                      showsVerticalScrollIndicator={false}
                       keyboardShouldPersistTaps="handled"
                       keyboardDismissMode="interactive"
                       nestedScrollEnabled={true}
                     >
-                      <View style={styles.passwordMeterCard}>
+                      <View style={[styles.passwordMeterCard, { backgroundColor: roles.supportCardBackground }]}>
                         <View style={styles.passwordMeterHeader}>
                           <AppIcon
                             name={passwordStrengthVariant === 'success' ? 'success' : 'shield'}
-                            state={passwordStrengthVariant === 'success' ? 'success' : 'muted'}
+                            color={passwordStrengthVariant === 'success' ? theme.colors.textSuccess : roles.iconPrimaryColor}
                             size="sm"
                           />
-                          <Text style={styles.passwordMeterTitle}>Password strength</Text>
+                          <Text style={[styles.passwordMeterTitle, { color: roles.headingText }]}>Password strength</Text>
                         </View>
-                        <Text style={styles.passwordMeterMessage}>
+                        <Text style={[styles.passwordMeterMessage, { color: roles.bodyText }]}>
                           {watchedNewPassword
                             ? passwordStrengthMessage
                             : 'Use at least 8 characters with uppercase, lowercase, a number, and a special character.'}
@@ -1772,13 +1803,16 @@ export default function ProfileScreen() {
 
         <Modal
           transparent
+          statusBarTranslucent
+          navigationBarTranslucent
           visible={isGuardianConsentModalOpen}
           animationType="fade"
           onRequestClose={closeGuardianConsentModal}
         >
           <KeyboardAvoidingView
             style={styles.modalKeyboardWrap}
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            behavior="padding"
+            enabled={Platform.OS === 'ios'}
           >
             <View style={styles.modalOverlay}>
               <Pressable style={styles.modalBackdrop} onPress={closeGuardianConsentModal} />
@@ -1810,7 +1844,7 @@ export default function ProfileScreen() {
                 </LinearGradient>
 
                 <ScrollView
-                  style={[styles.guardianConsentBodyScroll, { maxHeight: modalMaxHeight - 236 }]}
+                  style={styles.guardianConsentBodyScroll}
                   contentContainerStyle={styles.guardianConsentBody}
                   showsVerticalScrollIndicator={true}
                   keyboardShouldPersistTaps="handled"
@@ -2073,120 +2107,6 @@ export default function ProfileScreen() {
                         <Text style={[styles.languageOptionTitle, { color: primaryTextColor }]}>{option.nativeLabel}</Text>
                         <Text numberOfLines={2} style={[styles.languageOptionSubtitle, { color: roles.metaText }]}>
                           {t(descriptionKey)}
-                        </Text>
-                      </View>
-                      <View
-                        style={[
-                          styles.languageRadio,
-                          { borderColor: selected ? roles.primaryActionBackground : roles.defaultCardBorder },
-                          selected ? { backgroundColor: roles.primaryActionBackground } : null,
-                        ]}
-                      >
-                        {selected ? <AppIcon name="checkmark" size="sm" color={roles.primaryActionText} /> : null}
-                      </View>
-                    </View>
-                  </Pressable>
-                );
-              })}
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      <Modal
-        transparent
-        visible={isTextSizeModalOpen}
-        animationType="fade"
-        onRequestClose={() => setIsTextSizeModalOpen(false)}
-        statusBarTranslucent
-      >
-        <View style={styles.languageModalOverlay}>
-          <Pressable
-            accessibilityLabel={t('common.close')}
-            onPress={() => setIsTextSizeModalOpen(false)}
-            style={styles.languageModalBackdrop}
-          />
-          <View
-            accessibilityViewIsModal
-            style={[
-              styles.languageModalCard,
-              { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder },
-            ]}
-          >
-            <LinearGradient
-              pointerEvents="none"
-              colors={[roles.primaryActionBackground, theme.colors.palette.wine700]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
-              style={styles.languageModalAccent}
-            />
-            <View style={styles.languageModalHeader}>
-              <View style={[styles.languageModalHeaderIcon, { backgroundColor: roles.iconPrimarySurface }]}>
-                <AppIcon name="format-size" size="lg" color={roles.primaryActionBackground} />
-              </View>
-              <View style={styles.languageModalHeaderCopy}>
-                <Text style={[styles.languageModalTitle, { color: primaryTextColor }]}>{t('textSize.title')}</Text>
-                <Text style={[styles.languageModalSubtitle, { color: roles.metaText }]}>{t('textSize.subtitle')}</Text>
-              </View>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={t('common.close')}
-                hitSlop={8}
-                onPress={() => setIsTextSizeModalOpen(false)}
-                style={[styles.languageModalClose, { backgroundColor: roles.iconPrimarySurface }]}
-              >
-                <AppIcon name="close" size="sm" color={roles.primaryActionBackground} />
-              </Pressable>
-            </View>
-
-            <View style={styles.languageOptionList}>
-              {textSizeOptions.map((option) => {
-                const selected = textSize === option.code;
-                return (
-                  <Pressable
-                    key={option.code}
-                    accessibilityRole="radio"
-                    accessibilityState={{ selected }}
-                    onPress={() => {
-                      void setTextSize(option.code);
-                      void Haptics.selectionAsync();
-                    }}
-                    style={({ pressed }) => [
-                      styles.languageOptionPressable,
-                      pressed ? styles.pressed : null,
-                    ]}
-                  >
-                    <View
-                      style={[
-                        styles.languageOptionSurface,
-                        {
-                          backgroundColor: selected ? roles.iconPrimarySurface : roles.pageBackground,
-                          borderColor: selected ? roles.primaryActionBackground : roles.defaultCardBorder,
-                        },
-                      ]}
-                    >
-                      <View
-                        style={[
-                          styles.textSizePreview,
-                          { backgroundColor: selected ? roles.primaryActionBackground : roles.supportCardBackground },
-                        ]}
-                      >
-                        <Text
-                          maxFontSizeMultiplier={1}
-                          style={[
-                            styles.textSizePreviewText,
-                            { color: selected ? roles.primaryActionText : roles.headingText },
-                            option.code === 'large' ? styles.textSizePreviewTextLarge : null,
-                            option.code === 'maximum' ? styles.textSizePreviewTextMaximum : null,
-                          ]}
-                        >
-                          Aa
-                        </Text>
-                      </View>
-                      <View style={styles.languageOptionCopy}>
-                        <Text style={[styles.languageOptionTitle, { color: primaryTextColor }]}>{t(`textSize.${option.code}`)}</Text>
-                        <Text style={[styles.languageOptionSubtitle, { color: roles.metaText }]}>
-                          {t(`textSize.${option.code}Description`)}
                         </Text>
                       </View>
                       <View
@@ -2763,6 +2683,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFF8F9',
   },
   profileVersionText: {
+    width: '100%',
+    textAlign: 'center',
+    alignSelf: 'center',
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.semantic.caption,
     fontWeight: theme.typography.weights.semibold,
@@ -3373,9 +3296,6 @@ const styles = StyleSheet.create({
   sectionHeader: {
     marginBottom: theme.spacing.lg,
   },
-  sectionHeaderCompact: {
-    marginBottom: theme.spacing.md,
-  },
   actionList: {
     gap: theme.spacing.sm,
   },
@@ -3636,13 +3556,18 @@ const styles = StyleSheet.create({
   },
   modalCard: {
     width: '100%',
-    height: '100%',
     alignSelf: 'center',
     maxWidth: theme.layout.authCardMaxWidth,
     borderRadius: 18,
     minHeight: 0,
     overflow: 'hidden',
     flexShrink: 1,
+  },
+  editProfileModalCard: {
+    height: '100%',
+  },
+  passwordModalCard: {
+    borderRadius: 26,
   },
   modalCardContent: {
     minHeight: 0,
@@ -3787,17 +3712,61 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.semantic.bodySm,
     fontWeight: theme.typography.weights.bold,
   },
-  modalHeaderBlock: {
+  passwordModalCardContent: {
+    minHeight: 0,
+    overflow: 'hidden',
+  },
+  passwordModalHeader: {
+    minHeight: 88,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.md,
+    borderBottomWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    overflow: 'hidden',
     flexShrink: 0,
   },
-  modalBodyScroll: {
-    minHeight: 0,
+  passwordModalHeaderIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.20)',
+    flexShrink: 0,
   },
-  modalBodyContent: {
-    paddingBottom: theme.spacing.giant,
+  passwordModalHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  passwordModalTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.titleSm,
+    fontWeight: theme.typography.weights.bold,
+    lineHeight: 24,
+  },
+  passwordModalSubtitle: {
+    marginTop: 2,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 16,
+    opacity: 0.82,
+  },
+  passwordModalBodyScroll: {
+    minHeight: 0,
+    flexGrow: 0,
+  },
+  passwordModalBodyContent: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.lg,
+    paddingBottom: theme.spacing.lg,
   },
   guardianConsentModalCard: {
     width: '100%',
+    height: '100%',
     alignSelf: 'center',
     maxWidth: theme.layout.authCardMaxWidth,
     borderRadius: 28,
@@ -3807,6 +3776,7 @@ const styles = StyleSheet.create({
     ...theme.shadows.card,
   },
   guardianConsentModalContent: {
+    flex: 1,
     minHeight: 0,
     overflow: 'hidden',
   },
@@ -3818,6 +3788,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: theme.spacing.lg,
     paddingVertical: theme.spacing.lg,
     overflow: 'hidden',
+    flexShrink: 0,
   },
   guardianConsentHeaderGlow: {
     position: 'absolute',
@@ -3863,6 +3834,7 @@ const styles = StyleSheet.create({
     opacity: 0.82,
   },
   guardianConsentBodyScroll: {
+    flex: 1,
     minHeight: 0,
   },
   guardianConsentBody: {
@@ -4021,6 +3993,7 @@ const styles = StyleSheet.create({
     paddingTop: theme.spacing.md,
     paddingBottom: theme.spacing.lg,
     borderTopWidth: 1,
+    flexShrink: 0,
   },
   documentModal: {
     flex: 1,
@@ -4194,25 +4167,6 @@ const styles = StyleSheet.create({
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.semantic.caption,
     lineHeight: 17,
-  },
-  textSizePreview: {
-    width: 48,
-    height: 48,
-    borderRadius: 15,
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-  },
-  textSizePreviewText: {
-    fontFamily: theme.typography.fontFamilyDisplay,
-    fontSize: theme.typography.semantic.bodySm,
-    fontWeight: theme.typography.weights.bold,
-  },
-  textSizePreviewTextLarge: {
-    fontSize: 17,
-  },
-  textSizePreviewTextMaximum: {
-    fontSize: 19,
   },
   languageRadio: {
     width: 28,

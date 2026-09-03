@@ -27,7 +27,7 @@ import { useNotifications } from '../../hooks/useNotifications';
 import { useDonorHairSubmission } from '../../hooks/useDonorHairSubmission';
 import { fetchRegisteredDonationDrivesByUserId } from '../../features/donorHome.api';
 import {
-  fetchHairSubmissionsByUserId,
+  fetchAiScreeningsByUserId,
 } from '../../features/hairSubmission.api';
 import { invalidateHairAnalysisHomeCache } from '../../features/hairAnalysisHomeCache';
 import {
@@ -40,6 +40,7 @@ import {
 import { hairAnalyzerQuestionChoices, hairSubmissionImageTypes } from '../../features/hairSubmission.constants';
 import { buildProfileCompletionMeta } from '../../features/profile/services/profile.service';
 import { validateHairPhotosBeforeAnalysis } from '../../features/photoPreflight.service';
+import { checkHairCaptureAccessories } from '../../features/hairCaptureAccessory.service';
 import { logAppEvent } from '../../utils/appErrors';
 import { resolveEstimatedLengthCm } from '../../utils/hairLength';
 
@@ -141,17 +142,6 @@ const buildRetakeSlotIndexes = ({ validation = null, requiredViews = [] }) => {
     ...details.flatMap((detail) => [detail?.viewKey, detail?.viewLabel, detail?.error]),
   ].filter(Boolean).join(' '));
 
-  if (
-    combinedText.includes('retake all')
-    || combinedText.includes('all required views')
-    || combinedText.includes('front, left side, right side, scalp, hair ends, and back hair')
-    || combinedText.includes('same person')
-    || combinedText.includes('same current hair')
-    || combinedText.includes('do not match')
-  ) {
-    return new Set(requiredViews.map((_view, index) => index));
-  }
-
   const retakeIndexes = new Set();
   details.forEach((detail) => {
     const detailText = normalizePhotoReviewText([
@@ -175,6 +165,19 @@ const buildRetakeSlotIndexes = ({ validation = null, requiredViews = [] }) => {
         retakeIndexes.add(index);
       }
     });
+  }
+
+  if (retakeIndexes.size) return retakeIndexes;
+
+  if (
+    combinedText.includes('retake all')
+    || combinedText.includes('all required views')
+    || combinedText.includes('front, left side, right side, scalp, hair ends, and back hair')
+    || combinedText.includes('same person')
+    || combinedText.includes('same current hair')
+    || combinedText.includes('do not match')
+  ) {
+    return new Set(requiredViews.map((_view, index) => index));
   }
 
   return retakeIndexes;
@@ -228,6 +231,12 @@ const formatScheduleDateLabel = (dateValue, startTime = '', endTime = '') => {
 void formatScheduleDateLabel;
 
 const isSideProfileView = (view = {}) => String(view?.key || view?.label || '').toLowerCase().includes('side');
+const getRequiredSideDirection = (view = {}) => {
+  const value = String(view?.key || view?.label || '').toLowerCase();
+  if (value.includes('right')) return 'right';
+  if (value.includes('left') || value.includes('side_profile')) return 'left';
+  return '';
+};
 const isHairScalpView = (view = {}) => {
   const value = String(view?.key || view?.label || '').toLowerCase();
   return value.includes('scalp') || value.includes('crown');
@@ -316,7 +325,8 @@ const resolveLiveFaceStatus = (faces = [], view = null) => {
   const width = Number(bounds.width || 0);
   const height = Number(bounds.height || 0);
   const rollAngle = Math.abs(Number(face.rollAngle || 0));
-  const yawAngle = Math.abs(Number(face.yawAngle || 0));
+  const signedYawAngle = Number(face.yawAngle || 0);
+  const yawAngle = Math.abs(signedYawAngle);
 
   if (!expectsFace) {
     return {
@@ -348,6 +358,8 @@ const resolveLiveFaceStatus = (faces = [], view = null) => {
   }
 
   if (expectsSideProfile) {
+    const requiredDirection = getRequiredSideDirection(view);
+
     if (yawAngle < 18) {
       return {
         valid: false,
@@ -357,10 +369,35 @@ const resolveLiveFaceStatus = (faces = [], view = null) => {
       };
     }
 
+    // ML Kit reports Euler-Y against the processed image: a positive value
+    // points toward the image's right. For a person facing the camera that is
+    // their left turn; the front-camera preview may display it mirrored.
+    // Do not use abs(yaw) alone or both guided slots accept either pose.
+    const isFacingRequiredDirection = requiredDirection === 'left'
+      ? signedYawAngle >= 18
+      : requiredDirection === 'right'
+        ? signedYawAngle <= -18
+        : true;
+
+    if (!isFacingRequiredDirection) {
+      return {
+        valid: false,
+        faceCount: 1,
+        yawAngle: signedYawAngle,
+        expectedDirection: requiredDirection,
+        directionCorrect: false,
+        message: `You are facing the wrong side. Turn your head to the ${requiredDirection} before capture.`,
+        tone: 'warning',
+      };
+    }
+
     return {
       valid: true,
       faceCount: 1,
-      message: 'Side profile detected. Keep hair length and ends visible.',
+      yawAngle: signedYawAngle,
+      expectedDirection: requiredDirection,
+      directionCorrect: true,
+      message: `${viewLabel} detected. Keep hair length and ends visible.`,
       tone: 'success',
     };
   }
@@ -385,7 +422,6 @@ const resolveLiveFaceStatus = (faces = [], view = null) => {
 const clampPercent = (value) => Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
 
 const buildLiveScanStatus = ({
-  autoCaptureEnabled = false,
   brightness = -1,
   completedPhotoCount = 0,
   currentPhoto = null,
@@ -412,22 +448,11 @@ const buildLiveScanStatus = ({
 
   if (isCapturing) {
     return {
-      conditionLabel: 'Saving...',
-      instruction: 'Capturing automatically...',
-      lengthLabel: 'Capturing',
+      conditionLabel: 'Checking photo...',
+      instruction: 'Checking the photo before accepting it...',
+      lengthLabel: 'Checking',
       progress: 100,
-      statusLabel: 'Capturing...',
-      typeLabel: viewLabel,
-    };
-  }
-
-  if (autoCaptureEnabled) {
-    return {
-      conditionLabel: 'Ready',
-      instruction: 'Hold still. Auto capture will run now...',
-      lengthLabel: 'Ready',
-      progress: 96,
-      statusLabel: 'Auto ready',
+      statusLabel: 'Checking photo...',
       typeLabel: viewLabel,
     };
   }
@@ -521,12 +546,18 @@ const hasScalpCoverageConcern = (analysis = {}) => (
 );
 
 const isPhotoRetakeErrorState = (errorState = null) => {
+  if (errorState?.analysisRetryRequired === true) return false;
+  if (errorState?.photoVerificationRequired === true) return true;
+  if (errorState?.photoRetakeRequired === true) return true;
+
+  const errorType = String(errorState?.errorType || '').trim().toLowerCase();
+  if (['incomplete_response', 'insufficient_detail', 'empty_response', 'invalid_response'].includes(errorType)) return false;
+
   const title = String(errorState?.title || '').toLowerCase();
   const message = String(errorState?.message || '').toLowerCase();
   const combined = `${title} ${message}`;
   return (
     combined.includes('retake')
-    || combined.includes('photo')
     || combined.includes('clearer')
     || combined.includes('multiple subject')
     || combined.includes('person not detected')
@@ -1204,12 +1235,9 @@ const FILIPINO_CAMERA_COPY = {
   'Photo ready': 'Handa na ang larawan',
   'AI analyzing': 'Sinusuri ng AI',
   'Capturing...': 'Kinukunan...',
-  'Auto ready': 'Handa ang auto capture',
   'Scanning...': 'Ini-scan...',
   'More light': 'Dagdagan ang ilaw',
   'Photo captured': 'Nakuha na ang larawan',
-  'Capturing automatically...': 'Awtomatikong kinukunan...',
-  'Hold still. Auto capture will run now...': 'Huwag gumalaw. Magsisimula na ang auto capture...',
   'Center your face and hair.': 'Ipagitna ang iyong mukha at buhok.',
   'Move near bright, even lighting.': 'Lumipat sa maliwanag at pantay na ilaw.',
   'Hold still...': 'Huwag gumalaw...',
@@ -1724,11 +1752,11 @@ function DonationRequirementsIntroModal({
 }
 
 function LiveHairCameraPanel({
-  autoCaptureEnabled,
-  autoCaptureCountdown,
   cameraFacing,
   currentView,
   currentPhoto,
+  captureValidationStatus,
+  pendingCapturePreviewUri,
   flashMode,
   requiredViews,
   completedPhotoCount,
@@ -1736,6 +1764,8 @@ function LiveHairCameraPanel({
   cameraRef,
   liveScanStatus,
   liveFaceStatus,
+  cameraError,
+  accessoryCheckNotice,
   canUseNativeLiveCamera,
   isCapturing,
   isUploading,
@@ -1749,6 +1779,7 @@ function LiveHairCameraPanel({
   onRequestPermission,
   onFacesChange,
   onCameraError,
+  onDismissAccessoryCheckNotice,
   onVoiceCaptureStateChange,
   roles,
 }) {
@@ -1784,7 +1815,26 @@ function LiveHairCameraPanel({
   const hairDisplayTip = localizedCurrentView?.displayTip || (isFilipino ? 'Ilugay, ipagitna, at tiyaking maliwanag ang buhok.' : 'Keep hair loose, centered, and well lit.');
   const currentTutorialTips = Array.isArray(localizedCurrentView?.tutorialTips) ? localizedCurrentView.tutorialTips.slice(0, 2) : [];
   const currentViewKey = currentView?.key || currentView?.label || '';
-  const activeCaptureCountdown = voiceCountdown || autoCaptureCountdown;
+  const previewPhotoUri = currentPhoto?.uri || pendingCapturePreviewUri || '';
+  const activeCaptureCountdown = voiceCountdown;
+  const viewRequiresPoseCheck = requiresFaceVerification(currentView);
+  // When the native scanner is available, its red/invalid state blocks every
+  // capture view (including low-light failures on non-face views).
+  const isCapturePoseReady = canUseNativeLiveCamera
+    ? liveFaceStatus?.valid === true
+    : !viewRequiresPoseCheck;
+  const isCaptureButtonDisabled = Boolean(
+    isCapturing
+    || isUploading
+    || isAnalyzing
+    || activeCaptureCountdown > 0
+    || !isCapturePoseReady
+  );
+  const effectiveCameraError = cameraError || (
+    viewRequiresPoseCheck && !canUseNativeLiveCamera
+      ? 'Live face-direction checking requires the Donivra development build. It is not available in Expo Go.'
+      : ''
+  );
   const voiceCaptureEnabledRef = useRef(false);
   const voiceRecognitionActiveRef = useRef(false);
   const voiceRecognitionStartingRef = useRef(false);
@@ -1793,11 +1843,11 @@ function LiveHairCameraPanel({
   const voiceRestartTimeoutRef = useRef(null);
   const currentPhotoUriRef = useRef(currentPhoto?.uri || '');
   const voiceCaptureBlockedRef = useRef(false);
-  const autoCaptureCountdownRef = useRef(autoCaptureCountdown);
+  const capturePoseReadyRef = useRef(isCapturePoseReady);
 
   currentPhotoUriRef.current = currentPhoto?.uri || '';
-  voiceCaptureBlockedRef.current = Boolean(isCapturing || isUploading || isAnalyzing);
-  autoCaptureCountdownRef.current = autoCaptureCountdown;
+  capturePoseReadyRef.current = isCapturePoseReady;
+  voiceCaptureBlockedRef.current = Boolean(isCapturing || isUploading || isAnalyzing || !isCapturePoseReady);
 
   const clearVoiceRestartTimer = React.useCallback(() => {
     if (!voiceRestartTimeoutRef.current) return;
@@ -1845,9 +1895,12 @@ function LiveHairCameraPanel({
     }
   }, [clearVoiceRestartTimer, language, speechLanguage]);
 
-  const runVoiceCaptureCountdown = React.useCallback(async () => {
+  const runCaptureCountdown = React.useCallback(async (captureSource = 'manual') => {
     if (voiceCountdownActiveRef.current || currentPhotoUriRef.current || voiceCaptureBlockedRef.current) return;
-    if (autoCaptureCountdownRef.current > 0) return;
+    if (!capturePoseReadyRef.current) {
+      setVoiceCaptureStatus(liveFaceStatus?.message || 'Align with the requested view before capture');
+      return;
+    }
 
     voiceCountdownActiveRef.current = true;
     onVoiceCaptureStateChange?.(true);
@@ -1895,10 +1948,15 @@ function LiveHairCameraPanel({
 
     await new Promise((resolve) => setTimeout(resolve, 180));
     for (const count of [3, 2, 1]) {
-      if (voiceCountdownSessionRef.current !== countdownSession || currentPhotoUriRef.current) {
+      if (
+        voiceCountdownSessionRef.current !== countdownSession
+        || currentPhotoUriRef.current
+        || !capturePoseReadyRef.current
+      ) {
         voiceCountdownActiveRef.current = false;
         onVoiceCaptureStateChange?.(false);
         setVoiceCountdown(0);
+        setVoiceCaptureStatus(liveFaceStatus?.message || 'Align with the requested view before capture');
         return;
       }
       setVoiceCountdown(count);
@@ -1909,16 +1967,21 @@ function LiveHairCameraPanel({
       ]);
     }
 
-    if (voiceCountdownSessionRef.current !== countdownSession || currentPhotoUriRef.current) {
+    if (
+      voiceCountdownSessionRef.current !== countdownSession
+      || currentPhotoUriRef.current
+      || !capturePoseReadyRef.current
+    ) {
       voiceCountdownActiveRef.current = false;
       onVoiceCaptureStateChange?.(false);
       setVoiceCountdown(0);
+      setVoiceCaptureStatus(liveFaceStatus?.message || 'Align with the requested view before capture');
       return;
     }
     setVoiceCountdown(0);
     setVoiceCaptureStatus('Taking photo');
     try {
-      await onCapture?.();
+      await onCapture?.(captureSource);
     } catch (_voiceCaptureError) {
       setVoiceCaptureStatus('Photo failed. Say "capture" to retry');
     } finally {
@@ -1933,7 +1996,7 @@ function LiveHairCameraPanel({
         startVoiceListening();
       }
     }, 900);
-  }, [clearVoiceRestartTimer, onCapture, onVoiceCaptureStateChange, speechLanguage, startVoiceListening]);
+  }, [clearVoiceRestartTimer, liveFaceStatus?.message, onCapture, onVoiceCaptureStateChange, speechLanguage, startVoiceListening]);
 
   const handleToggleVoiceCapture = React.useCallback(async () => {
     if (voiceCaptureEnabledRef.current) {
@@ -1992,7 +2055,7 @@ function LiveHairCameraPanel({
       const heardCaptureCommand = (event?.results || []).some((result) => (
         /\b(capture|take (?:a |the )?(?:photo|picture)|kuha|kumuha(?: ng litrato)?|kunan mo)\b/i.test(String(result?.transcript || ''))
       ));
-      if (heardCaptureCommand) runVoiceCaptureCountdown();
+      if (heardCaptureCommand) runCaptureCountdown('voice');
     });
     const errorSubscription = NativeSpeechRecognition.addListener('error', (event) => {
       voiceRecognitionActiveRef.current = false;
@@ -2040,7 +2103,7 @@ function LiveHairCameraPanel({
       errorSubscription.remove();
       endSubscription.remove();
     };
-  }, [clearVoiceRestartTimer, runVoiceCaptureCountdown, startVoiceListening]);
+  }, [clearVoiceRestartTimer, runCaptureCountdown, startVoiceListening]);
 
   useEffect(() => {
     if (currentPhoto?.uri) {
@@ -2145,18 +2208,63 @@ function LiveHairCameraPanel({
         visible={isInstructionPopupVisible}
         onClose={() => setIsInstructionPopupVisible(false)}
       />
+      <Modal
+        transparent
+        visible={Boolean(accessoryCheckNotice)}
+        animationType="fade"
+        presentationStyle="overFullScreen"
+        statusBarTranslucent
+        onRequestClose={onDismissAccessoryCheckNotice}
+      >
+        <View style={styles.photoValidationModalOverlay}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Close accessory check"
+            onPress={onDismissAccessoryCheckNotice}
+            style={styles.photoValidationModalBackdrop}
+          />
+          <View style={styles.photoValidationModalCard}>
+            <LinearGradient
+              colors={[theme.colors.dashboardDonorFrom, theme.colors.dashboardDonorTo]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.photoValidationModalHeader}
+            >
+              <View style={styles.photoValidationModalIcon}>
+                <MaterialCommunityIcons name="shield-alert-outline" size={26} color={theme.colors.textOnBrand} />
+              </View>
+              <View style={styles.photoValidationModalHeadingCopy}>
+                <Text style={styles.photoValidationModalTitle}>
+                  {accessoryCheckNotice?.title || 'Remove Your Accessory'}
+                </Text>
+              </View>
+            </LinearGradient>
+            <View style={styles.photoValidationModalContent}>
+              <Text style={styles.photoValidationModalMessage}>
+                {accessoryCheckNotice?.message || 'Remove the visible accessory, then take this photo again.'}
+              </Text>
+              <AppButton
+                title="Try again"
+                onPress={onDismissAccessoryCheckNotice}
+                trailing={<MaterialCommunityIcons name="camera-retake-outline" size={19} color={theme.colors.textOnBrand} />}
+                fullWidth
+              />
+            </View>
+          </View>
+        </View>
+      </Modal>
       <View style={[styles.liveCameraStage, { width: '100%', height: cameraStageHeight }]}>
-        {currentPhoto?.uri ? (
+        {previewPhotoUri ? (
           <View style={styles.liveCapturedPreview}>
             <Image
-              source={{ uri: currentPhoto.uri }}
+              source={{ uri: previewPhotoUri }}
               style={styles.liveCapturedPreviewBackdrop}
               resizeMode="cover"
               blurRadius={14}
             />
             <View pointerEvents="none" style={styles.liveCapturedPreviewScrim} />
             <Image
-              source={{ uri: currentPhoto.uri }}
+              source={{ uri: previewPhotoUri }}
               style={styles.liveCapturedPreviewImage}
               resizeMode="contain"
             />
@@ -2211,6 +2319,12 @@ function LiveHairCameraPanel({
             <Text style={styles.liveStatusText}>
               {isAnalyzing
                 ? getLocalizedCameraCopy('AI analyzing', language)
+                : isCapturing
+                  ? 'Checking photo - not accepted yet'
+                : currentPhoto?.uri && captureValidationStatus === 'pending'
+                  ? 'Validating in background'
+                : currentPhoto?.uri && captureValidationStatus === 'passed'
+                  ? 'Photo verified'
                 : activeCaptureCountdown > 0
                   ? getLocalizedCameraCopy(`Capturing in ${activeCaptureCountdown}`, language)
                   : getLocalizedCameraCopy(liveScanStatus.statusLabel, language)}
@@ -2219,7 +2333,7 @@ function LiveHairCameraPanel({
           <View style={styles.liveCameraTopActions}>
             <Pressable
               onPress={onToggleFlash}
-              disabled={Boolean(isCapturing || isUploading || isAnalyzing || currentPhoto?.uri)}
+              disabled={Boolean(isCapturing || isUploading || isAnalyzing || previewPhotoUri)}
               style={styles.liveCameraOverlayIcon}
               accessibilityRole="button"
               accessibilityLabel={flashMode === 'on'
@@ -2231,7 +2345,7 @@ function LiveHairCameraPanel({
           </View>
         </View>
 
-        {!currentPhoto ? (
+        {!previewPhotoUri ? (
           <View style={styles.liveFrameGuide} pointerEvents="none">
             <Animated.View style={[styles.liveScanLine, scanLineStyle]} />
             {activeCaptureCountdown > 0 ? (
@@ -2303,6 +2417,12 @@ function LiveHairCameraPanel({
             </View>
           ) : null}
         </View>
+        {!currentPhoto?.uri && effectiveCameraError ? (
+          <View style={styles.liveCameraErrorNotice}>
+            <MaterialCommunityIcons name="alert-circle-outline" size={17} color={theme.colors.textError} />
+            <Text style={styles.liveCameraErrorNoticeText}>{effectiveCameraError}</Text>
+          </View>
+        ) : null}
         {!currentPhoto ? (
           <>
             <Pressable
@@ -2359,13 +2479,14 @@ function LiveHairCameraPanel({
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={isFilipino ? 'Kumuha ng larawan' : 'Capture photo'}
-              onPress={hasCameraPermission ? onCapture : onRequestPermission}
-              disabled={isCapturing || isUploading || isAnalyzing || activeCaptureCountdown > 0}
+              accessibilityState={{ disabled: isCaptureButtonDisabled }}
+              onPress={hasCameraPermission ? () => runCaptureCountdown('manual') : onRequestPermission}
+              disabled={isCaptureButtonDisabled}
               style={[
                 styles.liveCaptureButton,
                 { borderColor: roles.primaryActionBackground, backgroundColor: roles.defaultCardBackground },
-                autoCaptureEnabled ? styles.liveCaptureButtonReady : null,
-                (isCapturing || isAnalyzing) ? styles.liveCaptureButtonDisabled : null,
+                isCapturePoseReady ? styles.liveCaptureButtonReady : null,
+                isCaptureButtonDisabled ? styles.liveCaptureButtonDisabled : null,
               ]}
             >
               {isCapturing ? <ActivityIndicator color={roles.primaryActionBackground} /> : null}
@@ -2424,8 +2545,12 @@ function LiveHairCameraPanel({
                 { backgroundColor: roles.primaryActionBackground, borderColor: roles.primaryActionBackground },
               ]}
             >
-              <Text numberOfLines={1} style={[styles.livePreviewPrimaryText, { color: roles.primaryActionText }]}>{isFilipino ? 'Gamitin' : 'Use photo'}</Text>
-              <AppIcon name="check" size="sm" color={roles.primaryActionText} />
+              <Text numberOfLines={1} style={[styles.livePreviewPrimaryText, { color: roles.primaryActionText }]}>
+                {captureValidationStatus === 'pending'
+                  ? (isFilipino ? 'Susunod habang sinusuri' : 'Next while checking')
+                  : (isFilipino ? 'Gamitin' : 'Use photo')}
+              </Text>
+              <AppIcon name={captureValidationStatus === 'pending' ? 'arrow-right' : 'check'} size="sm" color={roles.primaryActionText} />
             </View>
           </Pressable>
         </View>
@@ -2585,6 +2710,7 @@ function ReviewPhotoThumbnail({ photo, size = 104, onPreview }) {
 function PreAnalysisPhotoReview({
   photos = [],
   requiredViews = [],
+  captureValidationBySlot = {},
   cardBackground,
   isAnalyzing = false,
   isSaving = false,
@@ -2592,9 +2718,12 @@ function PreAnalysisPhotoReview({
   validation = null,
   onPreview,
   onRetake,
+  onRetryValidation,
   onRunAnalysis,
 }) {
   const { width: viewportWidth } = useWindowDimensions();
+  const [isValidationModalVisible, setIsValidationModalVisible] = useState(false);
+  const lastPresentedValidationRef = useRef('');
   const isNarrowReview = viewportWidth < 370;
   const reviewPhotoSize = Math.max(
     76,
@@ -2606,35 +2735,103 @@ function PreAnalysisPhotoReview({
     ? validation.message
     : validation?.message?.message || '';
   const validationFailed = Boolean(validation && validation.ok === false);
-  const validationDetails = Array.isArray(validation?.details) ? validation.details : [];
+  const allowedAccessories = Array.isArray(validation?.allowedAccessories)
+    ? validation.allowedAccessories.filter((finding) => finding?.accepted && !finding?.blocksRequiredHair)
+    : [];
+  const blockingAccessories = Array.isArray(validation?.accessoryFindings)
+    ? validation.accessoryFindings.filter((finding) => finding?.blocksRequiredHair)
+    : [];
+  const hasAllowedAccessories = validation?.ok === true && allowedAccessories.length > 0;
+  const visualVerificationComplete = Boolean(
+    validation?.ok === true
+    && validation?.visualScreeningCompleted === true
+    && validation?.accessoriesDetected === false
+    && String(validation?.hairAuthenticityStatus || '').trim().toLowerCase() === 'likely_natural'
+    && validation?.sameSubjectVerified === true
+    && validation?.verificationToken
+  );
+  const differentFacesDetected = validationFailed && validation?.differentFacesDetected === true;
+  const faceMismatchViews = Array.isArray(validation?.faceMismatchViews)
+    ? [...new Set(validation.faceMismatchViews.map((view) => (
+        String(view || '').replace(/ photo$/i, '').trim()
+      )).filter(Boolean))]
+    : [];
+  const faceMismatchViewText = faceMismatchViews.length
+    ? faceMismatchViews.join(' and ')
+    : 'the highlighted face photos';
+  const validationRetryable = validationFailed && validation?.retryable === true;
   const retakeSlotIndexes = buildRetakeSlotIndexes({ validation, requiredViews });
-  const uniqueValidationDetails = validationDetails.filter((detail, index, collection) => {
-    const viewLabel = String(detail?.viewLabel || '').trim().toLowerCase();
-    const errorText = String(detail?.error || '').trim().toLowerCase();
-    if (!errorText) return false;
-    return collection.findIndex((entry) => (
-      String(entry?.viewLabel || '').trim().toLowerCase() === viewLabel
-      && String(entry?.error || '').trim().toLowerCase() === errorText
-    )) === index;
-  });
-  const validationSummaryText = validationFailed && uniqueValidationDetails.length
-    ? uniqueValidationDetails.length === 1
-      ? 'Retake required for 1 photo.'
-      : `Retake required for ${uniqueValidationDetails.length} photos.`
-    : '';
   const statusText = isValidating
     ? 'Checking photos...'
-    : validationSummaryText || validationMessage || `${readyCount}/${requiredViews.length} photos ready`;
+    : validationFailed
+      ? validationRetryable
+        ? 'Photo verification needs another try'
+        : 'Some photos need your attention'
+      : validationMessage || `${readyCount}/${requiredViews.length} photos ready`;
   const accessoriesDetected = validation?.accessoriesDetected;
   const hairAuthenticityStatus = String(validation?.hairAuthenticityStatus || '').trim().toLowerCase();
+  const acceptedAccessoryNames = [...new Set(allowedAccessories.map((finding) => finding.accessory).filter(Boolean))];
+  const acceptedAccessoryViews = [...new Set(allowedAccessories.map((finding) => (
+    String(finding.viewLabel || '').replace(/ photo$/i, '').trim()
+  )).filter(Boolean))];
+  const acceptedAccessoryLabel = acceptedAccessoryNames.length
+    ? acceptedAccessoryNames.join(' and ')
+    : 'An accessory';
+  const acceptedAccessoryViewLabel = acceptedAccessoryViews.length
+    ? ` in your ${acceptedAccessoryViews.join(' and ')}`
+    : '';
+  const blockingAccessoryNames = [...new Set(blockingAccessories.map((finding) => finding.accessory).filter(Boolean))];
+  const blockingAccessoryViews = [...new Set(blockingAccessories.map((finding) => (
+    String(finding.viewLabel || '').replace(/ photo$/i, '').trim()
+  )).filter(Boolean))];
+  const blockingAccessoryLabel = blockingAccessoryNames.length
+    ? blockingAccessoryNames.join(' and ').toLowerCase()
+    : 'the accessory';
+  const blockingAccessoryViewLabel = blockingAccessoryViews.length
+    ? ` from your ${blockingAccessoryViews.join(' and ')}`
+    : '';
+  const blockingAccessoryCoverageText = blockingAccessoryNames.length > 1
+    ? 'they cover'
+    : 'it covers';
+  const validationModalTitle = hasAllowedAccessories
+    ? 'Accessory accepted'
+    : differentFacesDetected
+      ? 'Photos do not match'
+      : validationRetryable
+        ? 'Photo check unavailable'
+        : accessoriesDetected === true
+          ? 'Remove hair covering'
+          : hairAuthenticityStatus === 'possible_wig_or_extensions'
+            ? 'Show your natural hair'
+            : 'Review your photos';
+  const validationModalMessage = hasAllowedAccessories
+    ? `The accessory check found ${acceptedAccessoryLabel.toLowerCase()}${acceptedAccessoryViewLabel}, and it does not cover the hair needed for analysis, so you can continue.`
+    : differentFacesDetected
+      ? `The photo check found that ${faceMismatchViewText} may show a different person, so please retake the highlighted views with the same person.`
+      : validationRetryable
+        ? 'Your photos are saved, but we could not verify them right now, so please try the photo check again.'
+        : accessoriesDetected === true
+          ? `Please remove ${blockingAccessoryLabel}${blockingAccessoryViewLabel} because ${blockingAccessoryCoverageText} hair needed for analysis, then retake the highlighted photo.`
+          : hairAuthenticityStatus === 'possible_wig_or_extensions'
+            ? 'Show your natural hairline and roots clearly, then retake the highlighted photos.'
+            : 'Review and retake the highlighted photos before continuing.';
+  const validationModalKey = validationFailed || hasAllowedAccessories
+    ? [validationModalTitle, validationModalMessage].join('|')
+    : '';
   const screeningChecks = [
     {
-      icon: accessoriesDetected === true ? 'alert-circle-outline' : 'hair-dryer-outline',
+      icon: accessoriesDetected === true
+        ? 'alert-circle-outline'
+        : hasAllowedAccessories
+          ? 'check-circle-outline'
+          : 'hair-dryer-outline',
       text: accessoriesDetected === true
         ? 'Blocking accessory detected'
+        : hasAllowedAccessories
+          ? 'Non-blocking accessory accepted'
         : accessoriesDetected === false
           ? 'No blocking accessories found'
-          : 'Accessories will be checked',
+          : 'Accessory verification required',
       issue: accessoriesDetected === true,
     },
     {
@@ -2643,10 +2840,40 @@ function PreAnalysisPhotoReview({
         ? 'Possible wig or extensions detected'
         : hairAuthenticityStatus === 'likely_natural'
           ? 'Hair appears visually consistent'
-          : 'Wig and extension signs will be checked',
+          : 'Natural hair verification required',
       issue: hairAuthenticityStatus === 'possible_wig_or_extensions',
     },
+    {
+      icon: differentFacesDetected ? 'account-alert-outline' : 'account-check-outline',
+      text: differentFacesDetected
+        ? 'Face photos do not match'
+        : validation?.sameSubjectVerified === true
+          ? 'Captured photos are consistent'
+          : 'Photo consistency check required',
+      issue: differentFacesDetected,
+    },
   ];
+
+  useEffect(() => {
+    if (!validationModalKey) {
+      lastPresentedValidationRef.current = '';
+      return;
+    }
+    if (lastPresentedValidationRef.current === validationModalKey) return;
+    lastPresentedValidationRef.current = validationModalKey;
+    setIsValidationModalVisible(true);
+  }, [validationModalKey]);
+
+  const closeValidationModal = () => setIsValidationModalVisible(false);
+  const handleValidationModalAction = () => {
+    closeValidationModal();
+    if (differentFacesDetected) {
+      const firstRetakeIndex = [...retakeSlotIndexes].sort((left, right) => left - right)[0];
+      if (Number.isInteger(firstRetakeIndex)) onRetake?.(firstRetakeIndex);
+      return;
+    }
+    if (validationRetryable) onRetryValidation?.();
+  };
 
   return (
     <View style={styles.analysisResultPanel}>
@@ -2661,45 +2888,26 @@ function PreAnalysisPhotoReview({
       </View>
 
       <View style={[styles.preAnalysisReviewCard, { backgroundColor: cardBackground }]}>
-        <View style={styles.preAnalysisStatusRow}>
-          <View style={styles.preAnalysisStatusCopy}>
-            <AppIcon
-              name={isValidating ? 'magnify' : validation?.ok ? 'check-circle-outline' : validationFailed ? 'alert-circle-outline' : 'image-check-outline'}
-              size="sm"
-              state={!isValidating && validation?.ok ? 'success' : validationFailed ? 'danger' : 'active'}
-            />
-            <Text
-              style={[
-                styles.preAnalysisValidationText,
-                validationFailed ? styles.preAnalysisValidationTextError : null,
-              ]}
-              numberOfLines={2}
-            >
-              {statusText}
-            </Text>
-          </View>
-          <View style={[
-            styles.preAnalysisCountBadge,
-            validation?.ok ? styles.preAnalysisCountBadgeOk : null,
-          ]}>
-            <Text style={styles.preAnalysisCountText}>{readyCount}/{requiredViews.length}</Text>
-          </View>
-        </View>
-        {validationFailed && uniqueValidationDetails.length ? (
-          <View style={styles.preAnalysisIssueList}>
-            {uniqueValidationDetails.slice(0, 2).map((detail, index) => (
-              <View key={`${detail?.viewLabel || 'photo'}-${index}`} style={styles.preAnalysisIssueRow}>
-                <AppIcon name="alert-circle-outline" size="sm" state="danger" />
-                <Text style={styles.preAnalysisIssueText} numberOfLines={2}>
-                  {String(detail?.error || '').toLowerCase().startsWith(String(detail?.viewLabel || '').toLowerCase())
-                    ? String(detail?.error || '')
-                    : [detail?.viewLabel, detail?.error].filter(Boolean).join(': ')}
-                </Text>
-              </View>
-            ))}
+        {!validationFailed ? (
+          <View style={styles.preAnalysisStatusRow}>
+            <View style={styles.preAnalysisStatusCopy}>
+              <AppIcon
+                name={isValidating ? 'magnify' : validation?.ok ? 'check-circle-outline' : 'image-check-outline'}
+                size="sm"
+                state={!isValidating && validation?.ok ? 'success' : 'active'}
+              />
+              <Text style={styles.preAnalysisValidationText}>
+                {statusText}
+              </Text>
+            </View>
+            <View style={[
+              styles.preAnalysisCountBadge,
+              validation?.ok ? styles.preAnalysisCountBadgeOk : null,
+            ]}>
+              <Text style={styles.preAnalysisCountText}>{readyCount}/{requiredViews.length}</Text>
+            </View>
           </View>
         ) : null}
-
         <View style={[styles.preAnalysisScreeningRow, isNarrowReview ? styles.preAnalysisScreeningRowNarrow : null]}>
           {screeningChecks.map((check) => (
             <View
@@ -2731,13 +2939,27 @@ function PreAnalysisPhotoReview({
               ? 'Checking photos...'
               : isAnalyzing
                 ? 'Analyzing...'
-                : validationFailed
-                  ? 'Retake required'
-                  : 'Continue to analysis'}
-            onPress={onRunAnalysis}
+                : validationRetryable
+                  ? 'Try photo check again'
+                  : validationFailed
+                    ? 'Retake required'
+                    : 'Continue to analysis'}
+            onPress={validationRetryable ? onRetryValidation : onRunAnalysis}
             loading={isValidating || isAnalyzing}
-            disabled={!allReady || !validation?.ok || isValidating || isAnalyzing || isSaving}
-            trailing={<MaterialCommunityIcons name="arrow-right" size={19} color="#FFFFFF" />}
+            disabled={
+              !allReady
+              || (!validationRetryable && !visualVerificationComplete)
+              || isValidating
+              || isAnalyzing
+              || isSaving
+            }
+            trailing={(
+              <MaterialCommunityIcons
+                name={validationRetryable ? 'refresh' : 'arrow-right'}
+                size={19}
+                color="#FFFFFF"
+              />
+            )}
             fullWidth
           />
         </View>
@@ -2746,6 +2968,9 @@ function PreAnalysisPhotoReview({
           {requiredViews.map((view, index) => {
             const photo = photos[index];
             const needsRetake = retakeSlotIndexes.has(index);
+            const backgroundValidationStatus = captureValidationBySlot[index]?.status || '';
+            const isBackgroundValidationPending = backgroundValidationStatus === 'pending';
+            const isBackgroundValidationPassed = backgroundValidationStatus === 'passed';
             return (
               <View
                 key={view?.key || view?.label || index}
@@ -2766,11 +2991,25 @@ function PreAnalysisPhotoReview({
                   </View>
                   <View style={[styles.preAnalysisPhotoStateBadge, needsRetake ? styles.preAnalysisPhotoStateBadgeIssue : null]}>
                     <MaterialCommunityIcons
-                      name={needsRetake ? 'alert' : 'check'}
+                      name={needsRetake
+                        ? 'alert'
+                        : isBackgroundValidationPending
+                          ? 'clock-outline'
+                          : isBackgroundValidationPassed || visualVerificationComplete
+                            ? 'check'
+                            : 'image-outline'}
                       size={12}
                       color="#FFFFFF"
                     />
-                    <Text style={styles.preAnalysisPhotoStateText}>{needsRetake ? 'Check' : 'Ready'}</Text>
+                    <Text style={styles.preAnalysisPhotoStateText}>
+                      {needsRetake
+                        ? 'Check'
+                        : isBackgroundValidationPending
+                          ? 'Checking'
+                          : isBackgroundValidationPassed || visualVerificationComplete
+                            ? 'Verified'
+                            : 'Captured'}
+                    </Text>
                   </View>
                 </View>
                 <View style={styles.preAnalysisPhotoMeta}>
@@ -2797,23 +3036,122 @@ function PreAnalysisPhotoReview({
         </View>
       </View>
 
+      <Modal
+        transparent
+        visible={isValidationModalVisible && (validationFailed || hasAllowedAccessories)}
+        animationType="fade"
+        presentationStyle="overFullScreen"
+        statusBarTranslucent
+        onRequestClose={closeValidationModal}
+      >
+        <View style={styles.photoValidationModalOverlay}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Close photo check details"
+            onPress={closeValidationModal}
+            style={styles.photoValidationModalBackdrop}
+          />
+          <View style={styles.photoValidationModalCard}>
+            <LinearGradient
+              colors={[theme.colors.dashboardDonorFrom, theme.colors.dashboardDonorTo]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.photoValidationModalHeader}
+            >
+              <View style={styles.photoValidationModalIcon}>
+                <MaterialCommunityIcons
+                  name={hasAllowedAccessories
+                    ? 'check-circle-outline'
+                    : differentFacesDetected
+                      ? 'account-alert-outline'
+                      : validationRetryable
+                        ? 'cloud-refresh-outline'
+                        : 'image-off-outline'}
+                  size={26}
+                  color={theme.colors.textOnBrand}
+                />
+              </View>
+              <View style={styles.photoValidationModalHeadingCopy}>
+                <Text style={styles.photoValidationModalTitle}>
+                  {validationModalTitle}
+                </Text>
+              </View>
+            </LinearGradient>
+
+            <ScrollView
+              style={styles.photoValidationModalScroll}
+              contentContainerStyle={styles.photoValidationModalContent}
+              showsVerticalScrollIndicator={false}
+              bounces={false}
+            >
+              <Text style={styles.photoValidationModalMessage}>
+                {validationModalMessage}
+              </Text>
+
+              <AppButton
+                title={hasAllowedAccessories
+                  ? 'Continue'
+                  : differentFacesDetected
+                    ? 'Retake highlighted photos'
+                    : validationRetryable
+                      ? 'Try photo check again'
+                      : 'Review captured photos'}
+                onPress={handleValidationModalAction}
+                trailing={(
+                  <MaterialCommunityIcons
+                    name={hasAllowedAccessories
+                      ? 'arrow-right'
+                      : differentFacesDetected
+                        ? 'camera-retake-outline'
+                        : validationRetryable
+                          ? 'refresh'
+                          : 'image-search-outline'}
+                    size={19}
+                    color={theme.colors.textOnBrand}
+                  />
+                )}
+                fullWidth
+              />
+              {validationRetryable ? (
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={closeValidationModal}
+                  style={({ pressed }) => [
+                    styles.photoValidationModalSecondary,
+                    pressed ? styles.photoValidationModalSecondaryPressed : null,
+                  ]}
+                >
+                  <Text style={styles.photoValidationModalSecondaryText}>Not now</Text>
+                </Pressable>
+              ) : null}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
     </View>
   );
 }
 
-function AnalysisLoadingSplash({ resolvedTheme, photos = [], completedPhotoCount = 0 }) {
+function AnalysisLoadingSplash({ resolvedTheme, photos = [] }) {
   const [imageFailed, setImageFailed] = useState(false);
   const logoSource = resolveBrandLogoSource(resolvedTheme, imageFailed);
   const primaryPhoto = photos.find((photo) => photo?.uri);
-  const progressPercent = Math.min(95, Math.max(35, 35 + completedPhotoCount * 18));
   const scanMotion = useRef(new Animated.Value(0)).current;
   const pulseMotion = useRef(new Animated.Value(0)).current;
+  const progressMotion = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     setImageFailed(false);
   }, [resolvedTheme?.logoIcon]);
 
   useEffect(() => {
+    progressMotion.setValue(0);
+    const progressAnimation = Animated.timing(progressMotion, {
+      toValue: 1,
+      duration: 20000,
+      useNativeDriver: false,
+    });
     const scanLoop = Animated.loop(
       Animated.sequence([
         Animated.timing(scanMotion, {
@@ -2843,13 +3181,15 @@ function AnalysisLoadingSplash({ resolvedTheme, photos = [], completedPhotoCount
       ])
     );
 
+    progressAnimation.start();
     scanLoop.start();
     pulseLoop.start();
     return () => {
+      progressAnimation.stop();
       scanLoop.stop();
       pulseLoop.stop();
     };
-  }, [pulseMotion, scanMotion]);
+  }, [progressMotion, pulseMotion, scanMotion]);
 
   const scanLineStyle = {
     transform: [{
@@ -2889,12 +3229,6 @@ function AnalysisLoadingSplash({ resolvedTheme, photos = [], completedPhotoCount
             <Text style={styles.analysisSplashText}>Reviewing your six photos to prepare a clear result.</Text>
           </View>
         </View>
-        <LinearGradient
-          colors={[theme.colors.palette.wine700, theme.colors.palette.wine900]}
-          style={styles.analysisScanPercentBadge}
-        >
-          <Text style={styles.analysisScanPercent}>{progressPercent}%</Text>
-        </LinearGradient>
       </View>
 
       <View style={styles.analysisScanPreview}>
@@ -2926,17 +3260,26 @@ function AnalysisLoadingSplash({ resolvedTheme, photos = [], completedPhotoCount
 
       <View style={styles.analysisProgressHeader}>
         <Text style={styles.analysisProgressLabel}>Analysis in progress</Text>
-        <Text style={styles.analysisProgressValue}>{progressPercent}% complete</Text>
       </View>
       <View style={styles.analysisScanProgressTrack}>
-        <View style={[styles.analysisScanProgressFill, { width: `${progressPercent}%` }]}>
+        <Animated.View
+          style={[
+            styles.analysisScanProgressFill,
+            {
+              width: progressMotion.interpolate({
+                inputRange: [0, 1],
+                outputRange: ['0%', '100%'],
+              }),
+            },
+          ]}
+        >
           <LinearGradient
             colors={[theme.colors.palette.wine600, theme.colors.palette.wine900]}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 0 }}
             style={StyleSheet.absoluteFillObject}
           />
-        </View>
+        </Animated.View>
       </View>
 
       <View style={styles.analysisSplashNotice}>
@@ -3497,8 +3840,10 @@ const buildHairConditionHistory = (submissions = []) => {
           screening,
           submission,
           detail: latestDetail,
-          images: latestDetail?.images || [],
-          recommendations: submission?.donor_recommendations || [],
+          images: screening?.screening_images?.length
+            ? screening.screening_images
+            : latestDetail?.images || [],
+          recommendations: screening?.recommendations || [],
         }));
     });
 
@@ -3974,7 +4319,14 @@ export function DonorHairSubmissionScreen() {
   const [questionIndex, setQuestionIndex] = useState(0);
   const [photoIndex, setPhotoIndex] = useState(0);
   const [isCapturingPhoto, setIsCapturingPhoto] = useState(false);
-  const [, setCameraModalError] = useState('');
+  const captureInProgressRef = useRef(false);
+  const [pendingCapturePreviewUri, setPendingCapturePreviewUri] = useState('');
+  const [captureValidationBySlot, setCaptureValidationBySlot] = useState({});
+  const captureValidationQueueRef = useRef(Promise.resolve());
+  const captureValidationRunIdsRef = useRef({});
+  const captureValidationRunCounterRef = useRef(0);
+  const [cameraModalError, setCameraModalError] = useState('');
+  const [accessoryCheckNotice, setAccessoryCheckNotice] = useState(null);
   const [nativeCameraPermission, setNativeCameraPermission] = useState('not-determined');
   const [cameraFacing, setCameraFacing] = useState('front');
   const [flashMode, setFlashMode] = useState('off');
@@ -3984,18 +4336,13 @@ export function DonorHairSubmissionScreen() {
   const [liveFaceStatus, setLiveFaceStatus] = useState(getInitialLiveFaceStatus);
   const [liveFrameBrightness, setLiveFrameBrightness] = useState(-1);
   const lastLiveFaceStatusKeyRef = useRef('');
-  const autoCaptureTimeoutRef = useRef(null);
-  const autoCaptureCooldownUntilRef = useRef(0);
-  const autoCaptureActiveKeyRef = useRef('');
-  const latestAutoCaptureRef = useRef(null);
   const photoPreflightKeyRef = useRef('');
   const captureSessionIdRef = useRef(`cap_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
   const pendingQuestionAdvanceTimeoutRef = useRef(null);
   const questionContentOpacity = useRef(new Animated.Value(1)).current;
   const readinessEntrance = useRef(new Animated.Value(0)).current;
   const readinessPulse = useRef(new Animated.Value(0)).current;
-  const [autoCaptureCountdown, setAutoCaptureCountdown] = useState(0);
-  const [isVoiceCaptureActive, setIsVoiceCaptureActive] = useState(false);
+  const [, setIsVoiceCaptureActive] = useState(false);
   const [analysisHistory, setAnalysisHistory] = useState([]);
   const [registeredEventDrives, setRegisteredEventDrives] = useState([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
@@ -4039,6 +4386,8 @@ export function DonorHairSubmissionScreen() {
     isAnalyzing,
     isSaving,
     completedPhotoCount,
+    preparePhotoAssetForAnalysis,
+    preparePhotoAssetForValidation,
     savePhotoAssetForSlot,
     removePhoto,
     analyzePhotos,
@@ -4047,6 +4396,12 @@ export function DonorHairSubmissionScreen() {
     clearAnalysisError,
     refreshContext,
   } = useDonorHairSubmission({ userId: user?.id, databaseUserId: profile?.user_id });
+
+  const clearCaptureValidationState = React.useCallback(() => {
+    captureValidationRunCounterRef.current += 1;
+    captureValidationRunIdsRef.current = {};
+    setCaptureValidationBySlot({});
+  }, []);
 
   const questionForm = useForm({
     resolver: zodResolver(hairAnalyzerQuestionSchema),
@@ -4215,6 +4570,13 @@ export function DonorHairSubmissionScreen() {
   };
   const currentView = requiredViews[photoIndex];
   const currentPhoto = photos[photoIndex];
+  const currentCaptureValidation = captureValidationBySlot[photoIndex] || null;
+  const pendingCaptureValidationCount = requiredViews.reduce((count, _view, index) => (
+    count + (captureValidationBySlot[index]?.status === 'pending' ? 1 : 0)
+  ), 0);
+  const allCaptureValidationsPassed = requiredViews.length > 0 && requiredViews.every((_view, index) => (
+    Boolean(photos[index]) && captureValidationBySlot[index]?.status === 'passed'
+  ));
   const photoReviewValidationKey = useMemo(() => (
     photos
       .map((photo, index) => `${requiredViews[index]?.key || index}:${photo?.uri || ''}:${String(photo?.dataUrl || '').length}`)
@@ -4342,7 +4704,10 @@ export function DonorHairSubmissionScreen() {
         questionnaireAnswers: {
           ...currentAnswers,
         },
-        complianceContext: { acknowledged: Boolean(complianceAcknowledged) },
+        complianceContext: {
+          acknowledged: Boolean(complianceAcknowledged),
+          photoVerificationToken: photoPreflightState?.verificationToken || null,
+        },
         historyContext: buildAnalysisHistoryContext(analysisHistory),
         correctedDetails: options.correctedDetails || null,
         allowPhotoQualityFallback: Boolean(options.allowPhotoQualityFallback),
@@ -4358,6 +4723,7 @@ export function DonorHairSubmissionScreen() {
     error?.title,
     getCurrentQuestionnaireAnswers,
     error?.retryUntil,
+    photoPreflightState?.verificationToken,
     savedHistory.latestScreening?.created_at,
     user?.id,
     weeklyScanLimit.isLocked,
@@ -4372,19 +4738,25 @@ export function DonorHairSubmissionScreen() {
     setHistoryError('');
 
     try {
-      const [submissionsResult, registeredDrivesResult] = await Promise.all([
-        fetchHairSubmissionsByUserId(user.id, 12),
+      const [screeningsResult, registeredDrivesResult] = await Promise.all([
+        fetchAiScreeningsByUserId(user.id, 12),
         fetchRegisteredDonationDrivesByUserId({
           databaseUserId: profile?.user_id || null,
           limit: 24,
         }),
       ]);
-      const submissions = submissionsResult.data || [];
+      const submissions = (screeningsResult.data || []).map((screening) => ({
+        id: `ai-screening-${screening.ai_screening_id}`,
+        submission_id: null,
+        created_at: screening.created_at,
+        ai_screenings: [screening],
+        submission_details: [],
+      }));
       const registeredDrives = registeredDrivesResult.data || [];
       setAnalysisHistory(submissions);
       setRegisteredEventDrives(registeredDrives);
 
-      if (submissionsResult.error || registeredDrivesResult.error) {
+      if (screeningsResult.error || registeredDrivesResult.error) {
         setHistoryError(
           registeredDrivesResult.error?.isTransient
             ? registeredDrivesResult.error.message
@@ -4508,6 +4880,7 @@ export function DonorHairSubmissionScreen() {
   }, []);
 
   const discardAnalyzerDraft = React.useCallback(() => {
+    clearCaptureValidationState();
     resetFlow();
     questionForm.reset({
       ...hairAnalyzerQuestionDefaultValues,
@@ -4529,7 +4902,7 @@ export function DonorHairSubmissionScreen() {
     setAnalysisReviewValues(buildHairReviewDefaultValues(null));
     setIsEditingAnalysisReview(false);
     setResultConfirmationMode('pending');
-  }, [complianceForm, questionForm, questionnaireMode, resetFlow]);
+  }, [clearCaptureValidationState, complianceForm, questionForm, questionnaireMode, resetFlow]);
 
   const requestAnalyzerExit = React.useCallback(() => {
     pendingExitNavigationActionRef.current = null;
@@ -4705,6 +5078,7 @@ export function DonorHairSubmissionScreen() {
     });
 
     if (result?.success) {
+      clearCaptureValidationState();
       invalidateHairAnalysisHomeCache(user?.id);
       questionForm.reset({
         ...hairAnalyzerQuestionDefaultValues,
@@ -4877,6 +5251,7 @@ export function DonorHairSubmissionScreen() {
       lastLiveFaceStatusKeyRef.current = '';
       setLiveFaceStatus(initialStatus);
       setLiveFrameBrightness(-1);
+      setPendingCapturePreviewUri('');
     }
   }, [cameraFacing, currentView, photoIndex, stepIndex]);
 
@@ -5006,11 +5381,166 @@ export function DonorHairSubmissionScreen() {
     );
   };
 
+  const invalidateCaptureValidation = React.useCallback((slotIndex) => {
+    captureValidationRunIdsRef.current[slotIndex] = ++captureValidationRunCounterRef.current;
+    setCaptureValidationBySlot((current) => {
+      if (!current[slotIndex]) return current;
+      const next = { ...current };
+      delete next[slotIndex];
+      return next;
+    });
+  }, []);
+
+  const enqueueCaptureValidation = React.useCallback(({
+    slotIndex,
+    photo,
+    capturedAt,
+    captureSource,
+    liveValidation,
+  }) => {
+    const runId = ++captureValidationRunCounterRef.current;
+    const enqueuedAt = Date.now();
+    captureValidationRunIdsRef.current[slotIndex] = runId;
+    setCaptureValidationBySlot((current) => ({
+      ...current,
+      [slotIndex]: {
+        status: 'pending',
+        title: 'Checking photo',
+        message: 'Accessory and hair visibility checks are running in the background.',
+      },
+    }));
+
+    const runValidation = async () => {
+      if (captureValidationRunIdsRef.current[slotIndex] !== runId) return;
+      const validationStartedAt = Date.now();
+
+      let accessoryCheck;
+      let validationPhoto;
+      try {
+        validationPhoto = await preparePhotoAssetForValidation(photo);
+        if (captureValidationRunIdsRef.current[slotIndex] !== runId) return;
+        accessoryCheck = await checkHairCaptureAccessories({
+          photo: validationPhoto,
+          view: requiredViews[slotIndex],
+        });
+      } catch (validationError) {
+        accessoryCheck = {
+          ok: false,
+          blocked: false,
+          retryable: true,
+          title: 'Photo Check Unavailable',
+          message: 'We could not check this photo right now. Please retake it and try again.',
+          errorMessage: validationError?.message || String(validationError || ''),
+        };
+      }
+
+      if (captureValidationRunIdsRef.current[slotIndex] !== runId) return;
+
+      if (!accessoryCheck.ok) {
+        setCaptureValidationBySlot((current) => ({
+          ...current,
+          [slotIndex]: {
+            status: 'failed',
+            title: accessoryCheck.title || 'Photo Needs Retake',
+            message: accessoryCheck.message || 'This photo could not be validated.',
+          },
+        }));
+        removePhoto(slotIndex);
+        setPhotoPreflightState(null);
+        photoPreflightKeyRef.current = '';
+        setPhotoIndex(slotIndex);
+        setStepIndex(2);
+        setAccessoryCheckNotice({
+          title: accessoryCheck.title || 'Photo Needs Retake',
+          message: accessoryCheck.message || 'This photo could not be validated. Please retake it.',
+          blocked: accessoryCheck.blocked === true,
+          slotIndex,
+        });
+        logAppEvent('donor_hair_submission.photo_accessory_gate.handled', 'Background photo validation returned a handled outcome.', {
+          userId: user?.id || null,
+          slotIndex,
+          viewKey: requiredViews[slotIndex]?.key || null,
+          captureSource,
+          outcome: accessoryCheck.blocked === true ? 'retake_required' : 'check_temporarily_unavailable',
+          blocked: accessoryCheck.blocked === true,
+          retryable: accessoryCheck.retryable === true,
+          detectedAccessories: accessoryCheck.detectedAccessories || [],
+          presentationIssues: accessoryCheck.presentationIssues || [],
+          confidence: accessoryCheck.confidence || null,
+          errorMessage: accessoryCheck.errorMessage || null,
+          queueWaitMs: validationStartedAt - enqueuedAt,
+          validationDurationMs: Date.now() - validationStartedAt,
+        }, 'info');
+        return;
+      }
+
+      let saveResult;
+      try {
+        saveResult = await savePhotoAssetForSlot(slotIndex, photo, 'capture', {
+          capturedAt,
+          captureSessionId: captureSessionIdRef.current,
+          photoValidation: {
+            ...liveValidation,
+            validationMode: 'live_face_and_accessory',
+            accessoryCheckPassed: true,
+            accessoryCheckConfidence: Number(accessoryCheck.confidence || 0),
+            capturedAt,
+          },
+          validationDataUrl: validationPhoto?.dataUrl || null,
+          validationMimeType: validationPhoto?.mimeType || 'image/jpeg',
+        });
+      } catch (saveError) {
+        saveResult = {
+          success: false,
+          error: saveError?.message || 'The verified photo could not be saved.',
+        };
+      }
+      if (captureValidationRunIdsRef.current[slotIndex] !== runId) return;
+
+      logAppEvent('donor_hair_submission.photo_accessory_gate.completed', 'Background photo validation completed.', {
+        userId: user?.id || null,
+        slotIndex,
+        viewKey: requiredViews[slotIndex]?.key || null,
+        captureSource,
+        success: Boolean(saveResult?.success),
+        queueWaitMs: validationStartedAt - enqueuedAt,
+        validationDurationMs: Date.now() - validationStartedAt,
+      }, 'info');
+
+      setCaptureValidationBySlot((current) => ({
+        ...current,
+        [slotIndex]: saveResult?.success
+          ? { status: 'passed', title: 'Photo verified', message: 'Accessory and hair visibility checks passed.' }
+          : { status: 'failed', title: 'Photo Save Failed', message: saveResult?.error || 'Please retake this photo.' },
+      }));
+      if (!saveResult?.success) {
+        removePhoto(slotIndex);
+        setPhotoIndex(slotIndex);
+        setStepIndex(2);
+        setAccessoryCheckNotice({
+          title: 'Photo Save Failed',
+          message: saveResult?.error || 'The verified photo could not be saved. Please retake it.',
+          blocked: false,
+          slotIndex,
+        });
+      }
+    };
+
+    captureValidationQueueRef.current = captureValidationQueueRef.current
+      .catch(() => undefined)
+      .then(runValidation);
+  }, [preparePhotoAssetForValidation, removePhoto, requiredViews, savePhotoAssetForSlot, user?.id]);
+
   const handleCapturePhoto = React.useCallback(async (slotIndex = photoIndex, captureSource = 'manual') => {
     if (slotIndex == null) return;
 
-    if (captureSource === 'auto' && canUseNativeLiveCamera && !liveFaceStatus.valid) {
-      setCameraModalError(liveFaceStatus.message || 'Center your face and hair before scanning.');
+    if (requiresFaceVerification(requiredViews[slotIndex]) && !canUseNativeLiveCamera) {
+      setCameraModalError('Live face-direction checking requires the Donivra development build. It is not available in Expo Go.');
+      return;
+    }
+
+    if (canUseNativeLiveCamera && !liveFaceStatus.valid) {
+      setCameraModalError(liveFaceStatus.message || 'Wait for the scanner to turn green before capturing.');
       return;
     }
 
@@ -5037,11 +5567,13 @@ export function DonorHairSubmissionScreen() {
       }
     }
 
-    if (!cameraRef.current || isCapturingPhoto) {
+    if (!cameraRef.current || isCapturingPhoto || captureInProgressRef.current) {
       setCameraModalError('The camera is still starting. Please wait a moment and try again.');
       return;
     }
 
+    captureInProgressRef.current = true;
+    setPendingCapturePreviewUri('');
     setIsCapturingPhoto(true);
     setCameraModalError('');
 
@@ -5065,6 +5597,39 @@ export function DonorHairSubmissionScreen() {
           }
         : rawPhoto;
 
+      // Freeze the exact shutter frame while local preparation and remote AI
+      // validation run, so the live feed does not make another capture appear
+      // to be in progress.
+      setPendingCapturePreviewUri(photo?.uri || '');
+
+      const preparedPhoto = await preparePhotoAssetForAnalysis(photo);
+      const capturedAt = new Date().toISOString();
+      const liveValidation = {
+        faceRequired: requiresFaceVerification(requiredViews[slotIndex]),
+        valid: Boolean(liveFaceStatus.valid),
+        faceCount: Number(liveFaceStatus.faceCount || 0),
+        yawAngle: Number.isFinite(Number(liveFaceStatus.yawAngle))
+          ? Number(liveFaceStatus.yawAngle)
+          : null,
+        message: liveFaceStatus.message || '',
+      };
+
+      const saveResult = await savePhotoAssetForSlot(slotIndex, preparedPhoto, 'capture', {
+        capturedAt,
+        captureSessionId: captureSessionIdRef.current,
+        photoValidation: {
+          ...liveValidation,
+          validationMode: 'live_face_accessory_pending',
+          accessoryCheckPassed: false,
+          capturedAt,
+        },
+      });
+      if (!saveResult?.success) {
+        setPendingCapturePreviewUri('');
+        setCameraModalError(saveResult?.error || 'The captured photo could not be saved to this slot.');
+        return;
+      }
+
       logAppEvent('donor_hair_submission.photo_camera', 'Camera photo captured from donation photo modal.', {
         userId: user?.id || null,
         slotIndex,
@@ -5073,28 +5638,19 @@ export function DonorHairSubmissionScreen() {
         captureSource,
       });
 
-      const saveResult = await savePhotoAssetForSlot(slotIndex, photo, 'capture', {
-        capturedAt: new Date().toISOString(),
-        captureSessionId: captureSessionIdRef.current,
-        photoValidation: {
-          validationMode: 'live_face',
-          faceRequired: requiresFaceVerification(requiredViews[slotIndex]),
-          valid: Boolean(liveFaceStatus.valid),
-          faceCount: Number(liveFaceStatus.faceCount || 0),
-          message: liveFaceStatus.message || '',
-          capturedAt: new Date().toISOString(),
-        },
+      enqueueCaptureValidation({
+        slotIndex,
+        photo: preparedPhoto,
+        capturedAt,
+        captureSource,
+        liveValidation,
       });
-      if (!saveResult?.success) {
-        setCameraModalError(saveResult?.error || 'The captured photo could not be saved to this slot.');
-        return;
-      }
 
+      setPendingCapturePreviewUri('');
       setPhotoPreflightState(null);
       photoPreflightKeyRef.current = '';
-      autoCaptureCooldownUntilRef.current = Date.now() + 3500;
-      setAutoCaptureCountdown(0);
     } catch (captureError) {
+      setPendingCapturePreviewUri('');
       logAppEvent('donor_hair_submission.photo_camera', 'Camera capture failed from donation photo modal.', {
         userId: user?.id || null,
         slotIndex,
@@ -5104,6 +5660,7 @@ export function DonorHairSubmissionScreen() {
 
       setCameraModalError('The camera could not capture a photo right now. Please try again.');
     } finally {
+      captureInProgressRef.current = false;
       setIsCapturingPhoto(false);
     }
   }, [
@@ -5111,43 +5668,20 @@ export function DonorHairSubmissionScreen() {
     flashMode,
     hasCameraPermission,
     isCapturingPhoto,
+    enqueueCaptureValidation,
     photoIndex,
+    preparePhotoAssetForAnalysis,
     requiredViews,
     requestLiveCameraPermission,
     savePhotoAssetForSlot,
     user?.id,
     liveFaceStatus.faceCount,
+    liveFaceStatus.yawAngle,
     liveFaceStatus.valid,
     liveFaceStatus.message,
   ]);
 
-  const autoCaptureEnabled = useMemo(() => {
-    if (stepIndex !== 2) return false;
-    if (!hasCameraPermission) return false;
-    if (Boolean(currentPhoto)) return false;
-    if (isVoiceCaptureActive) return false;
-    if (isCapturingPhoto || isCapturingImages || isPickingImages || isAnalyzing) return false;
-    if (!canUseNativeLiveCamera || !requiresFaceVerification(currentView)) return false;
-
-    const brightnessReady = liveFrameBrightness < 0 || liveFrameBrightness >= 82;
-    return Boolean(liveFaceStatus?.valid && brightnessReady);
-  }, [
-    canUseNativeLiveCamera,
-    currentView,
-    currentPhoto,
-    hasCameraPermission,
-    isAnalyzing,
-    isCapturingImages,
-    isCapturingPhoto,
-    isPickingImages,
-    isVoiceCaptureActive,
-    liveFaceStatus?.valid,
-    liveFrameBrightness,
-    stepIndex,
-  ]);
-
   const liveScanStatus = useMemo(() => buildLiveScanStatus({
-    autoCaptureEnabled,
     brightness: liveFrameBrightness,
     completedPhotoCount,
     currentPhoto,
@@ -5156,7 +5690,6 @@ export function DonorHairSubmissionScreen() {
     liveFaceStatus,
     requiredCount: requiredViews.length,
   }), [
-    autoCaptureEnabled,
     completedPhotoCount,
     currentPhoto,
     currentView,
@@ -5166,56 +5699,6 @@ export function DonorHairSubmissionScreen() {
     liveFrameBrightness,
     requiredViews.length,
   ]);
-
-  useEffect(() => {
-    latestAutoCaptureRef.current = () => handleCapturePhoto(photoIndex, 'auto');
-  }, [handleCapturePhoto, photoIndex]);
-
-  useEffect(() => {
-    const clearAutoCaptureTimer = () => {
-      if (autoCaptureTimeoutRef.current) {
-        clearInterval(autoCaptureTimeoutRef.current);
-        autoCaptureTimeoutRef.current = null;
-      }
-      autoCaptureActiveKeyRef.current = '';
-      setAutoCaptureCountdown(0);
-    };
-
-    if (!autoCaptureEnabled) {
-      clearAutoCaptureTimer();
-      return undefined;
-    }
-
-    if (Date.now() < autoCaptureCooldownUntilRef.current) {
-      clearAutoCaptureTimer();
-      return undefined;
-    }
-
-    const captureKey = `${photoIndex}:${currentView?.key || currentView?.label || 'view'}`;
-    if (autoCaptureActiveKeyRef.current === captureKey && autoCaptureTimeoutRef.current) {
-      return undefined;
-    }
-
-    clearAutoCaptureTimer();
-    autoCaptureActiveKeyRef.current = captureKey;
-    let nextCount = 3;
-    setAutoCaptureCountdown(nextCount);
-
-    autoCaptureTimeoutRef.current = setInterval(() => {
-      nextCount -= 1;
-      setAutoCaptureCountdown(Math.max(nextCount, 0));
-
-      if (nextCount <= 0) {
-        clearInterval(autoCaptureTimeoutRef.current);
-        autoCaptureTimeoutRef.current = null;
-        autoCaptureActiveKeyRef.current = '';
-        autoCaptureCooldownUntilRef.current = Date.now() + 3500;
-        latestAutoCaptureRef.current?.();
-      }
-    }, 1000);
-
-    return undefined;
-  }, [autoCaptureEnabled, currentView?.key, currentView?.label, photoIndex]);
 
   const handleConfirmCurrentPhoto = React.useCallback(() => {
     setPhotoPreflightState(null);
@@ -5234,8 +5717,9 @@ export function DonorHairSubmissionScreen() {
   const handleRemoveCurrentPhoto = React.useCallback(() => {
     setPhotoPreflightState(null);
     photoPreflightKeyRef.current = '';
+    invalidateCaptureValidation(photoIndex);
     removePhoto(photoIndex);
-  }, [photoIndex, removePhoto]);
+  }, [invalidateCaptureValidation, photoIndex, removePhoto]);
 
   const validatePhotoReview = React.useCallback(async (source = 'review_auto') => {
     if (photos.filter(Boolean).length !== requiredViews.length) {
@@ -5268,8 +5752,12 @@ export function DonorHairSubmissionScreen() {
     } catch (validationError) {
       const validation = {
         ok: false,
-        title: 'Photo Check Failed',
-        message: 'Photo validation could not run. Please try again before analysis.',
+        hardBlock: true,
+        retryable: true,
+        title: 'Photo Check Temporarily Unavailable',
+        message: 'We could not verify your photos right now. Your photos are still here, so please try the photo check again shortly.',
+        visualScreeningCompleted: false,
+        verificationToken: null,
       };
       setPhotoPreflightState(validation);
       logAppEvent('donor_hair_submission.photo_preflight', 'Review module photo validation crashed.', {
@@ -5286,12 +5774,14 @@ export function DonorHairSubmissionScreen() {
   useEffect(() => {
     if (stepIndex !== 3 || analysis || isAnalyzing || isSaving) return;
     if (photos.filter(Boolean).length !== requiredViews.length) return;
+    if (!allCaptureValidationsPassed) return;
     if (!photoReviewValidationKey || photoPreflightKeyRef.current === photoReviewValidationKey) return;
 
     photoPreflightKeyRef.current = photoReviewValidationKey;
     validatePhotoReview('review_module_open');
   }, [
     analysis,
+    allCaptureValidationsPassed,
     isAnalyzing,
     isSaving,
     photoReviewValidationKey,
@@ -5301,50 +5791,27 @@ export function DonorHairSubmissionScreen() {
     validatePhotoReview,
   ]);
 
-  const runReviewedAnalysis = React.useCallback(async ({ overridePhotoValidation = false } = {}) => {
-    if (!photoPreflightState?.ok && !overridePhotoValidation) return;
+  const runReviewedAnalysis = React.useCallback(async () => {
+    const hasVerifiedPhotos = Boolean(
+      photoPreflightState?.ok === true
+      && photoPreflightState?.visualScreeningCompleted === true
+      && photoPreflightState?.accessoriesDetected === false
+      && String(photoPreflightState?.hairAuthenticityStatus || '').trim().toLowerCase() === 'likely_natural'
+      && photoPreflightState?.verificationToken
+    );
+    if (!hasVerifiedPhotos) return;
 
     setIsAnalysisLaunching(true);
 
-    if (overridePhotoValidation) {
-      const validationDetails = Array.isArray(photoPreflightState?.details)
-        ? photoPreflightState.details.map((detail) => [
-            detail?.viewLabel,
-            detail?.error,
-          ].filter(Boolean).join(': ')).filter(Boolean)
-        : [];
-
-      logAppEvent('donor_hair_submission.photo_preflight', 'User chose to continue after photo validation warning.', {
-        userId: user?.id || null,
-        title: photoPreflightState?.title || null,
-        message: photoPreflightState?.message || null,
-        details: validationDetails,
-        overridePhotoValidation: true,
-      }, 'info');
-    }
-
     try {
-      const result = await runFreshAnalysisAttempt('pre_analysis_photo_review', {
+      await runFreshAnalysisAttempt('pre_analysis_photo_review', {
         // Keep the visible result tied to the AI provider response instead of a generic photo-quality fallback.
         allowPhotoQualityFallback: false,
       });
-
-      if (overridePhotoValidation && !result?.success && isPhotoRetakeErrorState(result?.mappedError)) {
-        setPhotoPreflightState((current) => ({
-          ok: false,
-          skipped: false,
-          hardBlock: true,
-          title: 'Retake required',
-          message: result?.mappedError?.message || current?.message || 'Retake required before analysis.',
-          details: Array.isArray(current?.details) ? current.details : [],
-          validationMode: 'analysis_bounced_to_preflight',
-        }));
-        clearAnalysisError();
-      }
     } finally {
       setIsAnalysisLaunching(false);
     }
-  }, [clearAnalysisError, photoPreflightState, runFreshAnalysisAttempt, user?.id]);
+  }, [photoPreflightState, runFreshAnalysisAttempt]);
 
   const handleNext = async () => {
     if (stepIndex === 0) {
@@ -5567,6 +6034,7 @@ export function DonorHairSubmissionScreen() {
   };
 
   const startNewHairScan = () => {
+    clearCaptureValidationState();
     resetFlow();
     setAnalysisReviewValues(buildHairReviewDefaultValues(null));
     setIsEditingAnalysisReview(false);
@@ -5656,7 +6124,6 @@ export function DonorHairSubmissionScreen() {
         <AnalysisLoadingSplash
           resolvedTheme={resolvedTheme}
           photos={photos}
-          completedPhotoCount={completedPhotoCount}
         />
       );
     }
@@ -5854,7 +6321,7 @@ export function DonorHairSubmissionScreen() {
                 <MaterialCommunityIcons name="image-check-outline" size={20} color={theme.colors.brandPrimary} />
               </View>
               <Text style={styles.readinessQualityText}>
-                Clear photos help the AI notice hair length, texture, dryness, and visible damage.
+                Clear photos improve the result. Face-visible views may be compared only within this scan to prevent mixed submissions.
               </Text>
             </View>
 
@@ -5864,11 +6331,11 @@ export function DonorHairSubmissionScreen() {
       case 2:
         return (
           <LiveHairCameraPanel
-            autoCaptureEnabled={autoCaptureEnabled}
-            autoCaptureCountdown={autoCaptureCountdown}
             cameraFacing={cameraFacing}
             currentView={currentView}
             currentPhoto={currentPhoto}
+            captureValidationStatus={currentCaptureValidation?.status || ''}
+            pendingCapturePreviewUri={pendingCapturePreviewUri}
             flashMode={flashMode}
             requiredViews={requiredViews}
             completedPhotoCount={completedPhotoCount}
@@ -5876,11 +6343,13 @@ export function DonorHairSubmissionScreen() {
             cameraRef={cameraRef}
             liveScanStatus={liveScanStatus}
             liveFaceStatus={liveFaceStatus}
+            cameraError={cameraModalError}
+            accessoryCheckNotice={accessoryCheckNotice}
             canUseNativeLiveCamera={canUseNativeLiveCamera}
             isCapturing={isCapturingPhoto || isCapturingImages}
             isUploading={isPickingImages}
             isAnalyzing={isAnalyzing}
-            onCapture={() => handleCapturePhoto(photoIndex, isVoiceCaptureActive ? 'voice' : 'manual')}
+            onCapture={(captureSource = 'manual') => handleCapturePhoto(photoIndex, captureSource)}
             onToggleCamera={toggleCameraFacing}
             onToggleFlash={toggleFlashMode}
             onRemove={handleRemoveCurrentPhoto}
@@ -5888,6 +6357,15 @@ export function DonorHairSubmissionScreen() {
             onClose={requestAnalyzerExit}
             onFacesChange={handleLiveFacesChange}
             onCameraError={handleNativeCameraError}
+            onDismissAccessoryCheckNotice={() => {
+              const failedSlotIndex = accessoryCheckNotice?.slotIndex;
+              setAccessoryCheckNotice(null);
+              setCameraModalError('');
+              if (Number.isInteger(failedSlotIndex)) {
+                setPhotoIndex(failedSlotIndex);
+                setStepIndex(2);
+              }
+            }}
             onVoiceCaptureStateChange={setIsVoiceCaptureActive}
             roles={roles}
             onRequestPermission={async () => {
@@ -6320,15 +6798,19 @@ export function DonorHairSubmissionScreen() {
             <PreAnalysisPhotoReview
               photos={photos}
               requiredViews={requiredViews}
+              captureValidationBySlot={captureValidationBySlot}
               cardBackground={resolvedTheme?.backgroundColor || theme.colors.backgroundPrimary}
               isAnalyzing={isAnalyzing || isAnalysisLaunching}
               isSaving={isSaving}
-              isValidating={isPhotoPreflightRunning}
+              isValidating={isPhotoPreflightRunning || pendingCaptureValidationCount > 0}
               validation={{
                 ok: false,
                 skipped: false,
                 hardBlock: true,
-                title: 'Retake required',
+                retryable: pageErrorState?.photoVerificationRequired === true,
+                title: pageErrorState?.photoVerificationRequired === true
+                  ? 'Photo Check Required'
+                  : 'Retake required',
                 message: pageErrorState?.message || 'Retake required before analysis.',
                 details: Array.isArray(photoPreflightState?.details) ? photoPreflightState.details : [],
                 validationMode: 'analysis_error_to_preflight',
@@ -6338,9 +6820,14 @@ export function DonorHairSubmissionScreen() {
                 setPhotoPreflightState(null);
                 photoPreflightKeyRef.current = '';
                 clearAnalysisError();
+                invalidateCaptureValidation(slotIndex);
                 removePhoto(slotIndex);
                 setPhotoIndex(slotIndex);
                 setStepIndex(2);
+              }}
+              onRetryValidation={async () => {
+                clearAnalysisError();
+                await validatePhotoReview('review_manual_retry');
               }}
               onRunAnalysis={runReviewedAnalysis}
             />
@@ -6400,19 +6887,22 @@ export function DonorHairSubmissionScreen() {
           <PreAnalysisPhotoReview
             photos={photos}
             requiredViews={requiredViews}
+            captureValidationBySlot={captureValidationBySlot}
             cardBackground={resolvedTheme?.backgroundColor || theme.colors.backgroundPrimary}
             isAnalyzing={isAnalyzing || isAnalysisLaunching}
             isSaving={isSaving}
-            isValidating={isPhotoPreflightRunning}
+            isValidating={isPhotoPreflightRunning || pendingCaptureValidationCount > 0}
             validation={photoPreflightState}
             onPreview={openScanImagePreview}
             onRetake={(slotIndex = 0) => {
               setPhotoPreflightState(null);
               photoPreflightKeyRef.current = '';
+              invalidateCaptureValidation(slotIndex);
               removePhoto(slotIndex);
               setPhotoIndex(slotIndex);
               setStepIndex(2);
             }}
+            onRetryValidation={() => validatePhotoReview('review_manual_retry')}
             onRunAnalysis={runReviewedAnalysis}
           />
         );
@@ -9331,6 +9821,28 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.compact.caption,
     color: 'rgba(255,255,255,0.82)',
   },
+  liveCameraErrorNotice: {
+    width: '100%',
+    minHeight: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: theme.colors.textError,
+    backgroundColor: theme.colors.errorSurface,
+  },
+  liveCameraErrorNoticeText: {
+    flex: 1,
+    minWidth: 0,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: theme.typography.compact.caption * theme.typography.lineHeights.relaxed,
+    fontWeight: theme.typography.weights.semibold,
+    color: theme.colors.textError,
+  },
   liveHairDisplayTip: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -9478,7 +9990,11 @@ const styles = StyleSheet.create({
     shadowColor: theme.colors.textSuccess,
   },
   liveCaptureButtonDisabled: {
-    opacity: 0.6,
+    borderColor: theme.colors.borderDisabled,
+    backgroundColor: theme.colors.surfaceDisabled,
+    opacity: 0.72,
+    shadowOpacity: 0,
+    elevation: 0,
   },
   liveAnalysisToast: {
     position: 'absolute',
@@ -9804,20 +10320,6 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     color: theme.colors.textSecondary,
   },
-  analysisScanPercentBadge: {
-    minWidth: 58,
-    minHeight: 38,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: theme.spacing.sm,
-    borderRadius: theme.radius.full,
-  },
-  analysisScanPercent: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.semantic.bodySm,
-    fontWeight: theme.typography.weights.bold,
-    color: theme.colors.textOnBrand,
-  },
   analysisScanPreview: {
     position: 'relative',
     width: '100%',
@@ -9904,11 +10406,6 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.semantic.bodySm,
     fontWeight: theme.typography.weights.semibold,
     color: theme.colors.textPrimary,
-  },
-  analysisProgressValue: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.semantic.caption,
-    color: theme.colors.brandPrimary,
   },
   analysisScanProgressTrack: {
     height: 9,
@@ -10789,10 +11286,6 @@ const styles = StyleSheet.create({
     lineHeight: theme.typography.semantic.bodySm * theme.typography.lineHeights.relaxed,
     color: theme.colors.textPrimary,
   },
-  preAnalysisValidationTextError: {
-    color: theme.colors.textError,
-    fontWeight: theme.typography.weights.semibold,
-  },
   preAnalysisCountBadge: {
     minHeight: 34,
     minWidth: 56,
@@ -10863,6 +11356,90 @@ const styles = StyleSheet.create({
     fontFamily: theme.typography.fontFamily,
     fontSize: 11,
     lineHeight: 15,
+    fontWeight: theme.typography.weights.semibold,
+    color: theme.colors.brandPrimary,
+  },
+  photoValidationModalOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.xl,
+    backgroundColor: theme.colors.overlay,
+  },
+  photoValidationModalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  photoValidationModalCard: {
+    width: '100%',
+    maxWidth: 390,
+    maxHeight: '86%',
+    alignSelf: 'center',
+    overflow: 'hidden',
+    borderRadius: theme.radius.xl,
+    borderWidth: 1,
+    borderColor: theme.colors.borderMuted,
+    backgroundColor: theme.colors.surfaceCard,
+    ...theme.shadows.lg,
+  },
+  photoValidationModalHeader: {
+    minHeight: 104,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.lg,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+  },
+  photoValidationModalIcon: {
+    width: 48,
+    height: 48,
+    flexShrink: 0,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.whiteOverlay,
+  },
+  photoValidationModalHeadingCopy: {
+    flex: 1,
+    gap: 3,
+  },
+  photoValidationModalTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.titleSm,
+    lineHeight: 25,
+    fontWeight: theme.typography.weights.bold,
+    color: theme.colors.textOnBrand,
+  },
+  photoValidationModalScroll: {
+    width: '100%',
+  },
+  photoValidationModalContent: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.lg,
+    paddingBottom: theme.spacing.xl,
+    gap: theme.spacing.md,
+  },
+  photoValidationModalMessage: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.body,
+    lineHeight: 23,
+    color: theme.colors.textPrimary,
+  },
+  photoValidationModalSecondary: {
+    width: '100%',
+    alignSelf: 'stretch',
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: theme.radius.pill,
+  },
+  photoValidationModalSecondaryPressed: {
+    backgroundColor: theme.colors.surfacePressed,
+  },
+  photoValidationModalSecondaryText: {
+    width: '100%',
+    textAlign: 'center',
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.bodySm,
     fontWeight: theme.typography.weights.semibold,
     color: theme.colors.brandPrimary,
   },

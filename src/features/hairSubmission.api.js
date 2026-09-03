@@ -10,7 +10,6 @@ const hairSubmissionImagesTable = 'Hair_Submission_Images';
 const hairSubmissionLogisticsTable = 'Hair_Submission_Logistics';
 const hairBundleTrackingHistoryTable = 'Hair_Bundle_Tracking_History';
 const aiScreeningsTable = 'AI_Screenings';
-const donorRecommendationsTable = 'Donor_Recommendations';
 const donationRequirementsTable = 'wig_requirements';
 const logisticsSettingsTable = 'Logistics_Settings';
 const donationCertificatesTable = 'Donation_Certificates';
@@ -28,7 +27,9 @@ const hairSubmissionSelect = `
   user_id:User_ID,
   event_request_id:Event_Request_ID,
   event_attendee_id:Event_Attendee_ID,
+  ai_screening_id:AI_Screening_ID,
   from_event:From_Event,
+  waybill_code:Waybill_Code,
   donor_notes:Donor_Notes,
   status:Status,
   bundle_id:Bundle_ID,
@@ -68,6 +69,7 @@ const hairSubmissionImageSelect = `
 
 const aiScreeningSelect = `
   ai_screening_id:AI_Screening_ID,
+  user_id:User_ID,
   submission_id:Submission_ID,
   estimated_length:Estimated_Length,
   detected_color:Detected_Color,
@@ -100,18 +102,21 @@ const aiScreeningSelect = `
   length_assessment:Length_Assessment,
   donation_readiness_note:Donation_Readiness_Note,
   history_assessment:History_Assessment,
+  screening_images:Screening_Images,
   analysis_result:Analysis_Result,
   created_at:Created_At
 `;
+const aiScreeningSelectWithoutImages = aiScreeningSelect.replace(
+  /\s*screening_images:Screening_Images,\s*/,
+  '\n'
+);
 
-const donorRecommendationSelect = `
-  recommendation_id:Recommendation_ID,
-  submission_id:Submission_ID,
-  title:Title,
-  recommendation_text:Recommendation_Text,
-  priority_order:Priority_Order,
-  created_at:Created_At
-`;
+const isMissingScreeningImagesColumnError = (error = null) => {
+  const message = String(error?.message || '').toLowerCase();
+  return error?.code === '42703'
+    || error?.code === 'PGRST204'
+    || (message.includes('screening_images') && (message.includes('column') || message.includes('schema cache')));
+};
 
 const donationRequirementSelect = `
   donation_requirement_id:Wig_Requirement_ID,
@@ -132,10 +137,16 @@ const hairSubmissionLogisticsSelect = `
   submission_id:Submission_ID,
   logistics_type:Logistics_Type,
   shipment_status:Shipment_Status,
+  courier_name:Courier_Name,
+  tracking_number:Tracking_Number,
+  pickup_scheduled_at:Pickup_Scheduled_At,
+  pickup_approved_at:Pickup_Approved_At,
   received_by:Received_By,
   received_at:Received_At,
   notes:Notes,
-  created_at:Created_At
+  created_at:Created_At,
+  updated_by:Updated_By,
+  updated_at:Updated_At
 `;
 
 const LOGISTICS_NOTES_PREFIX = '__DONIVRA_LOGISTICS__:';
@@ -152,17 +163,35 @@ const parseLogisticsNotes = (value = '') => {
   }
 };
 
-const buildLogisticsNotes = (payload = {}) => `${LOGISTICS_NOTES_PREFIX}${JSON.stringify({
-  notes: payload?.notes || '',
-  courier_name: payload?.courier_name || '',
-  tracking_number: payload?.tracking_number || '',
-  pickup_schedule_date: payload?.pickup_schedule_date || null,
-  pickup_scheduled_at: payload?.pickup_scheduled_at || null,
-  pickup_approved_at: payload?.pickup_approved_at || null,
-  queue_number: payload?.queue_number ?? null,
-  dropoff_window: payload?.dropoff_window || '',
-  dropoff_status: payload?.dropoff_status || '',
-})}`;
+const normalizeLogisticsTypeForDb = (value = '') => {
+  const key = normalizeFlowKey(value);
+  if (['courier', 'shipping', 'independentshipping'].includes(key)) return 'Courier';
+  if (['pickup', 'pickuprequest'].includes(key)) return 'Pickup';
+  if (['salondropoff', 'onsitedelivery', 'walkin', 'dropoff'].includes(key)) return 'Salon Dropoff';
+  return '';
+};
+
+const buildLogisticsWritePayload = (payload = {}, { includeSubmissionId = false } = {}) => {
+  const row = {
+    Submission_ID: includeSubmissionId ? payload?.submission_id : undefined,
+    Logistics_Type: payload?.logistics_type === undefined
+      ? undefined
+      : normalizeLogisticsTypeForDb(payload.logistics_type),
+    Shipment_Status: payload?.shipment_status,
+    Courier_Name: payload?.courier_name,
+    Tracking_Number: payload?.tracking_number,
+    Pickup_Scheduled_At: payload?.pickup_scheduled_at,
+    Pickup_Approved_At: payload?.pickup_approved_at,
+    Received_By: payload?.received_by,
+    Received_At: payload?.received_at,
+    Notes: payload?.notes,
+    Updated_By: payload?.updated_by,
+  };
+
+  return Object.fromEntries(
+    Object.entries(row).filter(([, value]) => value !== undefined)
+  );
+};
 
 const trackingEntrySelect = `
   tracking_id:Tracking_ID,
@@ -423,6 +452,26 @@ const screeningStringOrDefault = (value, fallback) => (
   isUnclearScreeningValue(value) ? fallback : nonEmptyString(value, fallback)
 );
 
+const normalizeSheddingLevelForDb = (value, fallback = 'mild') => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return fallback;
+
+  if (/^(none|no|absent|normal)$/.test(normalized) || /\b(no|without)\s+(visible\s+)?(hair\s+)?(fall|loss|shedding)\b/.test(normalized)) {
+    return 'none';
+  }
+  if (/^(mild|low|minimal|slight|light)$/.test(normalized) || /\b(mild|low|minimal|slight|light)\b/.test(normalized)) {
+    return 'mild';
+  }
+  if (/^(moderate|medium|average)$/.test(normalized) || /\b(moderate|medium|average)\b/.test(normalized)) {
+    return 'moderate';
+  }
+  if (/^(severe|high|heavy|excessive|significant)$/.test(normalized) || /\b(severe|high|heavy|excessive|significant)\b/.test(normalized)) {
+    return 'severe';
+  }
+
+  return fallback;
+};
+
 const normalizeAiScreeningInsertPayload = (payload = {}) => {
   const estimatedLength = resolveEstimatedLengthCm(payload) ?? 0;
   const normalizedPayload = {
@@ -432,7 +481,7 @@ const normalizeAiScreeningInsertPayload = (payload = {}) => {
     detected_texture: screeningStringOrDefault(payload?.detected_texture, 'Straight'),
     detected_density: screeningStringOrDefault(payload?.detected_density, 'Medium'),
     detected_condition: screeningStringOrDefault(payload?.detected_condition, 'Needs manual hair review'),
-    shedding_level: screeningStringOrDefault(payload?.shedding_level, 'mild'),
+    shedding_level: normalizeSheddingLevelForDb(payload?.shedding_level),
     visible_scalp_area: screeningStringOrDefault(payload?.visible_scalp_area, 'low'),
   };
 
@@ -633,11 +682,17 @@ const normalizeAiScreening = (row) => {
     && !Array.isArray(row.analysis_result)
     ? row.analysis_result
     : {};
+  const storedCareTips = Array.isArray(analysisResult?.recommendations)
+    ? analysisResult.recommendations
+    : Array.isArray(analysisResult?.care_tips)
+      ? analysisResult.care_tips
+      : [];
 
   const screening = ({
   ...analysisResult,
   id: row?.ai_screening_id || analysisResult?.ai_screening_id || null,
   ai_screening_id: row?.ai_screening_id || null,
+  user_id: row?.user_id || null,
   submission_id: row?.submission_id || null,
   submission_detail_id: row?.submission_detail_id || null,
   estimated_length: row?.estimated_length ?? null,
@@ -671,7 +726,9 @@ const normalizeAiScreening = (row) => {
   length_assessment: row?.length_assessment || analysisResult?.length_assessment || '',
   donation_readiness_note: row?.donation_readiness_note || analysisResult?.donation_readiness_note || '',
   history_assessment: row?.history_assessment || analysisResult?.history_assessment || '',
-  recommendations: Array.isArray(analysisResult?.recommendations) ? analysisResult.recommendations : [],
+  screening_images: Array.isArray(row?.screening_images) ? row.screening_images : [],
+  recommendations: storedCareTips,
+  care_tips: storedCareTips,
   analysis_result: analysisResult,
   created_at: row?.created_at || null,
   });
@@ -682,24 +739,22 @@ const normalizeAiScreening = (row) => {
   };
 };
 
-const normalizeDonorRecommendation = (row) => ({
-  id: row?.recommendation_id || null,
-  recommendation_id: row?.recommendation_id || null,
-  submission_id: row?.submission_id || null,
-  title: row?.title || '',
-  recommendation_text: row?.recommendation_text || '',
-  priority_order: row?.priority_order ?? null,
-  created_at: row?.created_at || null,
-});
-
-const normalizeHairSubmission = (row) => ({
+const normalizeHairSubmission = (row) => {
+  const aiScreenings = Array.isArray(row?.ai_screenings)
+    ? row.ai_screenings.map(normalizeAiScreening)
+    : row?.ai_screenings
+      ? [normalizeAiScreening(row.ai_screenings)]
+      : [];
+  return ({
   id: row?.submission_id || null,
   submission_id: row?.submission_id || null,
   user_id: row?.user_id || null,
   event_request_id: row?.event_request_id || null,
   donation_drive_id: row?.event_request_id || row?.donation_drive_id || null,
   event_attendee_id: row?.event_attendee_id || null,
-  donation_reference: row?.submission_id ? `DON-${row.submission_id}` : '',
+  ai_screening_id: row?.ai_screening_id || null,
+  waybill_code: row?.waybill_code || '',
+  donation_reference: row?.waybill_code || (row?.submission_id ? `DON-${row.submission_id}` : ''),
   from_event: row?.from_event ?? null,
   // The database has no separate source column. Keep this app-facing value derived
   // from persisted event links and the optional source stored in Donor_Notes.
@@ -714,18 +769,12 @@ const normalizeHairSubmission = (row) => ({
   status: row?.status || '',
   created_at: row?.created_at || null,
   updated_at: row?.updated_at || null,
-  ai_screenings: Array.isArray(row?.ai_screenings)
-    ? row.ai_screenings.map(normalizeAiScreening)
-    : row?.ai_screenings
-      ? normalizeAiScreening(row.ai_screenings)
-      : [],
-  donor_recommendations: Array.isArray(row?.donor_recommendations)
-    ? row.donor_recommendations.map(normalizeDonorRecommendation)
-    : [],
+  ai_screenings: aiScreenings,
   submission_details: Array.isArray(row?.submission_details)
     ? row.submission_details.map(normalizeHairSubmissionDetail)
     : [],
-});
+  });
+};
 
 const normalizeHairSubmissionDetail = (row) => ({
   id: row?.submission_detail_id || null,
@@ -777,19 +826,17 @@ const normalizeHairSubmissionLogistics = (row) => {
   submission_logistics_id: row?.submission_logistics_id || null,
   submission_id: row?.submission_id || null,
   logistics_type: row?.logistics_type || '',
-  courier_name: metadata?.courier_name || '',
-  tracking_number: metadata?.tracking_number || '',
+  courier_name: row?.courier_name || metadata?.courier_name || '',
+  tracking_number: row?.tracking_number || metadata?.tracking_number || '',
   shipment_status: row?.shipment_status || '',
-  pickup_scheduled_at: metadata?.pickup_scheduled_at || null,
-  pickup_schedule_date: metadata?.pickup_schedule_date || null,
-  pickup_approved_at: metadata?.pickup_approved_at || null,
-  queue_number: metadata?.queue_number ?? null,
-  dropoff_window: metadata?.dropoff_window || '',
-  dropoff_status: metadata?.dropoff_status || '',
+  pickup_scheduled_at: row?.pickup_scheduled_at || metadata?.pickup_scheduled_at || null,
+  pickup_approved_at: row?.pickup_approved_at || metadata?.pickup_approved_at || null,
   received_by: row?.received_by || null,
   received_at: row?.received_at || null,
   notes: metadata?.notes || '',
   created_at: row?.created_at || null,
+  updated_by: row?.updated_by || null,
+  updated_at: row?.updated_at || row?.created_at || null,
   });
 };
 
@@ -880,7 +927,7 @@ export const createHairSubmission = async (payload) => {
     table: hairSubmissionsTable,
     phase: 'create',
     userId,
-    columns: ['User_ID', 'Event_Request_ID', 'Event_Attendee_ID', 'From_Event', 'Donor_Notes', 'Status', 'Cut_At', 'Cut_By_User_ID'],
+    columns: ['User_ID', 'AI_Screening_ID', 'Event_Request_ID', 'Event_Attendee_ID', 'From_Event', 'Donor_Notes', 'Status', 'Cut_At', 'Cut_By_User_ID'],
   });
 
   let eventRequestId = payload?.event_request_id || payload?.donation_drive_id || null;
@@ -902,6 +949,7 @@ export const createHairSubmission = async (payload) => {
 
   const insertPayload = {
     User_ID: userId,
+    AI_Screening_ID: payload?.ai_screening_id || null,
     Event_Request_ID: eventRequestId,
     From_Event: resolveFromEventForWrite({
       payload,
@@ -1043,17 +1091,23 @@ export const createHairSubmissionImages = async (rows) => {
 
 export const createAiScreening = async (payload) => {
   const screeningPayload = normalizeAiScreeningInsertPayload(payload);
+  const resolvedUser = await resolveSubmissionUserId(payload?.user_id, payload?.database_user_id);
+  if (resolvedUser.error || !resolvedUser.userId) {
+    return {
+      data: null,
+      error: resolvedUser.error || new Error('A donor is required for AI screening.'),
+    };
+  }
 
   logHairQuery('createAiScreening', {
     table: aiScreeningsTable,
     phase: 'create',
-    filters: { Submission_ID: payload?.submission_id },
-    columns: ['Submission_ID', 'Estimated_Length', 'Detected_Color', 'Detected_Texture', 'Detected_Density', 'Detected_Condition', 'Visible_Damage_Notes', 'Confidence_Score', 'Shine_Level', 'Frizz_Level', 'Dryness_Level', 'Oiliness_Level', 'Damage_Level', 'Bald_Spots_Present', 'Affected_Regions', 'Hair_Density_Score', 'Shedding_Level', 'Visible_Scalp_Area', 'Scalp_Coverage_Notes', 'Dandruff_Detected', 'Dandruff_Severity', 'Dandruff_Notes', 'Lice_Detected', 'Lice_Confidence', 'Lice_Notes', 'Improvement_Tracking_Status', 'Improvement_Recommendation', 'Decision', 'Summary', 'Length_Assessment', 'Donation_Readiness_Note', 'History_Assessment', 'Analysis_Result'],
+    filters: { User_ID: resolvedUser.userId, Submission_ID: payload?.submission_id || null },
+    columns: ['User_ID', 'Submission_ID', 'Estimated_Length', 'Detected_Color', 'Detected_Texture', 'Detected_Density', 'Detected_Condition', 'Visible_Damage_Notes', 'Confidence_Score', 'Shine_Level', 'Frizz_Level', 'Dryness_Level', 'Oiliness_Level', 'Damage_Level', 'Bald_Spots_Present', 'Affected_Regions', 'Hair_Density_Score', 'Shedding_Level', 'Visible_Scalp_Area', 'Scalp_Coverage_Notes', 'Dandruff_Detected', 'Dandruff_Severity', 'Dandruff_Notes', 'Lice_Detected', 'Lice_Confidence', 'Lice_Notes', 'Improvement_Tracking_Status', 'Improvement_Recommendation', 'Decision', 'Summary', 'Length_Assessment', 'Donation_Readiness_Note', 'History_Assessment', 'Screening_Images', 'Analysis_Result'],
   });
 
-  const result = await supabase
-    .from(aiScreeningsTable)
-    .upsert([{
+  const insertRow = {
+      User_ID: resolvedUser.userId,
       Submission_ID: payload?.submission_id || null,
       Estimated_Length: screeningPayload.estimated_length,
       Detected_Color: screeningPayload.detected_color,
@@ -1090,61 +1144,23 @@ export const createAiScreening = async (payload) => {
       Length_Assessment: nonEmptyString(payload?.length_assessment, ''),
       Donation_Readiness_Note: nonEmptyString(payload?.donation_readiness_note, ''),
       History_Assessment: nonEmptyString(payload?.history_assessment, ''),
+      Screening_Images: Array.isArray(payload?.screening_images) ? payload.screening_images : [],
       Analysis_Result: payload?.analysis_result
         && typeof payload.analysis_result === 'object'
         && !Array.isArray(payload.analysis_result)
         ? payload.analysis_result
         : {},
       Created_At: getPhilippineDatabaseTimestamp(),
-    }], { onConflict: 'Submission_ID' })
+    };
+  const query = payload?.submission_id
+    ? supabase.from(aiScreeningsTable).upsert([insertRow], { onConflict: 'Submission_ID' })
+    : supabase.from(aiScreeningsTable).insert([insertRow]);
+  const result = await query
     .select(aiScreeningSelect)
     .single();
 
   return {
     data: result.data ? normalizeAiScreening(result.data) : null,
-    error: result.error,
-  };
-};
-
-export const createDonorRecommendations = async (rows) => {
-  const submissionIds = [...new Set(rows.map((row) => row?.submission_id).filter(Boolean))];
-
-  if (submissionIds.length) {
-    const deleteResult = await supabase
-      .from(donorRecommendationsTable)
-      .delete()
-      .in('Submission_ID', submissionIds);
-
-    if (deleteResult.error) {
-      return {
-        data: [],
-        error: deleteResult.error,
-      };
-    }
-  }
-
-  const insertRows = rows.map((row) => ({
-    Submission_ID: row?.submission_id || null,
-    Title: row?.title || null,
-    Recommendation_Text: row?.recommendation_text || null,
-    Priority_Order: row?.priority_order ?? null,
-    Created_At: getPhilippineDatabaseTimestamp(),
-  }));
-
-  logHairQuery('createDonorRecommendations', {
-    table: donorRecommendationsTable,
-    phase: 'create',
-    rowCount: insertRows.length,
-    columns: ['Submission_ID', 'Title', 'Recommendation_Text', 'Priority_Order'],
-  });
-
-  const result = await supabase
-    .from(donorRecommendationsTable)
-    .insert(insertRows)
-    .select(donorRecommendationSelect);
-
-  return {
-    data: (result.data || []).map(normalizeDonorRecommendation),
     error: result.error,
   };
 };
@@ -1698,69 +1714,11 @@ export const fetchDonationTimelineProductionByBundleId = async (bundleId) => {
   };
 };
 
-export const fetchDonorRecommendationsBySubmissionId = async (submissionId, limit = 5) => {
-  logHairQuery('fetchDonorRecommendationsBySubmissionId', {
-    table: donorRecommendationsTable,
-    phase: 'read',
-    filters: { Submission_ID: submissionId },
-    columns: ['Recommendation_ID', 'Submission_ID', 'Title', 'Recommendation_Text', 'Priority_Order', 'Created_At'],
-  });
-
-  const result = await supabase
-    .from(donorRecommendationsTable)
-    .select(donorRecommendationSelect)
-    .eq('Submission_ID', submissionId)
-    .order('Priority_Order', { ascending: true })
-    .limit(limit);
-
-  return {
-    data: (result.data || []).map(normalizeDonorRecommendation),
-    error: result.error,
-  };
-};
-
-export const fetchLatestDonorRecommendationByUserId = async (userId) => {
-  const resolvedUserId = await resolveSubmissionUserId(userId);
-  if (resolvedUserId.error) {
-    return { data: null, error: resolvedUserId.error };
-  }
-
-  logHairQuery('fetchLatestDonorRecommendationByUserId', {
-    table: donorRecommendationsTable,
-    phase: 'read',
-    filters: { User_ID: resolvedUserId.userId },
-    columns: ['Recommendation_ID', 'Submission_ID', 'Title', 'Recommendation_Text', 'Created_At'],
-  });
-
-  // First, get the latest submission
-  const submissionResult = await supabase
-    .from(hairSubmissionsTable)
-    .select('Submission_ID')
-    .eq('User_ID', resolvedUserId.userId)
-    .order('Created_At', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (!submissionResult.data) {
-    return { data: null, error: submissionResult.error };
-  }
-
-  // Then get the latest recommendation for that submission
-  const result = await supabase
-    .from(donorRecommendationsTable)
-    .select(donorRecommendationSelect)
-    .eq('Submission_ID', submissionResult.data.Submission_ID)
-    .order('Priority_Order', { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  return {
-    data: result.data ? normalizeDonorRecommendation(result.data) : null,
-    error: result.error,
-  };
-};
-
-export const fetchHairSubmissionsByUserId = async (userId, limit = 10) => {
+export const fetchHairSubmissionsByUserId = async (
+  userId,
+  limit = 10,
+  { relationLimit = limit } = {}
+) => {
   const resolvedUserId = await resolveSubmissionUserId(userId);
   if (resolvedUserId.error) {
     return { data: [], error: resolvedUserId.error };
@@ -1787,17 +1745,38 @@ export const fetchHairSubmissionsByUserId = async (userId, limit = 10) => {
     };
   }
 
-  const submissionIds = result.data.map((row) => row?.submission_id).filter(Boolean);
+  const normalizedRows = result.data.map(normalizeHairSubmission);
+  const normalizedRelationLimit = Math.max(1, Number(relationLimit) || limit);
+  const recentRelationIds = normalizedRows
+    .slice(0, normalizedRelationLimit)
+    .map((submission) => submission.submission_id);
+  const nonTerminalRelationIds = normalizedRows
+    .filter((submission) => {
+      const statusKey = normalizeFlowKey(submission?.status || '');
+      return !isHairCheckOnlySubmission(submission)
+        && !['cancelled', 'canceled', 'rejected', 'closed', 'completed', 'wigcreated'].includes(statusKey);
+    })
+    .map((submission) => submission.submission_id);
+  const submissionIds = [...new Set([...recentRelationIds, ...nonTerminalRelationIds])].filter(Boolean);
 
+  const screeningIds = [...new Set(normalizedRows
+    .map((submission) => submission.ai_screening_id)
+    .filter(Boolean))];
   const screeningsResult = await readOptionalHairSubmissionRelation({
-    queryFactory: () => supabase
-      .from(aiScreeningsTable)
-      .select(aiScreeningSelect)
-      .in('Submission_ID', submissionIds)
-      .order('Created_At', { ascending: false }),
+    queryFactory: () => {
+      const filters = [];
+      if (screeningIds.length) filters.push(`AI_Screening_ID.in.(${screeningIds.join(',')})`);
+      if (submissionIds.length) filters.push(`Submission_ID.in.(${submissionIds.join(',')})`);
+      return supabase
+        .from(aiScreeningsTable)
+        .select(aiScreeningSelect)
+        .eq('User_ID', resolvedUserId.userId)
+        .or(filters.join(','))
+        .order('Created_At', { ascending: false });
+    },
     scope: 'hair_submission.query.fetchHairSubmissionsByUserId.screenings.optional_unavailable',
     table: aiScreeningsTable,
-    extras: { submissionIds },
+    extras: { submissionIds, screeningIds },
   });
 
   if (screeningsResult.error) {
@@ -1808,12 +1787,15 @@ export const fetchHairSubmissionsByUserId = async (userId, limit = 10) => {
     });
   }
 
-  const screeningsBySubmissionId = new Map();
+  const screeningsById = new Map();
+  const legacyScreeningsBySubmissionId = new Map();
   (screeningsResult.data || []).forEach((row) => {
     const screening = normalizeAiScreening(row);
-    const currentRows = screeningsBySubmissionId.get(screening.submission_id) || [];
+    if (screening.ai_screening_id) screeningsById.set(screening.ai_screening_id, screening);
+    if (!screening.submission_id) return;
+    const currentRows = legacyScreeningsBySubmissionId.get(screening.submission_id) || [];
     currentRows.push(screening);
-    screeningsBySubmissionId.set(screening.submission_id, currentRows);
+    legacyScreeningsBySubmissionId.set(screening.submission_id, currentRows);
   });
 
   const detailsResult = await readOptionalHairSubmissionRelation({
@@ -1878,38 +1860,12 @@ export const fetchHairSubmissionsByUserId = async (userId, limit = 10) => {
     detailsBySubmissionId.set(detail.submission_id, currentRows);
   });
 
-  const recommendationsResult = await readOptionalHairSubmissionRelation({
-    queryFactory: () => supabase
-      .from(donorRecommendationsTable)
-      .select(donorRecommendationSelect)
-      .in('Submission_ID', submissionIds)
-      .order('Priority_Order', { ascending: true }),
-    scope: 'hair_submission.query.fetchHairSubmissionsByUserId.recommendations.optional_unavailable',
-    table: donorRecommendationsTable,
-    extras: { submissionIds },
-  });
-
-  if (recommendationsResult.error) {
-    logAppError('hair_submission.query.fetchHairSubmissionsByUserId.recommendations', recommendationsResult.error, {
-      table: donorRecommendationsTable,
-      phase: 'read',
-      submissionIds,
-    });
-  }
-
-  const recommendationsBySubmissionId = new Map();
-  (recommendationsResult.data || []).forEach((row) => {
-    const recommendation = normalizeDonorRecommendation(row);
-    const currentRows = recommendationsBySubmissionId.get(recommendation.submission_id) || [];
-    currentRows.push(recommendation);
-    recommendationsBySubmissionId.set(recommendation.submission_id, currentRows);
-  });
-
   return {
     data: (result.data || []).map((row) => normalizeHairSubmission({
       ...row,
-      ai_screenings: screeningsBySubmissionId.get(row?.submission_id) || [],
-      donor_recommendations: recommendationsBySubmissionId.get(row?.submission_id) || [],
+      ai_screenings: row?.ai_screening_id && screeningsById.has(row.ai_screening_id)
+        ? [screeningsById.get(row.ai_screening_id)]
+        : legacyScreeningsBySubmissionId.get(row?.submission_id) || [],
       submission_details: detailsBySubmissionId.get(row?.submission_id) || [],
     })),
     error: result.error,
@@ -1960,6 +1916,371 @@ export const getHairSubmissionImageSignedUrl = async (path, expiresIn = 3600) =>
 
   return {
     data: result.data?.signedUrl || directUrlFallback,
+    error: result.error,
+  };
+};
+
+export const fetchAiScreeningsByUserId = async (userId, limit = 12) => {
+  const resolvedUser = await resolveSubmissionUserId(userId);
+  if (resolvedUser.error || !resolvedUser.userId) {
+    return { data: [], error: resolvedUser.error || new Error('A donor is required.') };
+  }
+
+  const runQuery = (columns) => supabase
+      .from(aiScreeningsTable)
+      .select(columns)
+      .eq('User_ID', resolvedUser.userId)
+      .order('Created_At', { ascending: false })
+      .limit(Math.max(1, Number(limit) || 12));
+  let result = await runQuery(aiScreeningSelect);
+  if (isMissingScreeningImagesColumnError(result.error)) {
+    result = await runQuery(aiScreeningSelectWithoutImages);
+  }
+
+  return {
+    data: (result.data || []).map(normalizeAiScreening),
+    error: result.error,
+  };
+};
+
+export const fetchLatestEligibleAiScreeningByUserId = async (userId) => {
+  const screeningsResult = await fetchAiScreeningsByUserId(userId, 30);
+  const latestScreening = (screeningsResult.data || []).find((screening) => (
+    screening?.ai_screening_id && String(screening?.decision || '').trim()
+  )) || null;
+  return {
+    data: latestScreening && (
+      ['eligible', 'eligiblefordonation', 'eligibleforhairdonation', 'passed']
+        .includes(normalizeFlowKey(latestScreening.decision))
+    ) ? latestScreening : null,
+    error: screeningsResult.error,
+  };
+};
+
+/**
+ * Lightweight submission rows for counts, history summaries, and page-level
+ * decisions. Unlike fetchHairSubmissionsByUserId, this intentionally does not
+ * load screenings, recommendations, details, or images.
+ */
+export const fetchHairSubmissionSummariesByUserId = async (userId, limit = 100) => {
+  const resolvedUserId = await resolveSubmissionUserId(userId);
+  if (resolvedUserId.error) {
+    return { data: [], error: resolvedUserId.error };
+  }
+
+  logHairQuery('fetchHairSubmissionSummariesByUserId', {
+    table: hairSubmissionsTable,
+    phase: 'read',
+    filters: { User_ID: resolvedUserId.userId },
+    columns: ['Submission_ID', 'User_ID', 'Event_Request_ID', 'Event_Attendee_ID', 'From_Event', 'Donor_Notes', 'Status', 'Bundle_ID', 'Cut_At', 'Created_At', 'Updated_At'],
+    limit,
+  });
+
+  const result = await supabase
+    .from(hairSubmissionsTable)
+    .select(hairSubmissionSelect)
+    .eq('User_ID', resolvedUserId.userId)
+    .order('Created_At', { ascending: false })
+    .limit(limit);
+
+  return {
+    data: (result.data || []).map(normalizeHairSubmission),
+    error: result.error,
+  };
+};
+
+export const fetchHairSubmissionProgressSummariesByUserId = async (userId, limit = 100) => {
+  const submissionsResult = await fetchHairSubmissionSummariesByUserId(userId, limit);
+  const submissionIds = (submissionsResult.data || [])
+    .map((submission) => submission.submission_id)
+    .filter(Boolean);
+  if (submissionsResult.error || !submissionIds.length) return submissionsResult;
+
+  const detailsResult = await supabase
+    .from(hairSubmissionDetailsTable)
+    .select(hairSubmissionDetailSelect)
+    .in('Submission_ID', submissionIds);
+  const detailsBySubmissionId = new Map();
+  (detailsResult.data || []).forEach((row) => {
+    const detail = normalizeHairSubmissionDetail(row);
+    const rows = detailsBySubmissionId.get(detail.submission_id) || [];
+    rows.push(detail);
+    detailsBySubmissionId.set(detail.submission_id, rows);
+  });
+
+  return {
+    data: submissionsResult.data.map((submission) => ({
+      ...submission,
+      submission_details: detailsBySubmissionId.get(submission.submission_id) || [],
+    })),
+    error: detailsResult.error || null,
+  };
+};
+
+export const fetchHairSubmissionDetailCountsBySubmissionIds = async (submissionIds = []) => {
+  const ids = [...new Set(
+    (submissionIds || [])
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value) && value > 0)
+  )];
+  if (!ids.length) return { data: {}, error: null };
+
+  const result = await supabase
+    .from(hairSubmissionDetailsTable)
+    .select('submission_id:Submission_ID')
+    .in('Submission_ID', ids);
+
+  const counts = (result.data || []).reduce((accumulator, row) => {
+    const submissionId = Number(row?.submission_id);
+    if (submissionId) accumulator[submissionId] = (accumulator[submissionId] || 0) + 1;
+    return accumulator;
+  }, {});
+
+  return { data: counts, error: result.error };
+};
+
+/** Load only the records linked to already-selected submissions. */
+export const fetchHairSubmissionCertificateRecordsByIds = async (submissionIds = []) => {
+  const ids = [...new Set(
+    (submissionIds || [])
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value) && value > 0)
+  )];
+
+  if (!ids.length) return { data: [], error: null };
+
+  const submissionsResult = await supabase
+    .from(hairSubmissionsTable)
+    .select(hairSubmissionSelect)
+    .in('Submission_ID', ids);
+
+  if (submissionsResult.error || !(submissionsResult.data || []).length) {
+    return {
+      data: (submissionsResult.data || []).map(normalizeHairSubmission),
+      error: submissionsResult.error,
+    };
+  }
+
+  const normalizedSubmissions = submissionsResult.data.map(normalizeHairSubmission);
+  const screeningIds = [...new Set(normalizedSubmissions
+    .map((row) => row.ai_screening_id)
+    .filter(Boolean))];
+  const screeningFilters = [];
+  if (screeningIds.length) screeningFilters.push(`AI_Screening_ID.in.(${screeningIds.join(',')})`);
+  if (ids.length) screeningFilters.push(`Submission_ID.in.(${ids.join(',')})`);
+  const [screeningsResult, detailsResult] = await Promise.all([
+    supabase
+      .from(aiScreeningsTable)
+      .select(aiScreeningSelect)
+      .or(screeningFilters.join(','))
+      .order('Created_At', { ascending: false }),
+    supabase
+      .from(hairSubmissionDetailsTable)
+      .select(hairSubmissionDetailSelect)
+      .in('Submission_ID', ids)
+      .order('Created_At', { ascending: false }),
+  ]);
+
+  const screeningsById = new Map();
+  const legacyScreeningsBySubmissionId = new Map();
+  (screeningsResult.data || []).forEach((row) => {
+    const screening = normalizeAiScreening(row);
+    if (screening.ai_screening_id) screeningsById.set(screening.ai_screening_id, screening);
+    if (!screening.submission_id) return;
+    const rows = legacyScreeningsBySubmissionId.get(screening.submission_id) || [];
+    rows.push(screening);
+    legacyScreeningsBySubmissionId.set(screening.submission_id, rows);
+  });
+
+  const detailsBySubmissionId = new Map();
+  (detailsResult.data || []).forEach((row) => {
+    const detail = normalizeHairSubmissionDetail(row);
+    const rows = detailsBySubmissionId.get(detail.submission_id) || [];
+    rows.push(detail);
+    detailsBySubmissionId.set(detail.submission_id, rows);
+  });
+
+  return {
+    data: (submissionsResult.data || []).map((row) => normalizeHairSubmission({
+      ...row,
+      ai_screenings: row?.ai_screening_id && screeningsById.has(row.ai_screening_id)
+        ? [screeningsById.get(row.ai_screening_id)]
+        : legacyScreeningsBySubmissionId.get(row?.submission_id) || [],
+      submission_details: detailsBySubmissionId.get(row?.submission_id) || [],
+    })),
+    error: submissionsResult.error || screeningsResult.error || detailsResult.error || null,
+  };
+};
+
+/**
+ * Resolve one saved hair check and only the relationships its details page
+ * renders. Ownership is checked before any related rows are requested.
+ */
+export const fetchHairScreeningEntryById = async ({ userId, screeningId } = {}) => {
+  if (!userId || !screeningId) {
+    return { data: null, error: new Error('User and screening IDs are required.') };
+  }
+
+  const resolvedUserId = await resolveSubmissionUserId(userId);
+  if (resolvedUserId.error) return { data: null, error: resolvedUserId.error };
+
+  const runScreeningQuery = (columns) => supabase
+      .from(aiScreeningsTable)
+      .select(columns)
+      .eq('AI_Screening_ID', screeningId)
+      .maybeSingle();
+  let screeningResult = await runScreeningQuery(aiScreeningSelect);
+  if (isMissingScreeningImagesColumnError(screeningResult.error)) {
+    screeningResult = await runScreeningQuery(aiScreeningSelectWithoutImages);
+  }
+
+  if (screeningResult.error || !screeningResult.data) {
+    return { data: null, error: screeningResult.error };
+  }
+
+  const screening = normalizeAiScreening(screeningResult.data);
+  if (Number(screening.user_id) !== Number(resolvedUserId.userId)) {
+    return { data: null, error: new Error('Hair screening was not found for this donor.') };
+  }
+
+  if (!screening.submission_id) {
+    return {
+      data: {
+        screening,
+        submission: null,
+        recommendations: screening.recommendations || [],
+        images: screening.screening_images || [],
+      },
+      error: null,
+    };
+  }
+
+  const submissionResult = await supabase
+    .from(hairSubmissionsTable)
+    .select(hairSubmissionSelect)
+    .eq('Submission_ID', screeningResult.data.submission_id)
+    .eq('User_ID', resolvedUserId.userId)
+    .maybeSingle();
+
+  if (submissionResult.error || !submissionResult.data?.submission_id) {
+    return { data: null, error: submissionResult.error };
+  }
+
+  const submissionId = submissionResult.data.submission_id;
+  const detailsResult = await supabase
+    .from(hairSubmissionDetailsTable)
+    .select(hairSubmissionDetailSelect)
+    .eq('Submission_ID', submissionId)
+    .order('Created_At', { ascending: false });
+
+  const details = (detailsResult.data || []).map(normalizeHairSubmissionDetail);
+  const detailIds = details.map((detail) => detail.submission_detail_id).filter(Boolean);
+  const imagesResult = detailIds.length
+    ? await supabase
+      .from(hairSubmissionImagesTable)
+      .select(hairSubmissionImageSelect)
+      .in('Submission_Detail_ID', detailIds)
+      .order('Uploaded_At', { ascending: false })
+    : { data: [], error: null };
+
+  const imagesByDetailId = new Map();
+  (imagesResult.data || []).forEach((row) => {
+    const image = normalizeHairSubmissionImage(row);
+    const rows = imagesByDetailId.get(image.submission_detail_id) || [];
+    rows.push(image);
+    imagesByDetailId.set(image.submission_detail_id, rows);
+  });
+
+  const detailsWithImages = details.map((detail) => ({
+    ...detail,
+    images: imagesByDetailId.get(detail.submission_detail_id) || [],
+  }));
+  const submission = normalizeHairSubmission({
+    ...submissionResult.data,
+    ai_screenings: [screening],
+    submission_details: detailsWithImages,
+  });
+
+  return {
+    data: {
+      screening,
+      submission,
+      recommendations: screening.recommendations || [],
+      images: screening.screening_images?.length
+        ? screening.screening_images
+        : detailsWithImages.flatMap((detail) => detail.images || []),
+    },
+    error: detailsResult.error || imagesResult.error || null,
+  };
+};
+
+/** Compact latest-analysis model for eligibility badges and event registration. */
+export const fetchLatestHairAnalysisSummaryByUserId = async (userId, submissionLimit = 50) => {
+  const [submissionsResult, screeningsResult] = await Promise.all([
+    fetchHairSubmissionSummariesByUserId(userId, submissionLimit),
+    fetchAiScreeningsByUserId(userId, 1),
+  ]);
+  if (submissionsResult.error || screeningsResult.error) {
+    return {
+      data: { submissions: submissionsResult.data || [], latestAnalysisEntry: null },
+      error: submissionsResult.error || screeningsResult.error,
+    };
+  }
+
+  const screening = screeningsResult.data?.[0] || null;
+  if (!screening) {
+    return {
+      data: { submissions: submissionsResult.data, latestAnalysisEntry: null },
+      error: null,
+    };
+  }
+
+  const baseSubmission = submissionsResult.data.find(
+    (submission) => Number(submission.ai_screening_id) === Number(screening.ai_screening_id)
+      || Number(submission.submission_id) === Number(screening.submission_id)
+  ) || null;
+  const detail = baseSubmission?.submission_details?.[0] || null;
+  const submission = baseSubmission ? {
+    ...baseSubmission,
+    ai_screenings: [screening],
+    submission_details: detail ? [detail] : [],
+  } : null;
+
+  return {
+    data: {
+      submissions: submissionsResult.data,
+      latestAnalysisEntry: {
+        screening,
+        submission,
+        detail,
+        recommendations: screening.recommendations || [],
+        images: screening.screening_images || [],
+      },
+    },
+    error: null,
+  };
+};
+
+export const fetchHairSubmissionForEventByUserId = async ({ userId, eventRequestId } = {}) => {
+  const resolvedUserId = await resolveSubmissionUserId(userId);
+  if (resolvedUserId.error) return { data: null, error: resolvedUserId.error };
+
+  const result = await supabase
+    .from(hairSubmissionsTable)
+    .select(hairSubmissionSelect)
+    .eq('User_ID', resolvedUserId.userId)
+    .eq('Event_Request_ID', eventRequestId)
+    .order('Created_At', { ascending: false })
+    .limit(5);
+
+  const submission = (result.data || [])
+    .map(normalizeHairSubmission)
+    .find((item) => !['cancelled', 'canceled', 'rejected'].includes(
+      String(item?.status || '').trim().toLowerCase()
+    )) || null;
+
+  return {
+    data: submission,
     error: result.error,
   };
 };
@@ -2104,21 +2425,33 @@ export const fetchHairSubmissionDetailsBySubmissionId = async (submissionId) => 
 export const createHairSubmissionLogistics = async (payload) => {
   logHairQuery('createHairSubmissionLogistics', {
     table: hairSubmissionLogisticsTable,
-    phase: 'create',
+    phase: 'upsert',
     filters: { Submission_ID: payload?.submission_id },
-    columns: ['Submission_ID', 'Logistics_Type', 'Shipment_Status', 'Received_By', 'Received_At', 'Notes'],
+    columns: ['Submission_ID', 'Logistics_Type', 'Shipment_Status', 'Courier_Name', 'Tracking_Number', 'Pickup_Scheduled_At', 'Pickup_Approved_At', 'Received_By', 'Received_At', 'Notes', 'Updated_By'],
   });
+
+  if (!payload?.submission_id) {
+    return { data: null, error: new Error('Submission ID is required for logistics.') };
+  }
+  if (!normalizeLogisticsTypeForDb(payload?.logistics_type)) {
+    return { data: null, error: new Error('Choose Courier, Pickup, or Salon Dropoff.') };
+  }
+
+  const parentResult = await supabase
+    .from(hairSubmissionsTable)
+    .select('Submission_ID, From_Event')
+    .eq('Submission_ID', payload.submission_id)
+    .maybeSingle();
+  if (parentResult.error) return { data: null, error: parentResult.error };
+  if (!parentResult.data?.Submission_ID || parentResult.data.From_Event !== false) {
+    return { data: null, error: new Error('Logistics can only be added to an existing independent donation.') };
+  }
 
   const result = await supabase
     .from(hairSubmissionLogisticsTable)
-    .insert([{
-      Submission_ID: payload?.submission_id || null,
-      Logistics_Type: payload?.logistics_type || null,
-      Shipment_Status: payload?.shipment_status || null,
-      Received_By: payload?.received_by || null,
-      Received_At: payload?.received_at || null,
-      Notes: buildLogisticsNotes(payload),
-    }])
+    .upsert([
+      buildLogisticsWritePayload(payload, { includeSubmissionId: true }),
+    ], { onConflict: 'Submission_ID' })
     .select(hairSubmissionLogisticsSelect)
     .single();
 
@@ -2137,9 +2470,11 @@ export const upsertSalonDonationAppointment = async ({
   contactName,
   contactEmail = null,
   contactNumber,
-  hairDetails = {},
-  screeningAnswers = {},
   donorNotes = null,
+  bookingSource = 'Mobile',
+  isMinor = false,
+  guardianConsentId = null,
+  consentLegalDocumentId = null,
 }) => {
   if (!userId || !submissionId || !startAt || !endAt || !contactName || !contactNumber) {
     return { data: null, error: new Error('Complete the appointment details before scheduling your drop-off.') };
@@ -2167,10 +2502,11 @@ export const upsertSalonDonationAppointment = async ({
     Contact_Name: contactName,
     Contact_Email: contactEmail || null,
     Contact_Number: contactNumber,
-    Hair_Details: hairDetails || {},
-    Screening_Answers: screeningAnswers || {},
     Donor_Notes: donorNotes || null,
-    Booking_Source: 'Mobile',
+    Booking_Source: bookingSource || 'Mobile',
+    Is_Minor: Boolean(isMinor),
+    Guardian_Consent_ID: guardianConsentId || null,
+    Consent_Legal_Document_ID: consentLegalDocumentId || null,
     Updated_At: getPhilippineDatabaseTimestamp(),
   };
 
@@ -2189,7 +2525,13 @@ export const upsertSalonDonationAppointment = async ({
       submission_id:Hair_Submission_ID,
       appointment_start_at:Appointment_Start_At,
       appointment_end_at:Appointment_End_At,
-      status:Status
+      status:Status,
+      booking_source:Booking_Source,
+      checked_in_at:Checked_In_At,
+      completed_at:Completed_At,
+      cancelled_at:Cancelled_At,
+      created_at:Created_At,
+      updated_at:Updated_At
     `)
     .single();
 
@@ -2208,6 +2550,10 @@ export const fetchSalonDonationAppointmentBySubmissionId = async (submissionId) 
       appointment_start_at:Appointment_Start_At,
       appointment_end_at:Appointment_End_At,
       status:Status,
+      contact_name:Contact_Name,
+      contact_email:Contact_Email,
+      contact_number:Contact_Number,
+      booking_source:Booking_Source,
       checked_in_at:Checked_In_At,
       completed_at:Completed_At,
       cancelled_at:Cancelled_At,
@@ -2393,6 +2739,7 @@ export const updateHairSubmissionById = async (submissionId, payload) => {
   const result = await supabase
     .from(hairSubmissionsTable)
     .update({
+      AI_Screening_ID: payload?.ai_screening_id ?? undefined,
       Event_Request_ID: eventRequestId ?? undefined,
       From_Event: fromEvent,
       Donor_Notes: payload?.donor_notes ?? undefined,
@@ -2421,18 +2768,12 @@ export const updateHairSubmissionLogisticsById = async (submissionLogisticsId, p
     table: hairSubmissionLogisticsTable,
     phase: 'update',
     filters: { Submission_Logistics_ID: submissionLogisticsId },
-    columns: ['Logistics_Type', 'Shipment_Status', 'Received_By', 'Received_At', 'Notes'],
+    columns: ['Logistics_Type', 'Shipment_Status', 'Courier_Name', 'Tracking_Number', 'Pickup_Scheduled_At', 'Pickup_Approved_At', 'Received_By', 'Received_At', 'Notes', 'Updated_By'],
   });
 
   const result = await supabase
     .from(hairSubmissionLogisticsTable)
-    .update({
-      Logistics_Type: payload?.logistics_type || null,
-      Shipment_Status: payload?.shipment_status || null,
-      Received_By: payload?.received_by || null,
-      Received_At: payload?.received_at || null,
-      Notes: buildLogisticsNotes(payload),
-    })
+    .update(buildLogisticsWritePayload(payload))
     .eq('Submission_Logistics_ID', submissionLogisticsId)
     .select(hairSubmissionLogisticsSelect)
     .maybeSingle();
@@ -2448,20 +2789,99 @@ export const fetchHairSubmissionLogisticsBySubmissionId = async (submissionId) =
     table: hairSubmissionLogisticsTable,
     phase: 'read',
     filters: { Submission_ID: submissionId },
-    columns: ['Submission_Logistics_ID', 'Submission_ID', 'Logistics_Type', 'Shipment_Status', 'Received_By', 'Received_At', 'Notes', 'Created_At'],
+    columns: ['Submission_Logistics_ID', 'Submission_ID', 'Logistics_Type', 'Shipment_Status', 'Courier_Name', 'Tracking_Number', 'Pickup_Scheduled_At', 'Pickup_Approved_At', 'Received_By', 'Received_At', 'Notes', 'Created_At', 'Updated_By', 'Updated_At'],
   });
 
   const result = await supabase
     .from(hairSubmissionLogisticsTable)
     .select(hairSubmissionLogisticsSelect)
     .eq('Submission_ID', submissionId)
-    .order('Created_At', { ascending: false })
-    .limit(1)
     .maybeSingle();
 
   return {
     data: result.data ? normalizeHairSubmissionLogistics(result.data) : null,
     error: result.error,
+  };
+};
+
+/**
+ * Load the small workflow evidence set used by notification validation.
+ * This keeps notification badges from issuing two queries for every historical
+ * submission while still returning the same latest logistics and tracking data.
+ */
+export const fetchHairSubmissionWorkflowEvidenceByIds = async ({
+  userId,
+  submissionIds = [],
+  trackingLimitPerSubmission = 24,
+} = {}) => {
+  const ids = [...new Set(
+    (submissionIds || [])
+      .map((value) => Number(value))
+      .filter((value) => Number.isFinite(value) && value > 0)
+  )];
+  if (!userId || !ids.length) return { data: [], error: null };
+
+  const resolvedUserId = await resolveSubmissionUserId(userId);
+  if (resolvedUserId.error) return { data: [], error: resolvedUserId.error };
+
+  const submissionsResult = await supabase
+    .from(hairSubmissionsTable)
+    .select(hairSubmissionSelect)
+    .eq('User_ID', resolvedUserId.userId)
+    .in('Submission_ID', ids);
+
+  if (submissionsResult.error || !(submissionsResult.data || []).length) {
+    return {
+      data: (submissionsResult.data || []).map(normalizeHairSubmission),
+      error: submissionsResult.error,
+    };
+  }
+
+  const ownedIds = submissionsResult.data
+    .map((row) => Number(row?.submission_id))
+    .filter(Boolean);
+  const normalizedTrackingLimit = Math.max(1, Number(trackingLimitPerSubmission) || 24);
+  const [logisticsResult, trackingResult] = await Promise.all([
+    supabase
+      .from(hairSubmissionLogisticsTable)
+      .select(hairSubmissionLogisticsSelect)
+      .in('Submission_ID', ownedIds)
+      .order('Created_At', { ascending: false }),
+    supabase
+      .from(hairBundleTrackingHistoryTable)
+      .select(trackingEntrySelect)
+      .in('Submission_ID', ownedIds)
+      .order('Updated_At', { ascending: false }),
+  ]);
+
+  const latestLogisticsBySubmissionId = new Map();
+  (logisticsResult.data || []).forEach((row) => {
+    const logistics = normalizeHairSubmissionLogistics(row);
+    if (!latestLogisticsBySubmissionId.has(Number(logistics.submission_id))) {
+      latestLogisticsBySubmissionId.set(Number(logistics.submission_id), logistics);
+    }
+  });
+
+  const trackingBySubmissionId = new Map();
+  (trackingResult.data || []).forEach((row) => {
+    const entry = normalizeTrackingEntry(row);
+    const submissionId = Number(entry.submission_id);
+    const entries = trackingBySubmissionId.get(submissionId) || [];
+    if (entries.length < normalizedTrackingLimit) entries.push(entry);
+    trackingBySubmissionId.set(submissionId, entries);
+  });
+
+  return {
+    data: submissionsResult.data.map((row) => {
+      const submission = normalizeHairSubmission(row);
+      const submissionId = Number(submission.submission_id);
+      return {
+        submission,
+        logistics: latestLogisticsBySubmissionId.get(submissionId) || null,
+        trackingEntries: trackingBySubmissionId.get(submissionId) || [],
+      };
+    }),
+    error: submissionsResult.error || logisticsResult.error || trackingResult.error || null,
   };
 };
 
@@ -2596,13 +3016,6 @@ export const deleteHairSubmissionImagesByDetailIds = async (submissionDetailIds 
     .delete()
     .in('Submission_Detail_ID', detailIds);
 };
-
-export const deleteDonorRecommendationsBySubmissionId = async (submissionId) => (
-  await supabase
-    .from(donorRecommendationsTable)
-    .delete()
-    .eq('Submission_ID', submissionId)
-);
 
 export const deleteAiScreeningsBySubmissionId = async (submissionId) => (
   await supabase

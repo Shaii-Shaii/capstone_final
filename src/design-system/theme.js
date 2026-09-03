@@ -422,3 +422,42 @@ export function resolveThemeRoles(resolvedTheme = emptyResolvedTheme, options = 
     headerSearchAccentText: primaryActionText,
   };
 }
+
+export function resolvePatientThemeRoles(resolvedTheme = emptyResolvedTheme, options = {}) {
+  const roles = resolveThemeRoles(resolvedTheme, options);
+  const primaryActionBackground = theme.colors.palette.wine700;
+  const primaryActionText = theme.colors.textInverse;
+
+  return {
+    ...roles,
+    primaryActionBackground,
+    primaryActionText,
+    secondaryActionBackground: theme.colors.surfaceCardMuted,
+    secondaryActionBorder: theme.colors.borderMuted,
+    secondaryActionText: theme.colors.palette.wine800,
+    tertiaryAccentBackground: theme.colors.surfaceSoft,
+    tertiaryAccentText: theme.colors.palette.wine700,
+    supportCardBackground: theme.colors.surfaceCardMuted,
+    supportCardBorder: theme.colors.borderMuted,
+    accentCardBackground: theme.colors.surfaceSoft,
+    accentCardBorder: theme.colors.borderStrong,
+    headingText: theme.colors.textPrimary,
+    bodyText: theme.colors.textSecondary,
+    metaText: theme.colors.textMuted,
+    navActiveBackground: primaryActionBackground,
+    navActiveText: primaryActionText,
+    navInactiveText: theme.colors.textMuted,
+    badgeBackground: theme.colors.surfaceCardMuted,
+    badgeText: theme.colors.palette.wine700,
+    badgeStrongBackground: theme.colors.palette.blush100,
+    badgeStrongText: theme.colors.palette.wine800,
+    iconPrimarySurface: theme.colors.surfaceCardMuted,
+    iconSupportSurface: theme.colors.surfaceSoft,
+    iconAccentSurface: theme.colors.accentSoft,
+    iconPrimaryColor: theme.colors.palette.wine700,
+    iconSupportColor: theme.colors.palette.wine800,
+    iconAccentColor: theme.colors.palette.wine600,
+    headerSearchAccentBackground: primaryActionBackground,
+    headerSearchAccentText: primaryActionText,
+  };
+}

@@ -70,6 +70,23 @@ const buildPreviewImageUrl = async ({ userId, previewImage }) =>
   });
 
 const COMPLETED_REQUEST_TOKENS = ['completed', 'claimed', 'released', 'cancelled', 'canceled', 'rejected', 'closed'];
+const WIG_REQUEST_CANCELLATION_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const WIG_REQUEST_CANCELLATION_BLOCKERS = [
+  'accepted',
+  'approved',
+  'preparing',
+  'production',
+  'to be release',
+  'releasing',
+  'released',
+  'ready for claiming',
+  'claimed',
+  'completed',
+  'cancelled',
+  'canceled',
+  'rejected',
+  'closed',
+];
 
 const isOngoingWigRequest = (request) => {
   if (!request?.req_id) return false;
@@ -78,22 +95,48 @@ const isOngoingWigRequest = (request) => {
   return !COMPLETED_REQUEST_TOKENS.some((token) => status.includes(token));
 };
 
-const isCancellableWigRequest = (request) => {
-  if (!request?.req_id) return false;
+export const getWigRequestCancellationEligibility = (request, now = Date.now()) => {
+  if (!request?.req_id) {
+    return { canCancel: false, daysRemaining: 0, expiresAt: null, reason: 'No active request was found.' };
+  }
+
   const status = String(request.status || '').trim().toLowerCase().replace(/\s+/g, ' ');
-  if (!status) return true;
-  return ![
-    'accepted',
-    'approved',
-    'in production',
-    'to be release',
-    'releasing',
-    'released',
-    'cancelled',
-    'canceled',
-    'rejected',
-    'closed',
-  ].some((token) => status.includes(token));
+  if (WIG_REQUEST_CANCELLATION_BLOCKERS.some((token) => status.includes(token))) {
+    return {
+      canCancel: false,
+      daysRemaining: 0,
+      expiresAt: null,
+      reason: 'Cancellation is no longer available because wig preparation has started or the request is already closed.',
+    };
+  }
+
+  const requestedAt = new Date(request.request_date || '').getTime();
+  if (!Number.isFinite(requestedAt)) {
+    return {
+      canCancel: false,
+      daysRemaining: 0,
+      expiresAt: null,
+      reason: 'The cancellation window could not be verified. Please contact support for help.',
+    };
+  }
+
+  const expiresAtMs = requestedAt + WIG_REQUEST_CANCELLATION_WINDOW_MS;
+  const remainingMs = expiresAtMs - now;
+  if (remainingMs < 0) {
+    return {
+      canCancel: false,
+      daysRemaining: 0,
+      expiresAt: new Date(expiresAtMs).toISOString(),
+      reason: 'The seven-day cancellation window has ended.',
+    };
+  }
+
+  return {
+    canCancel: true,
+    daysRemaining: Math.max(1, Math.ceil(remainingMs / (24 * 60 * 60 * 1000))),
+    expiresAt: new Date(expiresAtMs).toISOString(),
+    reason: '',
+  };
 };
 
 const ensurePatientDetails = async (userId) => {
@@ -153,21 +196,21 @@ export const getPatientWigRequestContext = async (userId) => {
 
     const patientDetails = await ensurePatientDetails(userId);
 
-    const [{ data: latestWigRequest, error: wigRequestError }, { data: latestAllocation, error: allocationError }] =
-      await Promise.all([
-        WigRequestAPI.fetchLatestWigRequestByPatientDetailsId(patientDetails.patient_id),
-        WigRequestAPI.fetchLatestWigAllocationByPatientDetailsId(patientDetails.patient_id),
-      ]);
+    const { data: latestWigRequest, error: wigRequestError } =
+      await WigRequestAPI.fetchLatestWigRequestTrackingByPatientId(patientDetails.patient_id);
 
     if (wigRequestError) {
       throw new Error(wigRequestError.message || 'Unable to load the latest wig request.');
     }
 
-    if (allocationError) {
-      throw new Error(allocationError.message || 'Unable to load the latest wig allocation.');
-    }
+    const hasOngoingRequest = isOngoingWigRequest(latestWigRequest);
+    const { data: latestAllocation, error: allocationError } = hasOngoingRequest
+      ? await WigRequestAPI.fetchLatestWigAllocationByPatientDetailsId(patientDetails.patient_id)
+      : { data: null, error: null };
 
-    const { data: latestWigSpecification, error: wigSpecificationError } = latestWigRequest?.req_id
+    if (allocationError) throw new Error(allocationError.message || 'Unable to load the latest wig allocation.');
+
+    const { data: latestWigSpecification, error: wigSpecificationError } = hasOngoingRequest
       ? await WigRequestAPI.fetchLatestWigSpecificationByRequestId(latestWigRequest.req_id)
       : { data: null, error: null };
 
@@ -176,10 +219,12 @@ export const getPatientWigRequestContext = async (userId) => {
     }
 
     const hospitalId = latestWigRequest?.hospital_id || patientDetails.hospital_id || null;
-    const selectedWigId = latestWigRequest?.allocated_wig_id
-      || latestAllocation?.wig_id
-      || latestWigRequest?.requested_wig_id
-      || null;
+    const selectedWigId = hasOngoingRequest
+      ? latestWigRequest?.allocated_wig_id
+        || latestAllocation?.wig_id
+        || latestWigRequest?.requested_wig_id
+        || null
+      : null;
 
     const [
       { data: requestHospital, error: hospitalError },
@@ -189,10 +234,10 @@ export const getPatientWigRequestContext = async (userId) => {
     ] = await Promise.all([
       hospitalId ? WigRequestAPI.fetchHospitalById(hospitalId) : { data: null, error: null },
       selectedWigId ? WigRequestAPI.fetchWigDetailsById(selectedWigId) : { data: null, error: null },
-      latestWigRequest?.req_id
+      hasOngoingRequest
         ? WigRequestAPI.fetchLatestReleaseScheduleByRequestId(latestWigRequest.req_id)
         : { data: null, error: null },
-      latestWigRequest?.req_id
+      hasOngoingRequest
         ? WigRequestAPI.fetchPatientWigSafetyAssessmentByRequestId(latestWigRequest.req_id)
         : { data: null, error: null },
     ]);
@@ -416,6 +461,9 @@ export const savePatientWigRequestFlow = async ({
       request_date: new Date().toISOString(),
       status: wigRequestStatuses.pending,
       requested_wig_id: selectedWigId || null,
+      requested_cap_size: preferences.capSize || null,
+      is_wish_request: !selectedWigId,
+      fulfillment_status: 'catalog_review',
     });
 
     if (wigRequestError) {
@@ -608,8 +656,9 @@ export const cancelPatientWigRequest = async ({ userId, wigRequestId }) => {
       throw new Error('This request is no longer active.');
     }
 
-    if (!isCancellableWigRequest(latestWigRequest)) {
-      throw new Error('This request can no longer be cancelled.');
+    const cancellationEligibility = getWigRequestCancellationEligibility(latestWigRequest);
+    if (!cancellationEligibility.canCancel) {
+      throw new Error(cancellationEligibility.reason || 'This request can no longer be cancelled.');
     }
 
     const { data: cancelledRequest, error: cancelError } = await WigRequestAPI.cancelPendingWigRequest({

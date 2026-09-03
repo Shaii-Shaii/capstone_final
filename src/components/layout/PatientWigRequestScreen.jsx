@@ -27,7 +27,7 @@ import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { patientDashboardNavItems } from "../../constants/dashboard";
-import { resolveThemeRoles, theme } from "../../design-system/theme";
+import { resolvePatientThemeRoles, theme } from "../../design-system/theme";
 import {
     wigRequestDefaultValues,
     wigRequestSchema,
@@ -38,10 +38,10 @@ import { usePatientWigRequest } from "../../hooks/usePatientWigRequest";
 import { useProcessTracking } from "../../hooks/useProcessTracking";
 import { useAuth } from "../../providers/AuthProvider";
 import { verifyMedicalCertificateAsset } from "../../features/patientMedicalCertificate.service";
+import { getWigRequestCancellationEligibility } from "../../features/wigRequest.service";
 import { logAppError } from "../../utils/appErrors";
 import { DonorTopBar } from "../donor/DonorTopBar";
 import { LegalDocumentPreview } from "../legal/LegalDocumentPreview";
-import { ProcessStatusTracker } from "../tracking/ProcessStatusTracker";
 import { AppButton } from "../ui/AppButton";
 import { AppCard } from "../ui/AppCard";
 import { AppIcon } from "../ui/AppIcon";
@@ -210,27 +210,6 @@ const formatRequestStatus = (value) => {
     .filter(Boolean)
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
     .join(" ");
-};
-
-const canCancelWigRequest = (request) => {
-  if (!request?.req_id) return false;
-  const status = String(request.status || "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, " ");
-  if (!status) return true;
-  return ![
-    "accepted",
-    "approved",
-    "in production",
-    "to be release",
-    "releasing",
-    "released",
-    "cancelled",
-    "canceled",
-    "rejected",
-    "closed",
-  ].some((token) => status.includes(token));
 };
 
 const formatPatientFieldValue = (value, fallback = "Not provided") => {
@@ -2146,22 +2125,6 @@ function CalibrationSlider({
   );
 }
 
-function WigInfoTile({ label, value, roles }) {
-  return (
-    <View style={[styles.requestedWigDetailTile, { borderBottomColor: roles.defaultCardBorder }]}>
-      <Text style={[styles.requestedWigDetailLabel, { color: roles.bodyText }]}>
-        {label}
-      </Text>
-      <Text
-        numberOfLines={2}
-        style={[styles.requestedWigDetailValue, { color: roles.headingText }]}
-      >
-        {value}
-      </Text>
-    </View>
-  );
-}
-
 function WigInfoList({ rows, roles }) {
   const visibleRows = rows.filter((row) => {
     const normalizedValue = String(row?.value ?? "").trim().toLowerCase();
@@ -2180,16 +2143,304 @@ function WigInfoList({ rows, roles }) {
   }
 
   return (
-    <View style={styles.requestedWigDetailGrid}>
-      {visibleRows.map((row) => (
-        <WigInfoTile
-          key={row.label}
-          label={row.label}
-          value={row.value}
-          roles={roles}
-        />
+    <View style={styles.inlineWigDetailsList}>
+      {visibleRows.map((row, index) => (
+        <View key={row.label}>
+          <View style={styles.inlineWigDetailRow}>
+            <Text style={[styles.inlineWigDetailLabel, { color: roles.metaText }]}>{row.label}</Text>
+            <Text numberOfLines={2} style={[styles.inlineWigDetailValue, { color: roles.headingText }]}>{row.value}</Text>
+          </View>
+          {index < visibleRows.length - 1 ? (
+            <View style={[styles.inlineWigDetailDivider, { backgroundColor: roles.defaultCardBorder }]} />
+          ) : null}
+        </View>
       ))}
     </View>
+  );
+}
+
+function InlineWigDetails({ rows, code, imageUrl, selectedStyle, roles }) {
+  return (
+    <View style={styles.inlineWigDetailsSection}>
+      <View style={styles.inlineWigDetailsHeader}>
+        <LinearGradient
+          colors={[theme.colors.palette.wine600, theme.colors.palette.wine900]}
+          style={styles.inlineWigDetailsIcon}
+        >
+          <MaterialCommunityIcons name="creation-outline" size={22} color="#FFFFFF" />
+        </LinearGradient>
+        <View style={styles.inlineWigDetailsHeaderCopy}>
+          <Text style={[styles.inlineWigDetailsTitle, { color: roles.headingText }]}>Wig details</Text>
+          <Text style={[styles.inlineWigDetailsHint, { color: roles.metaText }]}>Your selected wig preferences</Text>
+        </View>
+        {code && code !== "Pending" ? (
+          <View style={[styles.inlineWigCodePill, { backgroundColor: roles.iconPrimarySurface }]}>
+            <Text numberOfLines={1} style={[styles.inlineWigCodeText, { color: roles.iconPrimaryColor }]}>{code}</Text>
+          </View>
+        ) : null}
+      </View>
+
+      {imageUrl ? (
+        <View style={styles.inlineWigSelection}>
+          <Image source={{ uri: imageUrl }} style={styles.inlineWigSelectionImage} resizeMode="contain" />
+          <View style={styles.inlineWigSelectionCopy}>
+            <Text style={[styles.inlineWigSelectionLabel, { color: roles.metaText }]}>SELECTED STYLE</Text>
+            <Text numberOfLines={2} style={[styles.inlineWigSelectionName, { color: roles.headingText }]}>{selectedStyle || "Selected wig"}</Text>
+            <Text style={[styles.inlineWigSelectionHint, { color: roles.bodyText }]}>Preview saved with your request</Text>
+          </View>
+        </View>
+      ) : null}
+
+      <View style={[styles.inlineWigDetailsDivider, { backgroundColor: roles.defaultCardBorder }]} />
+      <WigInfoList rows={rows} roles={roles} />
+    </View>
+  );
+}
+
+const wigJourneyIcons = {
+  approval: "clipboard-check-outline",
+  preparing: "creation-outline",
+  dropoff: "truck-delivery-outline",
+  received: "account-check-outline",
+};
+
+function WigJourneyTimeline({ tracker, roles }) {
+  const enterAnimation = useRef(new Animated.Value(0)).current;
+  const pulseAnimation = useRef(new Animated.Value(0)).current;
+  const steps = tracker?.steps?.length ? tracker.steps : [{
+    key: "approval",
+    title: "Request submitted",
+    state: "current",
+  }];
+  const currentIndex = steps.findIndex((step) => (
+    step?.state === "current" || step?.state === "attention"
+  ));
+  const nextIndex = steps.findIndex((step) => step?.state !== "completed");
+  const effectiveCurrentIndex = currentIndex >= 0
+    ? currentIndex
+    : nextIndex >= 0
+      ? nextIndex
+      : Math.max(0, steps.length - 1);
+  const currentStep = steps[effectiveCurrentIndex] || steps[0] || null;
+  const gradientColors = [
+    theme.colors.palette.wine900,
+    theme.colors.palette.wine700,
+    theme.colors.palette.wine600,
+  ];
+  const referenceValue = String(tracker?.summary?.referenceValue || "").trim();
+  const shouldShowReference = Boolean(
+    referenceValue
+    && !["not assigned", "pending", "not available", "n/a"].includes(referenceValue.toLowerCase())
+  );
+
+  useEffect(() => {
+    Animated.timing(enterAnimation, {
+      toValue: 1,
+      duration: theme.motion.cardEnter,
+      useNativeDriver: true,
+    }).start();
+    const pulse = Animated.loop(Animated.sequence([
+      Animated.timing(pulseAnimation, { toValue: 1, duration: 900, useNativeDriver: true }),
+      Animated.timing(pulseAnimation, { toValue: 0, duration: 900, useNativeDriver: true }),
+    ]));
+    pulse.start();
+    return () => pulse.stop();
+  }, [enterAnimation, pulseAnimation]);
+
+  return (
+    <Animated.View style={[
+      styles.wigJourneyAnimatedHost,
+      {
+        opacity: enterAnimation,
+        transform: [{
+          translateY: enterAnimation.interpolate({ inputRange: [0, 1], outputRange: [12, 0] }),
+        }],
+      },
+    ]}>
+      <LinearGradient
+        colors={gradientColors}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={[styles.wigJourneyCard, { borderColor: roles.heroBorder }]}
+      >
+        <View pointerEvents="none" style={styles.wigJourneyShade} />
+        <View pointerEvents="none" style={styles.wigJourneyGlow} />
+        <View style={styles.wigJourneyTopRow}>
+          <View style={styles.wigJourneyHeaderIdentity}>
+            <View style={styles.wigJourneyTopIcon}>
+              <MaterialCommunityIcons name="creation-outline" size={21} color="#FFFFFF" />
+            </View>
+            <View style={styles.wigJourneyHeaderCopy}>
+              <Text style={styles.wigJourneyHeaderEyebrow}>WIG REQUEST</Text>
+              <Text style={styles.wigJourneyHeaderTitle}>Journey progress</Text>
+            </View>
+          </View>
+        </View>
+
+        <View style={styles.wigJourneyHeadingCopy}>
+          <Text style={styles.wigJourneyEyebrow}>CURRENT STAGE</Text>
+          <Text numberOfLines={2} style={styles.wigJourneyTitle}>
+            {currentStep?.title || "Request in progress"}
+          </Text>
+          {shouldShowReference ? (
+            <Text numberOfLines={1} style={styles.wigJourneyReference}>
+              {tracker?.summary?.referenceLabel || "Patient code"}: {referenceValue}
+            </Text>
+          ) : null}
+        </View>
+
+        <ScrollView
+          horizontal
+          nestedScrollEnabled
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.wigJourneyTimelineContent}
+        >
+          {steps.map((step, index) => {
+            const isCompleted = step.state === "completed";
+            const isCurrent = index === effectiveCurrentIndex;
+            const isReached = isCompleted || isCurrent;
+            const iconName = isCompleted ? "check" : (wigJourneyIcons[step.key] || "circle-small");
+            const marker = (
+              <View style={[
+                styles.wigJourneyStageMarker,
+                {
+                  backgroundColor: isReached ? roles.defaultCardBackground : "rgba(255,255,255,0.16)",
+                  borderColor: isReached ? roles.defaultCardBackground : "rgba(255,255,255,0.34)",
+                },
+              ]}>
+                <MaterialCommunityIcons
+                  name={iconName}
+                  size={16}
+                  color={isReached ? roles.primaryActionBackground : roles.primaryActionText}
+                />
+              </View>
+            );
+            return (
+              <View key={step.key || `${step.title}-${index}`} style={styles.wigJourneyStage}>
+                {index > 0 ? (
+                  <View style={[
+                    styles.wigJourneyConnector,
+                    { backgroundColor: index <= effectiveCurrentIndex ? roles.primaryActionText : "rgba(255,255,255,0.24)" },
+                  ]} />
+                ) : null}
+                {isCurrent ? (
+                  <Animated.View style={{
+                    transform: [{ scale: pulseAnimation.interpolate({ inputRange: [0, 1], outputRange: [1, 1.12] }) }],
+                  }}>
+                    {marker}
+                  </Animated.View>
+                ) : marker}
+                <Text numberOfLines={2} style={[styles.wigJourneyStageLabel, { color: roles.primaryActionText }]}>
+                  {step.title}
+                </Text>
+              </View>
+            );
+          })}
+        </ScrollView>
+      </LinearGradient>
+    </Animated.View>
+  );
+}
+
+function CancelWigRequestModal({
+  visible,
+  requestCode,
+  daysRemaining,
+  isCancelling,
+  onClose,
+  onConfirm,
+  roles,
+}) {
+  const remainingLabel = daysRemaining === 1 ? "1 day" : `${daysRemaining} days`;
+
+  return (
+    <Modal transparent visible={visible} animationType="fade" onRequestClose={isCancelling ? undefined : onClose}>
+      <View style={styles.cancelRequestModalRoot}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Keep wig request"
+          disabled={isCancelling}
+          onPress={onClose}
+          style={styles.cancelRequestModalBackdrop}
+        />
+        <View
+          accessibilityRole="alert"
+          style={[
+            styles.cancelRequestModalCard,
+            {
+              backgroundColor: roles.defaultCardBackground,
+              borderColor: roles.defaultCardBorder,
+            },
+          ]}
+        >
+          <View style={styles.cancelRequestModalIcon}>
+            <MaterialCommunityIcons name="clipboard-remove-outline" size={28} color={theme.colors.actionDanger} />
+          </View>
+
+          <View style={styles.cancelRequestModalCopy}>
+            <Text style={[styles.cancelRequestModalTitle, { color: roles.headingText }]}>Cancel this wig request?</Text>
+            <Text style={[styles.cancelRequestModalText, { color: roles.bodyText }]}>Your active request will be closed. You can submit a new request later if you still need one.</Text>
+          </View>
+
+          <View style={[styles.cancelRequestPolicyCard, { backgroundColor: roles.supportCardBackground, borderColor: roles.supportCardBorder }]}>
+            <MaterialCommunityIcons name="calendar-clock-outline" size={21} color={roles.primaryActionBackground} />
+            <View style={styles.cancelRequestPolicyCopy}>
+              <Text style={[styles.cancelRequestPolicyTitle, { color: roles.headingText }]}>Cancellation window</Text>
+              <Text style={[styles.cancelRequestPolicyText, { color: roles.bodyText }]}>You have {remainingLabel} remaining. Cancellation is available only within seven days and before wig preparation begins.</Text>
+            </View>
+          </View>
+
+          {requestCode && requestCode !== "Pending" ? (
+            <Text style={[styles.cancelRequestCode, { color: roles.metaText }]}>Request {requestCode}</Text>
+          ) : null}
+
+          <View style={styles.cancelRequestModalActions}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Keep wig request"
+              disabled={isCancelling}
+              onPress={onClose}
+              style={({ pressed }) => [
+                styles.cancelRequestKeepButton,
+                pressed && !isCancelling ? styles.cancelRequestActionPressed : null,
+              ]}
+            >
+              <LinearGradient
+                colors={[theme.colors.actionPrimary, theme.colors.actionPrimaryPressed]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.cancelRequestActionGradient}
+              >
+                <MaterialCommunityIcons name="arrow-left-circle-outline" size={19} color="#FFFFFF" />
+                <Text style={styles.cancelRequestKeepText}>Keep request</Text>
+              </LinearGradient>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Confirm cancellation"
+              disabled={isCancelling}
+              onPress={onConfirm}
+              style={({ pressed }) => [
+                styles.cancelRequestConfirmButton,
+                pressed && !isCancelling ? styles.cancelRequestActionPressed : null,
+              ]}
+            >
+              <LinearGradient
+                colors={[theme.colors.actionDanger, theme.colors.actionDangerPressed]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.cancelRequestActionGradient}
+              >
+                {isCancelling ? <ActivityIndicator size="small" color="#FFFFFF" /> : (
+                  <MaterialCommunityIcons name="close-circle-outline" size={19} color="#FFFFFF" />
+                )}
+                <Text style={styles.cancelRequestConfirmText}>{isCancelling ? "Cancelling..." : "Cancel request"}</Text>
+              </LinearGradient>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -2256,7 +2507,7 @@ function SafetyChoiceRow({ label, value, onChange, roles }) {
   );
 }
 
-function SafetyAssessmentAnswersModal({ visible, assessment, onClose, roles }) {
+function SafetyAssessmentAnswersModal({ visible, assessment, onClose, roles, resolvedTheme }) {
   if (!assessment) return null;
 
   const answerRows = [
@@ -2270,9 +2521,13 @@ function SafetyAssessmentAnswersModal({ visible, assessment, onClose, roles }) {
   const formatAnswer = (value) => (
     typeof value === "boolean" ? (value ? "Yes" : "No") : "Not answered"
   );
+  const gradientColors = [
+    resolvedTheme?.primaryColor || roles.primaryActionBackground || theme.colors.palette.wine700,
+    resolvedTheme?.secondaryColor || resolvedTheme?.tertiaryColor || theme.colors.palette.wine900,
+  ];
 
   return (
-    <Modal transparent visible={visible} animationType="fade" onRequestClose={onClose}>
+    <Modal transparent visible={visible} animationType="slide" onRequestClose={onClose}>
       <View style={styles.safetyAnswersModalRoot}>
         <Pressable style={styles.safetyAnswersBackdrop} onPress={onClose} />
         <View style={[
@@ -2282,11 +2537,15 @@ function SafetyAssessmentAnswersModal({ visible, assessment, onClose, roles }) {
             borderColor: roles.defaultCardBorder,
           },
         ]}>
-          <View style={styles.safetyAnswersHeader}>
+          <View style={styles.safetyAnswersHandle} />
+          <LinearGradient colors={gradientColors} style={styles.safetyAnswersHeader}>
+            <View style={styles.safetyAnswersHeaderIcon}>
+              <MaterialCommunityIcons name="shield-check-outline" size={23} color={roles.primaryActionText} />
+            </View>
             <View style={styles.safetyAnswersHeaderCopy}>
-              <Text style={[styles.safetyAnswersTitle, { color: roles.headingText }]}>Safety assessment</Text>
-              <Text style={[styles.safetyAnswersStatus, { color: roles.headingText }]}>
-                Review status: {assessment.review_status || "Pending"}
+              <Text style={[styles.safetyAnswersTitle, { color: roles.primaryActionText }]}>Safety information</Text>
+              <Text style={[styles.safetyAnswersStatus, { color: roles.primaryActionText }]}>
+                {assessment.review_status || "Pending review"}
               </Text>
             </View>
             <Pressable
@@ -2296,37 +2555,52 @@ function SafetyAssessmentAnswersModal({ visible, assessment, onClose, roles }) {
               hitSlop={10}
               style={styles.safetyAnswersClose}
             >
-              <MaterialCommunityIcons name="close" size={22} color={roles.headingText} />
+              <MaterialCommunityIcons name="close" size={22} color={roles.primaryActionText} />
             </Pressable>
-          </View>
+          </LinearGradient>
 
           <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.safetyAnswersList}>
             {answerRows.map(([label, value]) => (
-              <View key={label} style={[styles.safetyAnswerRow, { borderBottomColor: roles.defaultCardBorder }]}>
+              <View
+                key={label}
+                style={[
+                  styles.safetyAnswerRow,
+                  { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder },
+                ]}
+              >
+                <View style={[styles.safetyAnswerIcon, { backgroundColor: roles.iconPrimarySurface }]}>
+                  <MaterialCommunityIcons
+                    name={value === true ? "check" : value === false ? "minus" : "help"}
+                    size={16}
+                    color={roles.iconPrimaryColor}
+                  />
+                </View>
                 <Text style={[styles.safetyAnswerLabel, { color: roles.headingText }]}>{label}</Text>
-                <Text style={[styles.safetyAnswerValue, { color: roles.headingText }]}>{formatAnswer(value)}</Text>
+                <View style={[styles.safetyAnswerPill, { backgroundColor: roles.iconPrimarySurface }]}>
+                  <Text style={[styles.safetyAnswerValue, { color: roles.iconPrimaryColor }]}>{formatAnswer(value)}</Text>
+                </View>
               </View>
             ))}
             {assessment.has_known_allergies ? (
-              <View style={styles.safetyAnswerDetails}>
+              <View style={[styles.safetyAnswerDetails, { backgroundColor: roles.supportCardBackground, borderColor: roles.supportCardBorder }]}>
                 <Text style={[styles.safetyAnswerLabel, { color: roles.headingText }]}>Allergy details</Text>
-                <Text style={[styles.safetyAnswerDetailsText, { color: roles.headingText }]}>
+                <Text style={[styles.safetyAnswerDetailsText, { color: roles.bodyText }]}>
                   {assessment.allergy_details || "No details provided"}
                 </Text>
               </View>
             ) : null}
             {assessment.has_medical_restriction ? (
-              <View style={styles.safetyAnswerDetails}>
+              <View style={[styles.safetyAnswerDetails, { backgroundColor: roles.supportCardBackground, borderColor: roles.supportCardBorder }]}>
                 <Text style={[styles.safetyAnswerLabel, { color: roles.headingText }]}>Medical restriction details</Text>
-                <Text style={[styles.safetyAnswerDetailsText, { color: roles.headingText }]}>
+                <Text style={[styles.safetyAnswerDetailsText, { color: roles.bodyText }]}>
                   {assessment.medical_restriction_details || "No details provided"}
                 </Text>
               </View>
             ) : null}
             {assessment.review_notes ? (
-              <View style={styles.safetyAnswerDetails}>
+              <View style={[styles.safetyAnswerDetails, { backgroundColor: roles.supportCardBackground, borderColor: roles.supportCardBorder }]}>
                 <Text style={[styles.safetyAnswerLabel, { color: roles.headingText }]}>Review notes</Text>
-                <Text style={[styles.safetyAnswerDetailsText, { color: roles.headingText }]}>
+                <Text style={[styles.safetyAnswerDetailsText, { color: roles.bodyText }]}>
                   {assessment.review_notes}
                 </Text>
               </View>
@@ -4906,7 +5180,7 @@ export function PatientWigRequestScreen({ showFlowOnly = false } = {}) {
   const [isCapturingPhoto, setIsCapturingPhoto] = useState(false);
   const [selectedOptionId, setSelectedOptionId] = useState("");
   const [selectedWigFilterId, setSelectedWigFilterId] = useState("");
-  const [isTimelineOpen, setIsTimelineOpen] = useState(false);
+  const [isCancelRequestModalOpen, setIsCancelRequestModalOpen] = useState(false);
   const [flowStep, setFlowStep] = useState("patient");
   const [requestMode, setRequestMode] = useState("selected");
   const [photoValidation, setPhotoValidation] = useState(null);
@@ -4920,9 +5194,8 @@ export function PatientWigRequestScreen({ showFlowOnly = false } = {}) {
   const [isLoadingTermsDocument, setIsLoadingTermsDocument] = useState(false);
   const [termsDocumentError, setTermsDocumentError] = useState("");
   const { user, profile, patientProfile, resolvedTheme } = useAuth();
-  const roles = resolveThemeRoles(resolvedTheme);
-  const requestFlowPrimaryTextColor =
-    resolvedTheme?.primaryTextColor || roles.headingText;
+  const roles = resolvePatientThemeRoles(resolvedTheme);
+  const requestFlowPrimaryTextColor = roles.headingText;
   const requestFlowRoles = {
     ...roles,
     headingText: requestFlowPrimaryTextColor,
@@ -4979,14 +5252,12 @@ export function PatientWigRequestScreen({ showFlowOnly = false } = {}) {
   });
   const {
     tracker,
-    trackingError,
-    isLoadingTracking,
-    isRefreshingTracking,
     refreshTracking,
   } = useProcessTracking({
     role: "patient",
     userId: user?.id,
     databaseUserId: profile?.user_id,
+    enabled: !showFlowOnly,
   });
   const {
     patientDetails,
@@ -5032,12 +5303,6 @@ export function PatientWigRequestScreen({ showFlowOnly = false } = {}) {
     }, [refreshContext, refreshTracking, showFlowOnly, user?.id]),
   );
 
-  useEffect(() => {
-    if (!showFlowOnly && hasSubmittedRequest) {
-      setIsTimelineOpen(true);
-    }
-  }, [hasSubmittedRequest, showFlowOnly]);
-
   const {
     control,
     handleSubmit,
@@ -5077,13 +5342,11 @@ export function PatientWigRequestScreen({ showFlowOnly = false } = {}) {
     .join(" • ");
   const medicalCondition = requestPatientDetails?.medical_condition || "";
   const requestCode = latestWigRequest?.request_code || "";
-  const canCancelLatestRequest = canCancelWigRequest(latestWigRequest);
+  const cancellationEligibility = getWigRequestCancellationEligibility(latestWigRequest);
+  const canCancelLatestRequest = cancellationEligibility.canCancel;
   const hasCameraPermission = Boolean(cameraPermission?.granted);
   const requestedWigCodeValue =
     requestedWig?.wig_code || requestCode || "Pending";
-  const requestedWigStatusValue = formatRequestStatus(
-    requestedWig?.wig_status || requestStatus,
-  );
   const requestedWigColorValue = formatPatientFieldValue(
     requestedWigSpec?.color || latestWigSpecification?.preferred_color,
   );
@@ -5102,6 +5365,22 @@ export function PatientWigRequestScreen({ showFlowOnly = false } = {}) {
   const requestedWigStyleValue = formatPatientFieldValue(
     requestedWigSpec?.style || latestWigSpecification?.style_preference,
   );
+  const requestedWigId =
+    requestedWig?.wig_id
+    || latestWigRequest?.requested_wig_id
+    || latestAllocation?.wig_id
+    || null;
+  const requestedCatalogWig = requestedWigId
+    ? availableWigs.find((wig) => String(wig?.wig_id || wig?.id || "") === String(requestedWigId)) || null
+    : null;
+  const requestedWigImageUrl =
+    getWigPreviewImageUrl(requestedCatalogWig)
+    || getPrimaryTryOnImageUrl(requestedCatalogWig)
+    || "";
+  const requestedWigDisplayName =
+    requestedCatalogWig?.wig_name
+    || requestedWig?.wig_name
+    || (requestedWigStyleValue !== "Not provided" ? requestedWigStyleValue : "");
   const requestedWigRows = [
     { label: "Style", value: requestedWigStyleValue },
     { label: "Color", value: requestedWigColorValue },
@@ -5553,24 +5832,39 @@ export function PatientWigRequestScreen({ showFlowOnly = false } = {}) {
   };
 
   const handleCancelLatestRequest = () => {
-    Alert.alert(
-      "Cancel request?",
-      "This will close your pending wig request.",
-      [
-        { text: "Keep", style: "cancel" },
-        {
-          text: "Cancel request",
-          style: "destructive",
-          onPress: async () => {
-            const result = await cancelRequest();
-            if (result?.success) {
-              await refreshTracking();
-              setIsTimelineOpen(false);
-            }
-          },
-        },
-      ],
-    );
+    const latestEligibility = getWigRequestCancellationEligibility(latestWigRequest);
+    if (!latestEligibility.canCancel) {
+      Alert.alert(
+        "Cancellation unavailable",
+        latestEligibility.reason || "This request can no longer be cancelled.",
+      );
+      return;
+    }
+    setIsCancelRequestModalOpen(true);
+  };
+
+  const handleConfirmCancelLatestRequest = async () => {
+    const latestEligibility = getWigRequestCancellationEligibility(latestWigRequest);
+    if (!latestEligibility.canCancel) {
+      setIsCancelRequestModalOpen(false);
+      Alert.alert(
+        "Cancellation unavailable",
+        latestEligibility.reason || "This request can no longer be cancelled.",
+      );
+      return;
+    }
+
+    const result = await cancelRequest();
+    if (!result?.success) {
+      Alert.alert(
+        "Request not cancelled",
+        result?.error || "We could not cancel the request right now. Please try again.",
+      );
+      return;
+    }
+
+    setIsCancelRequestModalOpen(false);
+    await refreshTracking();
   };
 
   const openRequestFlow = () => {
@@ -5622,6 +5916,41 @@ export function PatientWigRequestScreen({ showFlowOnly = false } = {}) {
       activeNavKey="requests"
       navVariant="patient"
       onNavPress={handleNavPress}
+      floatingOverlay={!showFlowOnly && canCancelLatestRequest ? (
+        <View pointerEvents="box-none" style={styles.cancelRequestFloatingHost}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Cancel wig request"
+            disabled={isCancellingRequest}
+            onPress={handleCancelLatestRequest}
+            style={({ pressed }) => [
+              styles.cancelRequestFloatingButton,
+              pressed && !isCancellingRequest ? styles.cancelRequestFloatingButtonPressed : null,
+            ]}
+          >
+            <LinearGradient
+              colors={[theme.colors.actionDanger, theme.colors.actionDangerPressed]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.cancelRequestFloatingContent}
+            >
+              <View style={styles.cancelRequestFloatingInner}>
+                <View style={styles.cancelRequestFloatingIcon}>
+                  {isCancellingRequest ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <MaterialCommunityIcons name="close" size={18} color="#FFFFFF" />
+                  )}
+                </View>
+                <View style={styles.cancelRequestFloatingCopy}>
+                  <Text style={styles.cancelRequestFloatingTitle}>{isCancellingRequest ? "Cancelling..." : "Cancel request"}</Text>
+                  <Text style={styles.cancelRequestFloatingHint}>Available for {cancellationEligibility.daysRemaining} {cancellationEligibility.daysRemaining === 1 ? "day" : "days"}</Text>
+                </View>
+              </View>
+            </LinearGradient>
+          </Pressable>
+        </View>
+      ) : null}
       header={
         showFlowOnly ? null : (
           <DashboardHeaderSurface>
@@ -5681,85 +6010,64 @@ export function PatientWigRequestScreen({ showFlowOnly = false } = {}) {
         <>
           <View style={[
             styles.simpleWigSection,
+            canCancelLatestRequest ? styles.simpleWigSectionWithFloatingCancel : null,
             !hasSubmittedRequest && hasLoadedContext && !isLoadingContext ? styles.simpleWigSectionEmpty : null,
           ]}>
             <View style={[
               styles.requestedWigSummaryCard,
+              hasSubmittedRequest ? styles.requestedWigSummaryActive : null,
               !hasSubmittedRequest && hasLoadedContext && !isLoadingContext ? styles.requestedWigSummaryPlain : null,
             ]}>
               {hasSubmittedRequest ? (
-                <View style={styles.simpleRecordHeader}>
-                  <View
-                    style={[
-                      styles.requestedWigIcon,
-                      { backgroundColor: "transparent" },
-                    ]}
-                  >
-                    <AppIcon
-                      name="requests"
-                      size="sm"
-                      color={roles.iconPrimaryColor}
-                    />
-                  </View>
-                  <View style={styles.referralIdentityCopy}>
-                    <Text
-                      numberOfLines={1}
-                      style={[
-                        styles.referralHospitalName,
-                        { color: roles.headingText },
-                      ]}
-                    >
-                      Requested Wig
-                    </Text>
-                    <Text style={[styles.requestFlowCopy, { color: requestFlowPrimaryTextColor }]}>
-                      Request details and current progress
-                    </Text>
-                  </View>
-                </View>
-              ) : null}
-
-              {hasSubmittedRequest ? (
                 <>
-                  <View style={styles.requestedWigStatusRow}>
-                    <View style={styles.requestedWigStatusPill}>
-                      <Text style={[styles.requestedWigStatusLabel, { color: requestFlowPrimaryTextColor }]}>Code</Text>
-                      <Text
-                        numberOfLines={1}
-                        style={[styles.requestedWigStatusValue, { color: requestFlowPrimaryTextColor }]}
-                      >
-                        {requestedWigCodeValue}
-                      </Text>
-                    </View>
-                    <View style={styles.requestedWigStatusPill}>
-                      <Text style={[styles.requestedWigStatusLabel, { color: requestFlowPrimaryTextColor }]}>Status</Text>
-                      <Text
-                        numberOfLines={1}
-                        style={[styles.requestedWigStatusValue, { color: requestFlowPrimaryTextColor }]}
-                      >
-                        {requestedWigStatusValue}
-                      </Text>
-                    </View>
-                  </View>
+                  <WigJourneyTimeline tracker={tracker} roles={roles} />
 
-                  <WigInfoList rows={requestedWigRows} roles={requestFlowRoles} />
-                  {savedSafetyAssessment ? (
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel="View safety assessment answers"
-                      onPress={() => setIsSafetyAnswersOpen(true)}
-                      style={({ pressed }) => [
-                        styles.viewSafetyAssessmentAction,
-                        { borderColor: roles.defaultCardBorder },
-                        pressed ? styles.preferencePressed : null,
-                      ]}
-                    >
-                      <MaterialCommunityIcons name="shield-check-outline" size={20} color={requestFlowPrimaryTextColor} />
-                      <Text style={[styles.viewSafetyAssessmentText, { color: requestFlowPrimaryTextColor }]}>
-                        View safety assessment
-                      </Text>
-                      <MaterialCommunityIcons name="chevron-right" size={20} color={requestFlowPrimaryTextColor} />
-                    </Pressable>
-                  ) : null}
+                  <View style={styles.requestQuickActions}>
+                    <InlineWigDetails
+                      rows={requestedWigRows}
+                      code={requestedWigCodeValue}
+                      imageUrl={requestedWigImageUrl}
+                      selectedStyle={requestedWigDisplayName}
+                      roles={roles}
+                    />
+
+                    {savedSafetyAssessment ? (
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="View safety information"
+                        onPress={() => setIsSafetyAnswersOpen(true)}
+                        style={({ pressed }) => [
+                          styles.requestQuickAction,
+                          {
+                            backgroundColor: roles.defaultCardBackground,
+                            borderColor: roles.defaultCardBorder,
+                          },
+                          pressed ? styles.preferencePressed : null,
+                        ]}
+                      >
+                        <LinearGradient
+                          colors={[roles.defaultCardBackground, roles.supportCardBackground]}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 1, y: 1 }}
+                          style={styles.requestQuickActionRow}
+                        >
+                          <LinearGradient
+                            colors={[theme.colors.palette.wine600, theme.colors.palette.wine900]}
+                            style={styles.requestQuickActionIcon}
+                          >
+                            <MaterialCommunityIcons name="shield-check-outline" size={21} color="#FFFFFF" />
+                          </LinearGradient>
+                          <View style={styles.requestQuickActionCopy}>
+                            <Text style={[styles.requestQuickActionTitle, { color: roles.headingText }]}>Safety information</Text>
+                            <Text numberOfLines={1} style={[styles.requestQuickActionHint, { color: roles.metaText }]}>Health and comfort answers</Text>
+                          </View>
+                          <View style={[styles.requestQuickActionArrow, { backgroundColor: roles.iconPrimarySurface }]}>
+                            <MaterialCommunityIcons name="chevron-right" size={20} color={roles.iconPrimaryColor} />
+                          </View>
+                        </LinearGradient>
+                      </Pressable>
+                    ) : null}
+                  </View>
                 </>
               ) : isLoadingContext || !hasLoadedContext ? (
                 <View
@@ -5924,85 +6232,6 @@ export function PatientWigRequestScreen({ showFlowOnly = false } = {}) {
             </View>
           </View>
 
-          {hasSubmittedRequest ? (
-            <View style={[styles.currentRequestCard, { borderTopColor: roles.defaultCardBorder }]}>
-              <View style={styles.currentRequestBody}>
-                <View style={styles.currentRequestIcon}>
-                  <AppIcon name="requests" state="active" size="xl" />
-                </View>
-                <View style={styles.currentRequestCopy}>
-                  <Text
-                    style={[
-                      styles.currentRequestLabel,
-                      { color: requestFlowPrimaryTextColor },
-                    ]}
-                  >
-                    {requestCode || "Current status"}
-                  </Text>
-                  <Text
-                    style={[
-                      styles.currentRequestTitle,
-                      { color: requestFlowPrimaryTextColor },
-                    ]}
-                  >
-                    {requestStatus}
-                  </Text>
-                </View>
-                <Pressable
-                  onPress={() => setIsTimelineOpen((current) => !current)}
-                  hitSlop={10}
-                  accessibilityRole="button"
-                  accessibilityLabel={
-                    isTimelineOpen ? "Hide timeline" : "Show timeline"
-                  }
-                  style={({ pressed }) => [
-                    styles.timelineIconButton,
-                    { backgroundColor: "transparent" },
-                    pressed ? styles.preferencePressed : null,
-                  ]}
-                >
-                  <AppIcon
-                    name={
-                      isTimelineOpen ? "chevron-up" : "timeline-clock-outline"
-                    }
-                    color={roles.primaryActionBackground}
-                    size="md"
-                  />
-                </Pressable>
-              </View>
-
-              {canCancelLatestRequest ? (
-                <View style={styles.currentRequestActions}>
-                  <AppButton
-                    title={
-                      isCancellingRequest ? "Cancelling..." : "Cancel request"
-                    }
-                    variant="outline"
-                    size="sm"
-                    onPress={handleCancelLatestRequest}
-                    loading={isCancellingRequest}
-                    leading={
-                      <AppIcon name="closeCircle" size="sm" color={requestFlowPrimaryTextColor} />
-                    }
-                    textColorOverride={requestFlowPrimaryTextColor}
-                    borderColorOverride={roles.defaultCardBorder}
-                    backgroundColorOverride={roles.pageBackground}
-                  />
-                </View>
-              ) : null}
-            </View>
-          ) : null}
-
-          {hasSubmittedRequest && isTimelineOpen ? (
-            <ProcessStatusTracker
-              role="patient"
-              tracker={tracker}
-              error={trackingError}
-              isLoading={isLoadingTracking}
-              isRefreshing={isRefreshingTracking}
-              onRefresh={refreshTracking}
-            />
-          ) : null}
         </>
       ) : null}
 
@@ -6063,7 +6292,17 @@ export function PatientWigRequestScreen({ showFlowOnly = false } = {}) {
         visible={isSafetyAnswersOpen}
         assessment={savedSafetyAssessment}
         onClose={() => setIsSafetyAnswersOpen(false)}
-        roles={requestFlowRoles}
+        roles={roles}
+        resolvedTheme={resolvedTheme}
+      />
+      <CancelWigRequestModal
+        visible={isCancelRequestModalOpen}
+        requestCode={requestedWigCodeValue}
+        daysRemaining={cancellationEligibility.daysRemaining}
+        isCancelling={isCancellingRequest}
+        onClose={() => setIsCancelRequestModalOpen(false)}
+        onConfirm={handleConfirmCancelLatestRequest}
+        roles={roles}
       />
     </DashboardLayout>
   );
@@ -6088,20 +6327,26 @@ const styles = StyleSheet.create({
       theme.typography.semantic.body * theme.typography.lineHeights.relaxed,
   },
   simpleWigSection: {
+    width: "100%",
     gap: theme.spacing.sm,
     paddingHorizontal: 0,
     paddingTop: theme.spacing.md,
-    paddingBottom: theme.spacing.sm,
+    paddingBottom: 0,
   },
   simpleWigSectionEmpty: {
     paddingTop: theme.spacing.lg,
     paddingBottom: theme.spacing.xl,
   },
+  simpleWigSectionWithFloatingCancel: {
+    paddingBottom: 78,
+  },
   requestedWigSummaryCard: {
-    gap: theme.spacing.sm,
-    borderWidth: 0,
-    backgroundColor: "transparent",
-    padding: 0,
+    width: "100%",
+    gap: theme.spacing.md,
+    borderWidth: 1,
+    borderRadius: 22,
+    padding: theme.spacing.md,
+    ...theme.shadows.soft,
   },
   requestedWigSummaryPlain: {
     borderWidth: 0,
@@ -6119,6 +6364,511 @@ const styles = StyleSheet.create({
     borderRadius: theme.radius.lg,
     padding: theme.spacing.md,
     ...theme.shadows.soft,
+  },
+  requestedWigSummaryActive: {
+    borderWidth: 0,
+    borderRadius: 0,
+    padding: 0,
+    shadowOpacity: 0,
+    shadowRadius: 0,
+    elevation: 0,
+  },
+  wigJourneyAnimatedHost: {
+    width: "100%",
+  },
+  wigJourneyCard: {
+    position: "relative",
+    overflow: "hidden",
+    minHeight: 236,
+    gap: theme.spacing.md,
+    borderWidth: 1,
+    borderRadius: 24,
+    padding: theme.spacing.md,
+    ...theme.shadows.card,
+  },
+  wigJourneyShade: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(23,17,20,0.08)",
+  },
+  wigJourneyGlow: {
+    position: "absolute",
+    width: 156,
+    height: 156,
+    top: -98,
+    right: -44,
+    borderRadius: 78,
+    backgroundColor: "rgba(255,255,255,0.1)",
+  },
+  wigJourneyTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: theme.spacing.sm,
+  },
+  wigJourneyHeaderIdentity: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing.sm,
+  },
+  wigJourneyHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  wigJourneyHeaderEyebrow: {
+    color: "rgba(255,255,255,0.76)",
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 1,
+  },
+  wigJourneyHeaderTitle: {
+    color: "#FFFFFF",
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.body,
+    lineHeight: 21,
+    fontWeight: theme.typography.weights.bold,
+  },
+  wigJourneyTopIcon: {
+    width: 38,
+    height: 38,
+    flexShrink: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.14)",
+  },
+  wigJourneyHeadingCopy: {
+    gap: 3,
+  },
+  wigJourneyEyebrow: {
+    color: "rgba(255,255,255,0.74)",
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 1,
+    opacity: 0.78,
+  },
+  wigJourneyTitle: {
+    color: "#FFFFFF",
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.titleSm,
+    lineHeight: 27,
+    fontWeight: theme.typography.weights.bold,
+  },
+  wigJourneyReference: {
+    color: "rgba(255,255,255,0.78)",
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 15,
+    opacity: 0.76,
+  },
+  wigJourneyTimelineContent: {
+    minWidth: "100%",
+    paddingTop: theme.spacing.xs,
+    paddingBottom: 2,
+    paddingHorizontal: 2,
+  },
+  wigJourneyStage: {
+    position: "relative",
+    width: 84,
+    alignItems: "center",
+    gap: 7,
+  },
+  wigJourneyStageMarker: {
+    zIndex: 2,
+    width: 34,
+    height: 34,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderRadius: 17,
+  },
+  wigJourneyConnector: {
+    position: "absolute",
+    zIndex: 1,
+    top: 16,
+    left: -25,
+    width: 50,
+    height: 3,
+    borderRadius: theme.radius.full,
+  },
+  wigJourneyStageLabel: {
+    width: 78,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 10,
+    lineHeight: 13,
+    fontWeight: theme.typography.weights.semibold,
+    textAlign: "center",
+  },
+  inlineWigDetailsSection: {
+    width: "100%",
+    gap: theme.spacing.md,
+    paddingHorizontal: 2,
+    paddingVertical: theme.spacing.xs,
+  },
+  inlineWigDetailsHeader: {
+    minHeight: 48,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing.sm,
+  },
+  inlineWigDetailsIcon: {
+    width: 44,
+    height: 44,
+    flexShrink: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 15,
+  },
+  inlineWigDetailsHeaderCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  inlineWigDetailsTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.bodyLg,
+    fontWeight: theme.typography.weights.bold,
+  },
+  inlineWigDetailsHint: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 15,
+  },
+  inlineWigCodePill: {
+    maxWidth: 104,
+    minHeight: 30,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: theme.radius.full,
+    paddingHorizontal: theme.spacing.sm,
+  },
+  inlineWigCodeText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 10,
+    fontWeight: theme.typography.weights.bold,
+  },
+  inlineWigSelection: {
+    minHeight: 100,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing.md,
+    paddingVertical: theme.spacing.xs,
+  },
+  inlineWigSelectionImage: {
+    width: 82,
+    height: 82,
+    flexShrink: 0,
+    borderRadius: 14,
+    backgroundColor: theme.colors.backgroundMuted,
+  },
+  inlineWigSelectionCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 3,
+  },
+  inlineWigSelectionLabel: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 0.8,
+  },
+  inlineWigSelectionName: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.body,
+    fontWeight: theme.typography.weights.bold,
+    lineHeight: 20,
+  },
+  inlineWigSelectionHint: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 15,
+  },
+  inlineWigDetailsDivider: {
+    width: "100%",
+    height: StyleSheet.hairlineWidth,
+  },
+  inlineWigDetailsList: {
+    width: "100%",
+  },
+  inlineWigDetailRow: {
+    minHeight: 43,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: theme.spacing.md,
+    paddingVertical: theme.spacing.xs,
+  },
+  inlineWigDetailLabel: {
+    width: "38%",
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 16,
+  },
+  inlineWigDetailValue: {
+    flex: 1,
+    minWidth: 0,
+    textAlign: "right",
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.bodySm,
+    lineHeight: 18,
+    fontWeight: theme.typography.weights.semibold,
+  },
+  inlineWigDetailDivider: {
+    width: "100%",
+    height: StyleSheet.hairlineWidth,
+  },
+  requestQuickActions: {
+    width: "100%",
+    gap: theme.spacing.sm,
+  },
+  requestQuickAction: {
+    position: "relative",
+    overflow: "hidden",
+    width: "100%",
+    minHeight: 76,
+    borderWidth: 1,
+    borderRadius: 22,
+    padding: 0,
+    ...theme.shadows.soft,
+  },
+  requestQuickActionRow: {
+    width: "100%",
+    minHeight: 74,
+    overflow: "hidden",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing.md,
+    borderRadius: 21,
+    paddingLeft: theme.spacing.md,
+    paddingRight: theme.spacing.sm,
+    paddingVertical: theme.spacing.sm,
+  },
+  requestQuickActionIcon: {
+    width: 44,
+    height: 44,
+    flexShrink: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 15,
+  },
+  requestQuickActionCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  requestQuickActionTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.body,
+    fontWeight: theme.typography.weights.bold,
+  },
+  requestQuickActionHint: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 15,
+  },
+  requestQuickActionArrow: {
+    width: 34,
+    height: 34,
+    flexShrink: 0,
+    alignSelf: "center",
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 11,
+  },
+  cancelRequestFloatingHost: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 112,
+    alignItems: "center",
+    paddingHorizontal: theme.spacing.lg,
+    zIndex: 40,
+  },
+  cancelRequestFloatingButton: {
+    width: "100%",
+    maxWidth: 230,
+    borderRadius: 31,
+    overflow: "hidden",
+    shadowColor: theme.colors.palette.wine900,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.28,
+    shadowRadius: 14,
+    elevation: 12,
+  },
+  cancelRequestFloatingContent: {
+    width: "100%",
+    minHeight: 62,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: theme.spacing.sm,
+    borderRadius: 31,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: 9,
+  },
+  cancelRequestFloatingInner: {
+    width: "100%",
+    minHeight: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    position: "relative",
+  },
+  cancelRequestFloatingButtonPressed: {
+    opacity: 0.92,
+    transform: [{ scale: 0.97 }],
+  },
+  cancelRequestFloatingIcon: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    width: 36,
+    height: 36,
+    flexShrink: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 18,
+    backgroundColor: "rgba(255,255,255,0.18)",
+  },
+  cancelRequestFloatingCopy: {
+    width: "100%",
+    minWidth: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 1,
+    paddingHorizontal: 38,
+  },
+  cancelRequestFloatingTitle: {
+    color: "#FFFFFF",
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.bodySm,
+    fontWeight: theme.typography.weights.bold,
+    textAlign: "center",
+  },
+  cancelRequestFloatingHint: {
+    color: "rgba(255,255,255,0.82)",
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 10,
+    lineHeight: 13,
+    textAlign: "center",
+  },
+  cancelRequestModalRoot: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: theme.spacing.lg,
+  },
+  cancelRequestModalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: theme.colors.overlay,
+  },
+  cancelRequestModalCard: {
+    width: "100%",
+    maxWidth: 420,
+    alignItems: "center",
+    gap: theme.spacing.md,
+    borderWidth: 1,
+    borderRadius: 26,
+    padding: theme.spacing.lg,
+    ...theme.shadows.lg,
+  },
+  cancelRequestModalIcon: {
+    width: 58,
+    height: 58,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 19,
+    backgroundColor: "rgba(186,31,51,0.1)",
+  },
+  cancelRequestModalCopy: {
+    alignItems: "center",
+    gap: theme.spacing.xs,
+  },
+  cancelRequestModalTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.titleSm,
+    fontWeight: theme.typography.weights.bold,
+    textAlign: "center",
+  },
+  cancelRequestModalText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.bodySm,
+    lineHeight: 19,
+    textAlign: "center",
+  },
+  cancelRequestPolicyCard: {
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: theme.spacing.sm,
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: theme.spacing.sm,
+  },
+  cancelRequestPolicyCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  cancelRequestPolicyTitle: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.bodySm,
+    fontWeight: theme.typography.weights.bold,
+  },
+  cancelRequestPolicyText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 16,
+  },
+  cancelRequestCode: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    textAlign: "center",
+  },
+  cancelRequestModalActions: {
+    width: "100%",
+    gap: theme.spacing.sm,
+  },
+  cancelRequestKeepButton: {
+    width: "100%",
+    borderRadius: 18,
+    overflow: "hidden",
+    ...theme.shadows.sm,
+  },
+  cancelRequestKeepText: {
+    color: "#FFFFFF",
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.bodySm,
+    fontWeight: theme.typography.weights.bold,
+  },
+  cancelRequestConfirmButton: {
+    width: "100%",
+    borderRadius: 18,
+    overflow: "hidden",
+    ...theme.shadows.sm,
+  },
+  cancelRequestActionGradient: {
+    minHeight: 50,
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+    borderRadius: 18,
+    paddingHorizontal: theme.spacing.sm,
+  },
+  cancelRequestActionPressed: {
+    opacity: 0.84,
+    transform: [{ scale: 0.985 }],
+  },
+  cancelRequestConfirmText: {
+    color: "#FFFFFF",
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.bodySm,
+    fontWeight: theme.typography.weights.bold,
   },
   wigRequestCheckingIcon: {
     width: 48,
@@ -6261,7 +7011,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing.sm,
-    paddingBottom: theme.spacing.sm,
+    paddingBottom: theme.spacing.xs,
   },
   simpleRecordHeaderEmpty: {
     flexDirection: "column",
@@ -6288,10 +7038,10 @@ const styles = StyleSheet.create({
   },
   currentRequestCard: {
     gap: theme.spacing.sm,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    paddingHorizontal: 0,
-    paddingTop: theme.spacing.md,
-    paddingBottom: theme.spacing.sm,
+    borderWidth: 1,
+    borderRadius: 20,
+    padding: theme.spacing.md,
+    ...theme.shadows.soft,
   },
   currentRequestHeader: {
     minHeight: 48,
@@ -6313,12 +7063,11 @@ const styles = StyleSheet.create({
     gap: theme.spacing.sm,
   },
   currentRequestIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: theme.radius.sm,
+    width: 46,
+    height: 46,
+    borderRadius: 15,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "transparent",
   },
   currentRequestCopy: {
     flex: 1,
@@ -6377,9 +7126,9 @@ const styles = StyleSheet.create({
     gap: theme.spacing.md,
   },
   requestedWigIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: theme.radius.lg,
+    width: 46,
+    height: 46,
+    borderRadius: 15,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -6413,86 +7162,84 @@ const styles = StyleSheet.create({
     maxWidth: 260,
     textAlign: "center",
   },
-  requestedWigDetailGrid: {
-    gap: 0,
-  },
-  requestedWigDetailRow: {
-    flexDirection: "row",
-    alignItems: "stretch",
-    gap: theme.spacing.md,
-  },
-  requestedWigDetailTile: {
-    width: "100%",
-    minWidth: 0,
-    minHeight: 44,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: theme.spacing.md,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.borderSubtle,
-    backgroundColor: "transparent",
-    paddingHorizontal: 0,
-    paddingVertical: theme.spacing.sm,
-  },
-  requestedWigDetailLabel: {
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.semantic.caption,
-    fontWeight: theme.typography.weights.semibold,
-    textTransform: "uppercase",
-    letterSpacing: 0.4,
-  },
-  requestedWigDetailValue: {
-    flex: 1,
-    textAlign: "right",
-    fontFamily: theme.typography.fontFamily,
-    fontSize: theme.typography.semantic.bodySm,
-    fontWeight: theme.typography.weights.bold,
-    lineHeight:
-      theme.typography.semantic.bodySm * theme.typography.lineHeights.normal,
-  },
   requestedWigStatusRow: {
     flexDirection: "row",
-    gap: theme.spacing.lg,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderColor: theme.colors.borderSubtle,
+    alignItems: "stretch",
+    gap: theme.spacing.sm,
   },
   requestedWigStatusPill: {
     flex: 1,
-    minHeight: 48,
+    minWidth: 0,
+    minHeight: 68,
     justifyContent: "center",
     gap: 3,
-    backgroundColor: "transparent",
-    paddingHorizontal: 0,
+    borderWidth: 1,
+    borderRadius: 16,
+    paddingHorizontal: theme.spacing.sm,
     paddingVertical: theme.spacing.sm,
   },
   requestedWigStatusLabel: {
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.semantic.caption,
     fontWeight: theme.typography.weights.semibold,
-    textTransform: "uppercase",
-    letterSpacing: 0.4,
+    letterSpacing: 0.25,
   },
   requestedWigStatusValue: {
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.semantic.bodySm,
     fontWeight: theme.typography.weights.bold,
+    lineHeight: 18,
+  },
+  requestedWigSectionHeading: {
+    gap: 2,
+    paddingTop: theme.spacing.xs,
+  },
+  requestedWigSectionTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.body,
+    fontWeight: theme.typography.weights.bold,
+  },
+  currentRequestHint: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 16,
+  },
+  requestedWigSectionHint: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 16,
   },
   viewSafetyAssessmentAction: {
-    minHeight: 48,
+    minHeight: 64,
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing.sm,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    paddingVertical: theme.spacing.sm,
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: theme.spacing.sm,
+  },
+  viewSafetyAssessmentIcon: {
+    width: 38,
+    height: 38,
+    flexShrink: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 12,
+  },
+  viewSafetyAssessmentCopy: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
   },
   viewSafetyAssessmentText: {
-    flex: 1,
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.semantic.bodySm,
-    fontWeight: theme.typography.weights.semibold,
+    fontWeight: theme.typography.weights.bold,
+  },
+  viewSafetyAssessmentHint: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 15,
   },
   requestedWigPendingNote: {
     minHeight: 48,
@@ -8092,10 +8839,7 @@ const styles = StyleSheet.create({
   },
   safetyAnswersModalRoot: {
     flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: theme.spacing.xl,
-    paddingVertical: theme.spacing.xl,
+    justifyContent: "flex-end",
   },
   safetyAnswersBackdrop: {
     ...StyleSheet.absoluteFillObject,
@@ -8103,18 +8847,40 @@ const styles = StyleSheet.create({
   },
   safetyAnswersSheet: {
     width: "100%",
-    maxWidth: 520,
-    maxHeight: "82%",
+    maxHeight: "84%",
+    overflow: "hidden",
     borderWidth: 1,
-    borderRadius: 8,
-    paddingHorizontal: theme.spacing.lg,
-    paddingVertical: theme.spacing.md,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    ...theme.shadows.lg,
+  },
+  safetyAnswersHandle: {
+    position: "absolute",
+    zIndex: 3,
+    top: 8,
+    left: "44%",
+    width: "12%",
+    height: 4,
+    borderRadius: theme.radius.full,
+    backgroundColor: "rgba(255,255,255,0.54)",
   },
   safetyAnswersHeader: {
+    minHeight: 126,
     flexDirection: "row",
-    alignItems: "flex-start",
-    gap: theme.spacing.md,
-    paddingBottom: theme.spacing.sm,
+    alignItems: "center",
+    gap: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: theme.spacing.xl,
+    paddingBottom: theme.spacing.md,
+  },
+  safetyAnswersHeaderIcon: {
+    width: 44,
+    height: 44,
+    flexShrink: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 14,
+    backgroundColor: "rgba(255,255,255,0.14)",
   },
   safetyAnswersHeaderCopy: {
     flex: 1,
@@ -8128,24 +8894,37 @@ const styles = StyleSheet.create({
   safetyAnswersStatus: {
     fontFamily: theme.typography.fontFamily,
     fontSize: theme.typography.semantic.caption,
+    opacity: 0.78,
   },
   safetyAnswersClose: {
-    width: 36,
-    height: 36,
+    width: 40,
+    height: 40,
     alignItems: "center",
     justifyContent: "center",
+    borderRadius: 13,
+    backgroundColor: "rgba(255,255,255,0.14)",
   },
   safetyAnswersList: {
-    paddingBottom: theme.spacing.sm,
+    gap: theme.spacing.sm,
+    padding: theme.spacing.lg,
+    paddingBottom: theme.spacing.xxl,
   },
   safetyAnswerRow: {
-    minHeight: 46,
+    minHeight: 58,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    gap: theme.spacing.md,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    paddingVertical: theme.spacing.sm,
+    gap: theme.spacing.sm,
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: theme.spacing.sm,
+  },
+  safetyAnswerIcon: {
+    width: 32,
+    height: 32,
+    flexShrink: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 10,
   },
   safetyAnswerLabel: {
     flex: 1,
@@ -8157,9 +8936,19 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.semantic.bodySm,
     fontWeight: theme.typography.weights.bold,
   },
+  safetyAnswerPill: {
+    minWidth: 48,
+    minHeight: 28,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: theme.radius.full,
+    paddingHorizontal: theme.spacing.sm,
+  },
   safetyAnswerDetails: {
     gap: 4,
-    paddingTop: theme.spacing.md,
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: theme.spacing.md,
   },
   safetyAnswerDetailsText: {
     fontFamily: theme.typography.fontFamily,

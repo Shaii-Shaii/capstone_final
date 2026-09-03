@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, StyleSheet, Platform, ScrollView, KeyboardAvoidingView, useWindowDimensions } from 'react-native';
+import { Dimensions, View, StyleSheet, Platform, ScrollView, KeyboardAvoidingView, useWindowDimensions } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { theme, resolveThemeRoles } from '../../design-system/theme';
 import { useAuth } from '../../providers/AuthProvider';
@@ -21,8 +21,14 @@ export const ScreenContainer = ({
   const { height } = useWindowDimensions();
   const isAuth = variant === 'auth';
   const isDashboard = variant === 'dashboard';
-  const isShortScreen = height < theme.layout.shortScreenHeight;
-  const isCompactScreen = height < theme.layout.compactScreenHeight;
+  // Android's window height shrinks while the software keyboard is visible.
+  // Auth breakpoints must use the physical screen height so opening a field
+  // does not rebuild the page at a different size and leave stale scroll space.
+  const layoutHeight = isAuth && Platform.OS === 'android'
+    ? Dimensions.get('screen').height
+    : height;
+  const isShortScreen = layoutHeight < theme.layout.shortScreenHeight;
+  const isCompactScreen = layoutHeight < theme.layout.compactScreenHeight;
   const contentPaddingHorizontal = isShortScreen
     ? theme.layout.screenPaddingXCompact
     : theme.layout.screenPaddingX;
@@ -67,7 +73,7 @@ export const ScreenContainer = ({
         isAuth ? styles.authScroll : null,
         isShortScreen ? styles.scrollContainerCompact : null,
       ]}
-      automaticallyAdjustKeyboardInsets={isAuth}
+      automaticallyAdjustKeyboardInsets={isAuth && Platform.OS === 'ios'}
       automaticallyAdjustContentInsets={!isAuth}
       bounces={!isAuth}
       contentInsetAdjustmentBehavior={isAuth ? 'never' : 'automatic'}
@@ -81,10 +87,13 @@ export const ScreenContainer = ({
     content
   );
 
-  const keyboardWrapper = keyboardAvoidingEnabled ? (
+  // Android already resizes the activity for the keyboard. Applying
+  // KeyboardAvoidingView's `height` behavior as well creates a second inset
+  // which may remain visible after the keyboard is dismissed.
+  const keyboardWrapper = keyboardAvoidingEnabled && Platform.OS === 'ios' ? (
     <KeyboardAvoidingView
       style={styles.flex}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      behavior="padding"
       keyboardVerticalOffset={Math.max(insets.top, isAuth ? theme.spacing.xl : theme.spacing.sm)}
     >
       {viewPort}

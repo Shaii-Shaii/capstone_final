@@ -103,10 +103,6 @@ const buildUserFacingSignupError = (message, code = signupErrorCodes.unexpected,
   return error;
 };
 
-const isMissingSupabaseConfigError = (error) => (
-  String(error?.message || '').trim().toLowerCase().includes('supabase environment variables are not configured')
-);
-
 const isExpectedSignupFailure = (error) => [
   signupErrorCodes.emailAlreadyRegistered,
   signupErrorCodes.invalidEmail,
@@ -133,7 +129,7 @@ const getFriendlyAuthError = (error) => {
 
   if (backendCode === loginErrorCodes.securityUnavailable) {
     return buildUserFacingLoginError(
-      msg || 'Secure login is temporarily unavailable. Please try again shortly.',
+      msg || 'Donivra is temporarily undergoing maintenance. Please try again in a few minutes.',
       loginErrorCodes.securityUnavailable,
       error
     );
@@ -158,8 +154,11 @@ const getFriendlyAuthError = (error) => {
   if (normalized.includes('email not confirmed')) {
     return buildUserFacingLoginError('Please verify your email address before logging in.', loginErrorCodes.emailNotConfirmed);
   }
-  if (isNetworkErrorMessage(normalized)) {
-    return buildUserFacingLoginError('We could not connect right now. Please check your internet and try again.', loginErrorCodes.network);
+  if (isNetworkErrorMessage(normalized) || isTemporaryDatabaseError(error)) {
+    return buildUserFacingLoginError(
+      'Donivra is temporarily undergoing maintenance. Your information is safe. Please try again in a few minutes.',
+      loginErrorCodes.network,
+    );
   }
 
   return buildUserFacingLoginError('Something went wrong. Please try again.');
@@ -269,6 +268,25 @@ const getFriendlySignupError = (error) => {
   );
 };
 
+const isTemporaryDatabaseError = (error) => {
+  const message = String(error?.message || '').trim().toLowerCase();
+  const code = String(error?.code || '').trim().toLowerCase();
+  const status = Number(error?.status || error?.statusCode || 0);
+
+  return (
+    code === '57014'
+    || status === 502
+    || status === 503
+    || status === 504
+    || status === 522
+    || message.includes('statement timeout')
+    || message.includes('canceling statement')
+    || message.includes('connection timeout')
+    || message.includes('gateway timeout')
+    || message.includes('service unavailable')
+  );
+};
+
 const getFriendlyGoogleAuthError = (error) => {
   const msg = String(error?.message || '').trim();
   const normalized = msg.toLowerCase();
@@ -363,6 +381,7 @@ const expectedLoginErrorCodes = new Set([
   loginErrorCodes.accessNotStarted,
   loginErrorCodes.accessExpired,
   loginErrorCodes.network,
+  loginErrorCodes.accountLoadFailed,
 ]);
 
 const isExpectedLoginFailure = (error) => (
@@ -476,7 +495,10 @@ export const login = async (email, password, expectedRole) => {
     const systemUserResult = await fetchSystemUserByAuthUserId(authData.user.id);
     if (systemUserResult.error) {
       await AuthAPI.logoutUser();
-      const accountLoadError = buildUserFacingLoginError('Something went wrong while loading your account.', loginErrorCodes.accountLoadFailed);
+      const accountLoadError = buildUserFacingLoginError(
+        'Donivra is temporarily undergoing maintenance. Your information is safe. Please try again in a few minutes.',
+        loginErrorCodes.accountLoadFailed,
+      );
       logAppError('auth.login.account_lookup_failed', systemUserResult.error, {
         authUserId: authData.user?.id || null,
         email,
@@ -823,38 +845,21 @@ export const getResolvedSystemTheme = async () => {
     ]);
 
     if (uiSettingsResult.error) {
-      const isNetworkFailure = isNetworkErrorMessage(uiSettingsResult.error?.message)
-        || isMissingSupabaseConfigError(uiSettingsResult.error);
-      if (isNetworkFailure) {
-        logAppEvent(
-          'auth.theme.ui_settings_unavailable',
-          'UI settings could not be reached. Using the local theme fallback.',
-          { table: 'UI_Settings' },
-          'warn'
-        );
-      } else {
-        logAppError('auth.theme.ui_settings_failed', uiSettingsResult.error, {
-          table: 'UI_Settings',
-        });
-      }
+      logAppEvent(
+        'auth.theme.ui_settings_unavailable',
+        'UI settings could not be reached. Using the local theme fallback.',
+        { table: 'UI_Settings' },
+        'info'
+      );
     }
 
     if (defaultPresetResult.error) {
-      const isNetworkFailure = isNetworkErrorMessage(defaultPresetResult.error?.message)
-        || isMissingSupabaseConfigError(defaultPresetResult.error);
-      if (isNetworkFailure) {
-        logAppEvent(
-          'auth.theme.theme_preset_unavailable',
-          'Theme presets could not be reached. Using the local theme fallback.',
-          { table: 'Theme_Presets' },
-          'warn'
-        );
-      } else {
-        logAppError('auth.theme.theme_preset_failed', defaultPresetResult.error, {
-          table: 'Theme_Presets',
-          filter: { Is_Default: true, Is_Deleted: false },
-        });
-      }
+      logAppEvent(
+        'auth.theme.theme_preset_unavailable',
+        'Theme presets could not be reached. Using the local theme fallback.',
+        { table: 'Theme_Presets' },
+        'info'
+      );
     }
 
     const branding = resolveVisualTheme({
@@ -875,9 +880,17 @@ export const getResolvedSystemTheme = async () => {
       error: null,
     };
   } catch (error) {
-    logAppError('auth.theme', error, {
-      tables: ['UI_Settings', 'Theme_Presets'],
-    });
+    logAppEvent(
+      'auth.theme.unavailable',
+      'Theme settings could not be reached. Using the local theme fallback.',
+      {
+        tables: ['UI_Settings', 'Theme_Presets'],
+        reason: isNetworkErrorMessage(error?.message) || isTemporaryDatabaseError(error)
+          ? 'temporary_service_issue'
+          : 'fallback_required',
+      },
+      'info',
+    );
 
     return {
       data: emptyResolvedTheme,

@@ -16,7 +16,7 @@ import { DonorTopBar } from '../../src/components/donor/DonorTopBar';
 import { LegalDocumentPreview } from '../../src/components/legal/LegalDocumentPreview';
 import { AppIcon } from '../../src/components/ui/AppIcon';
 import { patientDashboardNavItems } from '../../src/constants/dashboard';
-import { resolveThemeRoles, theme } from '../../src/design-system/theme';
+import { resolvePatientThemeRoles, theme } from '../../src/design-system/theme';
 import { useAuth } from '../../src/providers/AuthProvider';
 
 const getDocumentUri = (value) => {
@@ -168,8 +168,8 @@ function MedicalImagePreview({ uri, fileName, roles }) {
 export default function PatientMedicalInformationScreen() {
   const router = useRouter();
   const { profile, patientProfile, hospitalProfile, resolvedTheme } = useAuth();
-  const roles = resolveThemeRoles(resolvedTheme);
-  const primaryTextColor = resolvedTheme?.primaryTextColor || roles.headingText;
+  const roles = resolvePatientThemeRoles(resolvedTheme);
+  const primaryTextColor = roles.headingText;
   const documentValue = patientProfile?.medical_document || patientProfile?.medical_document_url || '';
   const documentUri = getDocumentUri(documentValue);
   const fileName = getDocumentFileName(documentValue, documentUri);

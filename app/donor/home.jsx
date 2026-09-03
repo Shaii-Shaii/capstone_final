@@ -28,16 +28,15 @@ import { DonorTabHeader } from '../../src/components/donor/DonorTabHeader';
 import { SectionTitleRow } from '../../src/components/ui/SectionTitleRow';
 import { donorDashboardNavItems } from '../../src/constants/dashboard';
 import {
-  fetchHairSubmissionsByUserId,
+  fetchAiScreeningsByUserId,
   fetchLatestDonationRequirement,
-  fetchLatestDonorRecommendationByUserId,
 } from '../../src/features/hairSubmission.api';
 import {
   fetchUpcomingDonationDrives,
   fetchRegisteredDonationDrivesByUserId,
+  shouldRefreshDonationDrivesForRealtimePayload,
   unlockPrivateEventAccess,
 } from '../../src/features/donorHome.api';
-import { getDonorDonationsModuleData } from '../../src/features/donorDonations.service';
 import { useNotifications } from '../../src/hooks/useNotifications';
 import { useAuth } from '../../src/providers/AuthProvider';
 import { useLanguage } from '../../src/providers/LanguageProvider';
@@ -299,7 +298,7 @@ const normalizeConditionTone = (condition = '') => {
 const getScreeningEntries = getScreeningEntriesNewestFirst;
 
 const WEEK_DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const HOME_REALTIME_DEBOUNCE_MS = 420;
+const HOME_REALTIME_DEBOUNCE_MS = 1200;
 const HOME_CACHE_FRESH_MS = 60000;
 
 const withOpacity = (color, opacity) => {
@@ -2208,7 +2207,6 @@ export default function DonorHomeScreen() {
   const [hairSubmissions, setHairSubmissions] = React.useState(cachedHome?.hairSubmissions || []);
   const [registeredEventDrives, setRegisteredEventDrives] = React.useState(cachedHome?.registeredEventDrives || []);
   const [, setDonationRequirement] = React.useState(cachedHome?.donationRequirement || null);
-  const [, setLatestRecommendation] = React.useState(cachedHome?.latestRecommendation || null);
   const [donationEventSearchQuery, setDonationEventSearchQuery] = React.useState('');
   const [donationEventSortOrder, setDonationEventSortOrder] = React.useState('nearest');
   const [donationEventVisibilityFilter, setDonationEventVisibilityFilter] = React.useState('all');
@@ -2338,25 +2336,17 @@ export default function DonorHomeScreen() {
     setHomeError('');
 
     const [
-      donationModuleResult,
       upcomingDrivesResult,
-      submissionsResult,
+      screeningsResult,
       registeredDrivesResult,
-      recommendationResult,
       requirementResult,
     ] = await Promise.all([
-      getDonorDonationsModuleData({
-        userId: user.id,
-        databaseUserId: profile?.user_id || null,
-        driveLimit: 8,
-      }),
       fetchUpcomingDonationDrives(12, profile?.user_id || null),
-      fetchHairSubmissionsByUserId(user.id, 12),
+      fetchAiScreeningsByUserId(user.id, 12),
       fetchRegisteredDonationDrivesByUserId({
         databaseUserId: profile?.user_id || null,
         limit: 24,
       }),
-      fetchLatestDonorRecommendationByUserId(user.id).catch(() => ({ data: null })),
       fetchLatestDonationRequirement().catch((error) => ({ data: null, error })),
     ]);
 
@@ -2364,15 +2354,19 @@ export default function DonorHomeScreen() {
       ? upcomingDrivesResult.data
       : [];
     const nextDonationDrives = visibleDriveRows.filter(isDriveActiveForHome);
-    const nextHairSubmissions = submissionsResult.data || [];
+    const nextHairSubmissions = (screeningsResult.data || []).map((screening) => ({
+      id: `ai-screening-${screening.ai_screening_id}`,
+      submission_id: null,
+      created_at: screening.created_at,
+      ai_screenings: [screening],
+      submission_details: [],
+    }));
     const nextRegisteredEventDrives = registeredDrivesResult.data || [];
-    const nextLatestRecommendation = recommendationResult?.data || null;
     const nextDonationRequirement = requirementResult?.data || null;
     const nextHomeData = {
       donationDrives: nextDonationDrives,
       hairSubmissions: nextHairSubmissions,
       registeredEventDrives: nextRegisteredEventDrives,
-      latestRecommendation: nextLatestRecommendation,
       donationRequirement: nextDonationRequirement,
       cachedAt: Date.now(),
     };
@@ -2380,18 +2374,16 @@ export default function DonorHomeScreen() {
     cachedDonorHomeUserId = user.id;
     homeCacheRef.current = nextHomeData;
     setCachedHairAnalysisHomeData(user.id, {
-      submissions: nextHairSubmissions,
+      screenings: screeningsResult.data || [],
       donationRequirement: nextDonationRequirement,
     });
     setDonationDrives(nextDonationDrives);
     setHairSubmissions(nextHairSubmissions);
     setRegisteredEventDrives(nextRegisteredEventDrives);
-    setLatestRecommendation(nextLatestRecommendation);
     setDonationRequirement(nextDonationRequirement);
     const loadFailed = Boolean(
-      donationModuleResult.error
-      || upcomingDrivesResult.error
-      || submissionsResult.error
+      upcomingDrivesResult.error
+      || screeningsResult.error
       || registeredDrivesResult.error
       || requirementResult?.error
     );
@@ -2433,7 +2425,10 @@ export default function DonorHomeScreen() {
 
   useFocusEffect(
     React.useCallback(() => {
-      void loadHome({ silent: true, force: true });
+      // The mount effect performs the initial request. On the first focus there
+      // is no need to start the same database batch a second time.
+      if (!homeCacheRef.current) return undefined;
+      void loadHome({ silent: true });
       return undefined;
     }, [loadHome])
   );
@@ -2453,6 +2448,14 @@ export default function DonorHomeScreen() {
     const onRealtimeEvent = () => {
       scheduleHomeRealtimeRefresh();
     };
+    const onEventRequestRealtimeEvent = (payload = {}) => {
+      const visibleDriveIds = (homeCacheRef.current?.donationDrives || [])
+        .map((drive) => drive?.donation_drive_id || drive?.event_request_id)
+        .filter(Boolean);
+      if (shouldRefreshDonationDrivesForRealtimePayload(payload, visibleDriveIds)) {
+        scheduleHomeRealtimeRefresh();
+      }
+    };
     const onCertificateRealtimeEvent = (payload = {}) => {
       if (payload?.eventType !== 'INSERT') return;
       setCertificateToastMessage('Certificate is now available in Achievements.');
@@ -2464,7 +2467,7 @@ export default function DonorHomeScreen() {
         event: '*',
         schema: 'public',
         table: 'Event_Requests',
-      }, onRealtimeEvent)
+      }, onEventRequestRealtimeEvent)
       .on('postgres_changes', {
         event: '*',
         schema: 'public',
@@ -2475,6 +2478,12 @@ export default function DonorHomeScreen() {
         event: '*',
         schema: 'public',
         table: 'Hair_Submissions',
+        filter: `User_ID=eq.${profile.user_id}`,
+      }, onRealtimeEvent)
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'AI_Screenings',
         filter: `User_ID=eq.${profile.user_id}`,
       }, onRealtimeEvent)
       .on('postgres_changes', {

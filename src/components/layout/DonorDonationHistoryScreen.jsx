@@ -13,7 +13,7 @@ import { DonorTopBar } from '../donor/DonorTopBar';
 import { AppIcon } from '../ui/AppIcon';
 import { EmptyDataState } from '../ui/EmptyDataState';
 import { useAuth } from '../../providers/AuthProvider';
-import { getDonorDonationsModuleData } from '../../features/donorDonations.service';
+import { getDonorDonationHistory } from '../../features/donorDonations.service';
 import { resolveThemeRoles, theme } from '../../design-system/theme';
 
 const formatStatusLabel = (value = '') => {
@@ -94,7 +94,7 @@ function DonationHistoryRow({ item, roles, showDivider = true }) {
 
 export function DonorDonationHistoryScreen() {
   const router = useRouter();
-  const { user, profile, resolvedTheme, isLoading: isAuthLoading } = useAuth();
+  const { user, resolvedTheme, isLoading: isAuthLoading } = useAuth();
   const roles = resolveThemeRoles(resolvedTheme);
 
   const [isLoading, setIsLoading] = React.useState(true);
@@ -116,9 +116,8 @@ export function DonorDonationHistoryScreen() {
     }
 
     try {
-      const result = await getDonorDonationsModuleData({
+      const result = await getDonorDonationHistory({
         userId: user.id,
-        databaseUserId: profile?.user_id || null,
       });
 
       setHistoryItems(result?.donationHistory || result?.completedDonationHistory || []);
@@ -137,7 +136,7 @@ export function DonorDonationHistoryScreen() {
         setIsLoading(false);
       }
     }
-  }, [profile?.user_id, user?.id]);
+  }, [user?.id]);
 
   React.useEffect(() => {
     if (isAuthLoading) return;

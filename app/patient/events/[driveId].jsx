@@ -23,7 +23,7 @@ import { LocalQrCode } from '../../../src/components/ui/LocalQrCode';
 import { StatusBanner } from '../../../src/components/ui/StatusBanner';
 import { supabase } from '../../../src/api/supabase/client';
 import { patientDashboardNavItems } from '../../../src/constants/dashboard';
-import { resolveThemeRoles, theme } from '../../../src/design-system/theme';
+import { resolvePatientThemeRoles, theme } from '../../../src/design-system/theme';
 import { useOpenStreetMapAvailability } from '../../../src/hooks/useOpenStreetMapAvailability';
 import {
   createDonationDriveRegistration,
@@ -224,7 +224,7 @@ export default function PatientEventDetailsScreen() {
   const { driveId } = useLocalSearchParams();
   const numericDriveId = Number(Array.isArray(driveId) ? driveId[0] : driveId);
   const { user, profile, resolvedTheme } = useAuth();
-  const roles = resolveThemeRoles(resolvedTheme);
+  const roles = resolvePatientThemeRoles(resolvedTheme);
   const primaryTextColor = resolvedTheme?.primaryTextColor || roles.headingText;
   const [drive, setDrive] = React.useState(null);
   const [isLoading, setIsLoading] = React.useState(true);

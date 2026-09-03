@@ -5,10 +5,9 @@ import { notificationStoragePrefix, notificationTypes } from './notification.con
 import {
   createDonationCertificate,
   fetchDonationCertificateBySubmissionId,
-  fetchHairBundleTrackingHistory,
-  fetchDonorRecommendationsBySubmissionId,
-  fetchHairSubmissionLogisticsBySubmissionId,
+  fetchHairSubmissionWorkflowEvidenceByIds,
   fetchHairSubmissionsByUserId,
+  fetchLatestHairAnalysisSummaryByUserId,
   hasDonationFlowProgress,
   isHairCheckOnlySubmission,
 } from './hairSubmission.api';
@@ -579,27 +578,38 @@ const hasDonationWorkflowEvidence = ({ submission = null, logistics = null, trac
 const filterInvalidDonorDonationNotifications = async ({ userId, notifications = [] }) => {
   if (!userId || !notifications.length) return notifications;
 
-  const { data: submissions } = await fetchHairSubmissionsByUserId(userId, 60).catch(() => ({ data: [] }));
+  const evidenceNotificationTypes = new Set([
+    notificationTypes.submissionReceived,
+    notificationTypes.logisticsUpdated,
+    notificationTypes.donationTrackingUpdated,
+  ]);
+  const referencedSubmissionIds = [...new Set(
+    notifications
+      .filter((notification) => (
+        notification?.referenceType === 'hair_submission'
+        && evidenceNotificationTypes.has(notification?.type)
+      ))
+      .map((notification) => Number(notification?.referenceId))
+      .filter((value) => Number.isFinite(value) && value > 0)
+  )];
+  const [latestAnalysisResult, evidenceResult] = await Promise.all([
+    fetchLatestHairAnalysisSummaryByUserId(userId, 60).catch(() => ({ data: null })),
+    fetchHairSubmissionWorkflowEvidenceByIds({
+      userId,
+      submissionIds: referencedSubmissionIds,
+      trackingLimitPerSubmission: 24,
+    }).catch(() => ({ data: [] })),
+  ]);
+  const latestAnalysisEntry = latestAnalysisResult.data?.latestAnalysisEntry || null;
+  const submissions = latestAnalysisResult.data?.submissions || [];
   const todayLocalDateKey = toLocalDateKey(new Date());
-  const hasAnalysisToday = hasScreeningForLocalDay(submissions || [], todayLocalDateKey);
-  const evidenceRows = await Promise.all((submissions || []).map(async (submission) => {
-    if (!submission?.submission_id || isHairCheckOnlySubmission(submission)) {
-      return { submission, logistics: null, trackingEntries: [] };
-    }
-
-    const [logisticsResult, trackingResult] = await Promise.all([
-      fetchHairSubmissionLogisticsBySubmissionId(submission.submission_id),
-      fetchHairBundleTrackingHistory({ submissionId: submission.submission_id, limit: 24 }),
-    ]);
-    return {
-      submission,
-      logistics: logisticsResult.data || null,
-      trackingEntries: trackingResult.data || [],
-    };
-  }));
+  const hasAnalysisToday = Boolean(
+    latestAnalysisEntry?.screening?.created_at
+    && toLocalDateKey(latestAnalysisEntry.screening.created_at) === todayLocalDateKey
+  ) || hasScreeningForLocalDay(submissions, todayLocalDateKey);
+  const evidenceRows = evidenceResult.data || [];
   const donationWorkflowSubmissionIds = new Set();
   const submittedDonationSubmissionIds = new Set();
-  const receivedDonationSubmissionIds = new Set();
 
   evidenceRows.forEach(({ submission, logistics, trackingEntries }) => {
     const submissionId = String(submission?.submission_id || '');
@@ -609,9 +619,6 @@ const filterInvalidDonorDonationNotifications = async ({ userId, notifications =
     }
     if (hasSubmittedDonationEvidence({ submission, trackingEntries })) {
       submittedDonationSubmissionIds.add(submissionId);
-    }
-    if (findOrganizationReceiptEvidence({ trackingEntries, logistics })) {
-      receivedDonationSubmissionIds.add(submissionId);
     }
   });
 
@@ -638,7 +645,10 @@ const filterInvalidDonorDonationNotifications = async ({ userId, notifications =
     }
 
     if (type === notificationTypes.certificateAvailable) {
-      return receivedDonationSubmissionIds.size > 0;
+      // The notification references a certificate rather than a submission.
+      // Keep it without expanding every historical donation merely to re-check
+      // evidence that was already required when the certificate was created.
+      return true;
     }
 
     return true;
@@ -679,6 +689,18 @@ const buildDonorDerivedNotifications = async ({
     }
   }
 
+  const submissionIds = (submissions || [])
+    .map((submission) => submission?.submission_id)
+    .filter(Boolean);
+  const evidenceResult = await fetchHairSubmissionWorkflowEvidenceByIds({
+    userId,
+    submissionIds,
+    trackingLimitPerSubmission: 4,
+  });
+  const evidenceBySubmissionId = new Map(
+    (evidenceResult.data || []).map((row) => [Number(row?.submission?.submission_id), row])
+  );
+
   await Promise.all((submissions || []).map(async (submission) => {
     const submissionId = submission?.submission_id;
     if (!submissionId) return;
@@ -700,9 +722,9 @@ const buildDonorDerivedNotifications = async ({
       }));
     }
 
-    const recommendationRows = submission?.donor_recommendations?.length
-      ? submission.donor_recommendations
-      : (await fetchDonorRecommendationsBySubmissionId(submissionId)).data || [];
+    const recommendationRows = screening?.recommendations?.length
+      ? screening.recommendations
+      : [];
     if (recommendationRows.length && !screeningId) {
       const topRecommendation = recommendationRows[0];
       notifications.push(buildNotification({
@@ -716,13 +738,9 @@ const buildDonorDerivedNotifications = async ({
       }));
     }
 
-    const [logisticsResult, trackingResult] = await Promise.all([
-      fetchHairSubmissionLogisticsBySubmissionId(submissionId),
-      fetchHairBundleTrackingHistory({ submissionId, limit: 4 }),
-    ]);
-
-    const logistics = logisticsResult.data;
-    const trackingEntries = trackingResult.data || [];
+    const workflowEvidence = evidenceBySubmissionId.get(Number(submissionId));
+    const logistics = workflowEvidence?.logistics || null;
+    const trackingEntries = workflowEvidence?.trackingEntries || [];
     const hasDonationWorkflow = hasDonationWorkflowEvidence({
       submission,
       logistics,

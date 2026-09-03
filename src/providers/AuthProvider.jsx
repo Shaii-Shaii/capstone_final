@@ -2,6 +2,9 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
 import { useAuthSession } from '../hooks/useAuthSession';
 import { getResolvedSystemTheme } from '../features/auth/services/auth.service';
 import { emptyResolvedTheme, normalizeResolvedTheme } from '../design-system/theme';
+import { withTimeout } from '../utils/asyncTimeout';
+
+const THEME_LOAD_TIMEOUT_MS = 8000;
 
 let resolvedThemeCache = null;
 let resolvedThemeInflight = null;
@@ -16,6 +19,8 @@ const AuthContext = createContext({
   databaseUserId: null,
   needsOnboarding: false,
   isLoading: true,
+  sessionError: null,
+  retrySession: () => undefined,
   refreshProfile: async () => null,
   resolvedTheme: emptyResolvedTheme,
   refreshResolvedTheme: async () => emptyResolvedTheme,
@@ -37,7 +42,13 @@ export const AuthProvider = ({ children }) => {
       return inflightTheme;
     }
 
-    resolvedThemeInflight = getResolvedSystemTheme()
+    resolvedThemeInflight = withTimeout(
+      getResolvedSystemTheme,
+      {
+        timeoutMs: THEME_LOAD_TIMEOUT_MS,
+        message: 'Theme settings took too long to load.',
+      },
+    )
       .then((result) => {
         const nextTheme = result?.data ? normalizeResolvedTheme(result.data) : emptyResolvedTheme;
         resolvedThemeCache = nextTheme;

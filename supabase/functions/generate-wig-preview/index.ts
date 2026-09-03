@@ -2,9 +2,10 @@ import { createJsonResponse, handleCorsPreflight } from '../_shared/cors.ts';
 import {
   createImageEdit,
   createStructuredResponse,
-  getDefaultOpenAiImageModel,
-  getDefaultOpenAiModel,
-} from '../_shared/openai.ts';
+  getAiGenerationProvider,
+  getDefaultAiImageModel,
+  getDefaultAiModel,
+} from '../_shared/ai-generation.ts';
 
 const MAX_CANDIDATE_WIGS = 24;
 const RECOMMENDATION_COUNT = 3;
@@ -62,6 +63,23 @@ const dataUrlToBlob = (dataUrl: string) => {
   return new Blob([bytes], { type: match[1] || 'image/webp' });
 };
 
+const bytesToBase64 = (bytes: Uint8Array) => {
+  const chunks: string[] = [];
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    chunks.push(String.fromCharCode(...bytes.subarray(offset, offset + chunkSize)));
+  }
+  return btoa(chunks.join(''));
+};
+
+const getImageExtension = (mimeType: string) => {
+  const normalized = mimeType.toLowerCase();
+  if (normalized.includes('png')) return 'png';
+  if (normalized.includes('jpeg') || normalized.includes('jpg')) return 'jpg';
+  if (normalized.includes('webp')) return 'webp';
+  return 'img';
+};
+
 const persistGeneratedImage = async ({
   imageUrl,
   userId,
@@ -80,10 +98,11 @@ const persistGeneratedImage = async ({
   const imageBlob = imageUrl.startsWith('data:')
     ? dataUrlToBlob(imageUrl)
     : await fetch(imageUrl).then(async (response) => {
-        if (!response.ok) throw new Error('Unable to download the generated OpenAI image.');
+        if (!response.ok) throw new Error('Unable to download the generated wig preview.');
         return await response.blob();
       });
-  const filePath = `${userId}/ai-wig-preview-${Date.now()}-${optionIndex}.webp`;
+  const fileExtension = getImageExtension(imageBlob.type || 'image/webp');
+  const filePath = `${userId}/ai-wig-preview-${Date.now()}-${optionIndex}.${fileExtension}`;
   const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
   const uploadResponse = await fetch(
     `${supabaseUrl}/storage/v1/object/${encodeURIComponent(PREVIEW_STORAGE_BUCKET)}/${encodedPath}`,
@@ -124,10 +143,53 @@ const isAllowedStorageImageUrl = (value: string) => {
   try {
     const imageUrl = new URL(value);
     const supabaseUrl = new URL((Deno.env.get('SUPABASE_URL') || '').trim());
-    return imageUrl.protocol === 'https:' && imageUrl.host === supabaseUrl.host;
+    return imageUrl.protocol === 'https:'
+      && imageUrl.host === supabaseUrl.host
+      && imageUrl.pathname.includes('/storage/v1/object/');
   } catch {
     return false;
   }
+};
+
+const resolveProviderImageReference = async (value: string, label: string) => {
+  const normalized = toText(value);
+  if (normalized.startsWith('data:image/')) {
+    if (!/^data:image\/(png|jpeg|jpg|webp);base64,/i.test(normalized)) {
+      throw new Error(`${label} uses an unsupported image format.`);
+    }
+    return normalized;
+  }
+
+  if (!isAllowedStorageImageUrl(normalized)) {
+    throw new Error(`${label} must use a valid Supabase Storage image.`);
+  }
+
+  const serviceRoleKey = (Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') || '').trim();
+  if (!serviceRoleKey) {
+    throw new Error('Supabase Storage credentials are not configured in Edge Function Secrets.');
+  }
+
+  const response = await fetch(normalized, {
+    headers: {
+      Authorization: `Bearer ${serviceRoleKey}`,
+      apikey: serviceRoleKey,
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`${label} could not be read from Supabase Storage.`);
+  }
+
+  const mimeType = toText(response.headers.get('content-type')).split(';')[0].toLowerCase();
+  if (!['image/png', 'image/jpeg', 'image/webp'].includes(mimeType)) {
+    throw new Error(`${label} uses an unsupported image format.`);
+  }
+
+  const imageBytes = new Uint8Array(await response.arrayBuffer());
+  if (!imageBytes.length || imageBytes.length > 15_000_000) {
+    throw new Error(`${label} is empty or too large for image generation.`);
+  }
+
+  return `data:${mimeType};base64,${bytesToBase64(imageBytes)}`;
 };
 
 const getWigId = (wig: Record<string, unknown>) => (
@@ -294,15 +356,18 @@ const createWigImageWithRetry = async ({
   patientImageUrl,
   wigReferenceUrl,
   optionIndex,
+  imageModel,
 }: {
   prompt: string;
   patientImageUrl: string;
   wigReferenceUrl: string;
   optionIndex: number;
+  imageModel: string;
 }) => {
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {
       return await createImageEdit({
+        model: imageModel,
         prompt,
         images: [
           { image_url: patientImageUrl },
@@ -322,7 +387,7 @@ const createWigImageWithRetry = async ({
     }
   }
 
-  throw new Error('OpenAI image edit did not complete.');
+  throw new Error('AI image edit did not complete.');
 };
 
 Deno.serve(async (request) => {
@@ -345,6 +410,8 @@ Deno.serve(async (request) => {
     const patientImageUrl = getPatientImageUrl(referenceImage);
     const requestedWigs = Array.isArray(body?.available_wigs) ? body.available_wigs : [];
     const selectedWigId = toText(body?.selected_wig_id);
+    const generationProvider = getAiGenerationProvider();
+    const imageModel = getDefaultAiImageModel();
     const wigs = requestedWigs
       .map((wig: Record<string, unknown>) => normalizeWig(wig))
       .filter((wig: Record<string, unknown>) => (
@@ -356,6 +423,26 @@ Deno.serve(async (request) => {
       return createJsonResponse({ error: 'A front photo is required before generating wig recommendations.' }, 400);
     }
 
+    if (generationProvider !== 'openrouter') {
+      return createJsonResponse({
+        error: 'Wig preview generation must use OpenRouter.',
+        message: 'OPENROUTER_API_KEY is not configured in Edge Function Secrets.',
+        stage: 'provider_configuration',
+        provider: generationProvider,
+        errorType: 'configuration_error',
+      }, 500);
+    }
+
+    if (!imageModel.startsWith('openai/')) {
+      return createJsonResponse({
+        error: 'Wig preview generation must use an OpenAI image model through OpenRouter.',
+        message: `OPENROUTER_IMAGE_MODEL is set to ${imageModel || 'an empty value'}.`,
+        stage: 'provider_configuration',
+        provider: generationProvider,
+        errorType: 'configuration_error',
+      }, 500);
+    }
+
     if (wigs.length < RECOMMENDATION_COUNT) {
       return createJsonResponse({
         error: 'At least three active wigs with reference images are required for AI recommendations.',
@@ -363,11 +450,14 @@ Deno.serve(async (request) => {
     }
 
     console.info('[generate-wig-preview] recommendation started', {
-      provider: 'openai',
-      analysisModel: getDefaultOpenAiModel(),
-      imageModel: getDefaultOpenAiImageModel(),
+      provider: getAiGenerationProvider(),
+      analysisModel: getDefaultAiModel(),
+      imageModel,
       candidateCount: wigs.length,
     });
+
+    executionStage = 'reference_image_preparation';
+    const resolvedPatientImage = await resolveProviderImageReference(patientImageUrl, 'Patient photo');
 
     executionStage = 'facial_fit_analysis';
     const analysis = await createStructuredResponse({
@@ -393,7 +483,7 @@ Deno.serve(async (request) => {
             },
             {
               type: 'input_image',
-              image_url: patientImageUrl,
+              image_url: resolvedPatientImage,
               detail: 'high',
             },
           ],
@@ -410,13 +500,20 @@ Deno.serve(async (request) => {
     );
 
     executionStage = 'try_on_generation';
+    const resolvedWigReferences = await Promise.all(recommendations.map((recommendation) => (
+      resolveProviderImageReference(
+        getWigReferenceUrl(recommendation.wig as Record<string, unknown>),
+        `${getWigName(recommendation.wig as Record<string, unknown>)} reference image`,
+      )
+    )));
     const generatedOptions = await Promise.all(recommendations.map(async (recommendation, index) => {
       const wig = recommendation.wig as Record<string, unknown>;
       const generated = await createWigImageWithRetry({
         prompt: buildTryOnPrompt({ wig, recommendation }),
-        patientImageUrl,
-        wigReferenceUrl: getWigReferenceUrl(wig),
+        patientImageUrl: resolvedPatientImage,
+        wigReferenceUrl: resolvedWigReferences[index],
         optionIndex: index + 1,
+        imageModel,
       });
       const providerImageUrl = 'imageDataUrl' in generated
         ? generated.imageDataUrl
@@ -443,14 +540,14 @@ Deno.serve(async (request) => {
         style_notes: toText(recommendation.styling_note),
         generated_image_data_url: generatedImageUrl,
         preview_url: generatedImageUrl,
-        render_mode: 'openai_image_edit',
+        render_mode: `${getAiGenerationProvider()}_image_edit`,
         selected_wig: wig,
       };
     }));
 
     const primary = generatedOptions[0];
     console.info('[generate-wig-preview] recommendation ready', {
-      provider: 'openai',
+      provider: getAiGenerationProvider(),
       recommendationCount: generatedOptions.length,
       generatedImageCount: generatedOptions.filter((item) => item.generated_image_data_url).length,
     });
@@ -458,14 +555,14 @@ Deno.serve(async (request) => {
     executionStage = 'complete';
     return createJsonResponse({
       success: true,
-      provider: 'openai',
-      analysis_model: getDefaultOpenAiModel(),
-      image_model: getDefaultOpenAiImageModel(),
+      provider: getAiGenerationProvider(),
+      analysis_model: getDefaultAiModel(),
+      image_model: getDefaultAiImageModel(),
       visual_profile_summary: toText(analysis?.visual_profile_summary),
       summary: toText(analysis?.visual_profile_summary),
       preview_url: primary?.preview_url || '',
       generated_image_data_url: primary?.generated_image_data_url || '',
-      render_mode: 'openai_image_edit',
+      render_mode: `${getAiGenerationProvider()}_image_edit`,
       selected_wig: primary?.selected_wig || null,
       previews: generatedOptions,
       options: generatedOptions,
@@ -476,6 +573,9 @@ Deno.serve(async (request) => {
     const normalizedMessage = errorMessage.toLowerCase();
     const providerStatus = Number((error as Error & { status?: number })?.status || 0) || null;
     const isConfigurationError = normalizedMessage.includes('openai api key is not configured')
+      || normalizedMessage.includes('openrouter api key is not configured')
+      || normalizedMessage.includes('must use openrouter')
+      || normalizedMessage.includes('must use an openai image model')
       || normalizedMessage.includes('supabase storage credentials are not configured');
 
     return createJsonResponse({
@@ -486,7 +586,7 @@ Deno.serve(async (request) => {
       stage: executionStage,
       providerStatus,
       errorType: isConfigurationError ? 'configuration_error' : 'provider_error',
-      provider: 'openai',
+      provider: getAiGenerationProvider(),
     }, isConfigurationError ? 500 : 502);
   }
 });

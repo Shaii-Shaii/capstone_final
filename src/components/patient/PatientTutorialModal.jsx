@@ -1,7 +1,7 @@
 import React from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { AppIcon } from '../ui/AppIcon';
-import { resolveThemeRoles, theme } from '../../design-system/theme';
+import { resolvePatientThemeRoles, theme } from '../../design-system/theme';
 import { useAuth } from '../../providers/AuthProvider';
 
 const PATIENT_TUTORIALS = {
@@ -92,7 +92,7 @@ const withOpacity = (color, opacity) => {
 
 export function PatientTutorialModal({ visible, tabKey = 'home', onClose }) {
   const { resolvedTheme } = useAuth();
-  const roles = resolveThemeRoles(resolvedTheme);
+  const roles = resolvePatientThemeRoles(resolvedTheme);
   const content = resolveTutorialContent(tabKey);
   const accentColor = roles.primaryActionBackground;
 

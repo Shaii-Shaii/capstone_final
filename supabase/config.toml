@@ -5,7 +5,10 @@ verify_jwt = false
 verify_jwt = false
 
 [functions.validate-hair-photo-set]
-verify_jwt = false
+verify_jwt = true
+
+[functions.validate-hair-capture-accessories]
+verify_jwt = true
 
 [functions.generate-wig-preview]
 verify_jwt = false

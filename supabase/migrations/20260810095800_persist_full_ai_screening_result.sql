@@ -1,9 +1,7 @@
 alter table public."AI_Screenings"
   add column if not exists "Analysis_Result" jsonb not null default '{}'::jsonb;
-
 comment on column public."AI_Screenings"."Analysis_Result"
   is 'Complete normalized AI hair-analysis snapshot used to replay the original result in the donor hair log.';
-
 update public."AI_Screenings"
 set "Analysis_Result" = jsonb_strip_nulls(jsonb_build_object(
   'estimated_length', "Estimated_Length",

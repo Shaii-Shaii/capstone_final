@@ -28,7 +28,12 @@ const wigRequestSelect = `
   hospital_id:Hospital_ID,
   requested_wig_id:Requested_Wig_ID,
   allocated_wig_id:Allocated_Wig_ID,
-  request_code:Request_Code
+  request_code:Request_Code,
+  requested_wig_specification_id:Requested_Wig_Specification_ID,
+  requested_cap_size:Requested_Cap_Size,
+  is_wish_request:Is_Wish_Request,
+  fulfillment_status:Fulfillment_Status,
+  fulfillment_bundle_id:Fulfillment_Bundle_ID
 `;
 
 const wigSpecificationSelect = `
@@ -261,6 +266,11 @@ const normalizeWigRequest = (row) => {
     requested_wig_id: row?.requested_wig_id || null,
     allocated_wig_id: row?.allocated_wig_id || null,
     request_code: row?.request_code || '',
+    requested_wig_specification_id: row?.requested_wig_specification_id || null,
+    requested_cap_size: row?.requested_cap_size || '',
+    is_wish_request: Boolean(row?.is_wish_request),
+    fulfillment_status: row?.fulfillment_status || '',
+    fulfillment_bundle_id: row?.fulfillment_bundle_id || null,
     notes: specification?.special_notes || '',
     ai_wig_preview_url: specification?.ai_wig_preview_url || '',
   };
@@ -366,6 +376,11 @@ export const createWigRequest = async (payload) => {
       Hospital_ID: payload?.hospital_id || null,
       Requested_Wig_ID: payload?.requested_wig_id || null,
       Allocated_Wig_ID: payload?.allocated_wig_id || null,
+      Requested_Wig_Specification_ID: payload?.requested_wig_specification_id || null,
+      Requested_Cap_Size: payload?.requested_cap_size || null,
+      Is_Wish_Request: Boolean(payload?.is_wish_request),
+      Fulfillment_Status: payload?.fulfillment_status || 'catalog_review',
+      Fulfillment_Bundle_ID: payload?.fulfillment_bundle_id || null,
     }])
     .select(wigRequestSelect)
     .single();
@@ -439,6 +454,7 @@ export const fetchPatientWigSafetyAssessmentByRequestId = async (reqId) => {
 };
 
 export const cancelPendingWigRequest = async ({ reqId, patientId }) => {
+  const cancellationCutoff = new Date(Date.now() - (7 * 24 * 60 * 60 * 1000)).toISOString();
   logWigQuery('cancelPendingWigRequest', {
     table: wigRequestsTable,
     phase: 'update',
@@ -455,6 +471,7 @@ export const cancelPendingWigRequest = async ({ reqId, patientId }) => {
     })
     .eq('Req_ID', reqId)
     .eq('Patient_ID', patientId)
+    .gte('Request_Date', cancellationCutoff)
     .select(wigRequestSelect)
     .maybeSingle();
 
@@ -544,6 +561,22 @@ export const fetchLatestWigRequestByPatientDetailsId = async (patientId) => {
       ...result.data,
       wig_request_specifications: specificationResult.error ? [] : specificationResult.data ? [specificationResult.data] : [],
     }) : null,
+    error: result.error,
+  };
+};
+
+/** Request fields used by status/timeline surfaces, without loading preferences. */
+export const fetchLatestWigRequestTrackingByPatientId = async (patientId) => {
+  const result = await supabase
+    .from(wigRequestsTable)
+    .select(wigRequestSelect)
+    .eq('Patient_ID', patientId)
+    .order('Updated_At', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  return {
+    data: result.data ? normalizeWigRequest(result.data) : null,
     error: result.error,
   };
 };
@@ -948,5 +981,39 @@ export const fetchLatestWigAllocationByPatientDetailsId = async (patientId) => {
         : [],
     }) : null,
     error: result.error,
+  };
+};
+
+/** Allocation and wig identity/status only; used by process tracking. */
+export const fetchLatestWigAllocationTrackingByPatientId = async (patientId) => {
+  const allocationResult = await supabase
+    .from(wigAllocationsTable)
+    .select(wigAllocationSelect)
+    .eq('Patient_ID', patientId)
+    .order('Allocated_At', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (allocationResult.error || !allocationResult.data) {
+    return {
+      data: allocationResult.data ? normalizeWigAllocation(allocationResult.data) : null,
+      error: allocationResult.error,
+    };
+  }
+
+  const wigResult = allocationResult.data.wig_id
+    ? await supabase
+      .from(wigsTable)
+      .select(wigSelect)
+      .eq('Wig_ID', allocationResult.data.wig_id)
+      .maybeSingle()
+    : { data: null, error: null };
+
+  return {
+    data: normalizeWigAllocation({
+      ...allocationResult.data,
+      wigs: wigResult.data ? [wigResult.data] : [],
+    }),
+    error: allocationResult.error || wigResult.error || null,
   };
 };

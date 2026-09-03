@@ -14,14 +14,12 @@ import {
 import {
     createDonationCertificate,
     createHairBundleTrackingEntry,
-    createAiScreening,
     createHairSubmission,
     createHairSubmissionDetail,
     createHairSubmissionImages,
     createHairSubmissionLogistics,
     createHairSubmissionLogisticsItems,
     deleteAiScreeningsBySubmissionId,
-    deleteDonorRecommendationsBySubmissionId,
     deleteHairBundleTrackingHistoryBySubmissionId,
     deleteHairSubmissionById,
     deleteHairSubmissionDetailsBySubmissionId,
@@ -35,11 +33,17 @@ import {
     fetchHairSubmissionDetailsBySubmissionId,
     fetchHairSubmissionImagesByDetailIds,
     fetchHairSubmissionLogisticsBySubmissionId,
+    fetchHairSubmissionDetailCountsBySubmissionIds,
+    fetchHairSubmissionForEventByUserId,
+    fetchHairSubmissionSummariesByUserId,
     fetchHairSubmissionsByUserId,
+    fetchLatestHairAnalysisSummaryByUserId,
+    fetchLatestEligibleAiScreeningByUserId,
     fetchDonationCertificateBySubmissionId,
     fetchDonationTimelineProductionByBundleId,
     fetchLatestDonationCertificateByUserId,
     fetchLatestDonationRequirement,
+    fetchLatestHairSubmissionDetailBySubmissionId,
     fetchSalonDonationAppointmentBySubmissionId,
     fetchSalonAppointmentStatusHistoryByAppointmentIds,
     fetchSalonDonationAppointmentsInRange,
@@ -136,27 +140,6 @@ const isTerminalDonationStatus = (status = '') => (
 
 export const isEligibleHairAnalysisDecision = (decision = '') => (
   ELIGIBLE_DECISIONS.has(normalizeDecision(decision))
-);
-
-const flattenScreeningEntries = (submissions = []) => (
-  submissions.flatMap((submission) => {
-    const latestDetail = [...(submission?.submission_details || [])]
-      .sort((left, right) => new Date(right?.created_at || 0).getTime() - new Date(left?.created_at || 0).getTime())[0] || null;
-
-    return (submission?.ai_screenings || []).map((screening) => ({
-      screening,
-      submission,
-      detail: latestDetail,
-      recommendations: submission?.donor_recommendations || [],
-      images: latestDetail?.images || [],
-    }));
-  })
-);
-
-const sortScreeningEntries = (entries = []) => (
-  [...entries].sort((left, right) => (
-    new Date(right?.screening?.created_at || 0).getTime() - new Date(left?.screening?.created_at || 0).getTime()
-  ))
 );
 
 const sortSubmissionsByCreatedAt = (submissions = []) => (
@@ -800,41 +783,37 @@ const isIndependentDonationSource = (source = '') => (
 const upsertSubmissionLogistics = async ({
   submissionId,
   logisticsType,
-  shipmentStatus,
-  notes,
+  shipmentStatus = undefined,
+  notes = undefined,
   courierName = undefined,
   trackingNumber = undefined,
-  pickupScheduleDate = undefined,
   pickupScheduledAt = undefined,
   pickupApprovedAt = undefined,
-  queueNumber = undefined,
-  dropoffWindow = undefined,
-  dropoffStatus = undefined,
   receivedBy = undefined,
   receivedAt = undefined,
+  updatedBy = undefined,
 }) => {
   if (!submissionId) {
     return { data: null, error: new Error('Submission ID is required for logistics updates.') };
   }
 
   const existingResult = await fetchHairSubmissionLogisticsBySubmissionId(submissionId);
+  if (existingResult.error) return existingResult;
   const currentLogistics = existingResult.data || null;
   const payload = {
     submission_id: submissionId,
     logistics_type: logisticsType || currentLogistics?.logistics_type || null,
-    courier_name: courierName ?? currentLogistics?.courier_name ?? null,
-    tracking_number: trackingNumber ?? currentLogistics?.tracking_number ?? null,
-    shipment_status: shipmentStatus || currentLogistics?.shipment_status || null,
-    pickup_schedule_date: pickupScheduleDate ?? currentLogistics?.pickup_schedule_date ?? null,
-    pickup_scheduled_at: pickupScheduledAt ?? currentLogistics?.pickup_scheduled_at ?? null,
-    pickup_approved_at: pickupApprovedAt ?? currentLogistics?.pickup_approved_at ?? null,
-    queue_number: queueNumber ?? currentLogistics?.queue_number ?? null,
-    dropoff_window: dropoffWindow ?? currentLogistics?.dropoff_window ?? null,
-    dropoff_status: dropoffStatus ?? currentLogistics?.dropoff_status ?? null,
-    received_by: receivedBy ?? currentLogistics?.received_by ?? null,
-    received_at: receivedAt ?? currentLogistics?.received_at ?? null,
-    notes: notes || currentLogistics?.notes || null,
   };
+
+  if (courierName !== undefined) payload.courier_name = courierName;
+  if (trackingNumber !== undefined) payload.tracking_number = trackingNumber;
+  if (shipmentStatus !== undefined) payload.shipment_status = shipmentStatus;
+  if (pickupScheduledAt !== undefined) payload.pickup_scheduled_at = pickupScheduledAt;
+  if (pickupApprovedAt !== undefined) payload.pickup_approved_at = pickupApprovedAt;
+  if (receivedBy !== undefined) payload.received_by = receivedBy;
+  if (receivedAt !== undefined) payload.received_at = receivedAt;
+  if (notes !== undefined) payload.notes = notes;
+  if (updatedBy !== undefined) payload.updated_by = updatedBy;
 
   return currentLogistics?.submission_logistics_id
     ? await updateHairSubmissionLogisticsById(currentLogistics.submission_logistics_id, {
@@ -1043,29 +1022,16 @@ const getAppointmentStatus = (row = {}) => String(getRowValue(row, [
   'changed_to_status',
 ]) || '').trim();
 
-const isInactiveAppointmentStatus = (status = '') => (
-  ['cancelled', 'canceled', 'rejected', 'completed', 'no show', 'no_show']
-    .includes(String(status || '').trim().toLowerCase())
+const isCapacityConsumingAppointmentStatus = (status = '') => (
+  ['confirmed', 'rescheduled', 'checked in']
+    .includes(String(status || '').trim().toLowerCase().replace('_', ' '))
 );
 
-const getLatestStatusesByAppointmentId = (historyRows = []) => {
-  const rowsByAppointment = new Map();
-  (historyRows || []).forEach((row) => {
-    const appointmentId = getAppointmentId(row);
-    if (!appointmentId) return;
-    const current = rowsByAppointment.get(appointmentId);
-    const currentDate = new Date(current?.Changed_At || current?.changed_at || current?.Created_At || current?.created_at || 0);
-    const rowDate = new Date(row?.Changed_At || row?.changed_at || row?.Created_At || row?.created_at || 0);
-    if (!current || rowDate >= currentDate) {
-      rowsByAppointment.set(appointmentId, row);
-    }
-  });
-
-  const statusByAppointment = new Map();
-  rowsByAppointment.forEach((row, appointmentId) => {
-    statusByAppointment.set(appointmentId, getAppointmentStatus(row));
-  });
-  return statusByAppointment;
+const resolveIndependentLogisticsType = (method = '') => {
+  const key = String(method || '').trim().toLowerCase().replace(/[\s_-]+/g, '');
+  if (['dropoff', 'salondropoff', 'onsitedelivery', 'walkin'].includes(key)) return 'Salon Dropoff';
+  if (['pickup', 'pickuprequest'].includes(key)) return 'Pickup';
+  return 'Courier';
 };
 
 const buildScheduleSlotsFromRow = (row = {}) => {
@@ -1124,7 +1090,7 @@ const buildScheduleSlotsFromRow = (row = {}) => {
   return slots;
 };
 
-export const getWalkInDropoffAvailability = async ({ daysAhead = 21 } = {}) => {
+export const getWalkInDropoffAvailability = async ({ daysAhead = 21, excludeAppointmentId = null } = {}) => {
   const today = new Date();
   const startDate = normalizeDateKey(today);
   const endDateObject = new Date(today);
@@ -1154,19 +1120,10 @@ export const getWalkInDropoffAvailability = async ({ daysAhead = 21 } = {}) => {
     return { data: [], error: appointmentsResult.error.message || 'Unable to load salon appointments.' };
   }
 
-  const appointmentRows = appointmentsResult.data || [];
-  const historyResult = await fetchSalonAppointmentStatusHistoryByAppointmentIds(
-    appointmentRows.map(getAppointmentId).filter(Boolean)
-  );
-  if (historyResult.error) {
-    return { data: [], error: historyResult.error.message || 'Unable to load salon appointment status history.' };
-  }
-
-  const latestStatusByAppointment = getLatestStatusesByAppointmentId(historyResult.data || []);
-  const activeAppointments = appointmentRows.filter((appointment) => {
+  const activeAppointments = (appointmentsResult.data || []).filter((appointment) => {
     const appointmentId = getAppointmentId(appointment);
-    const latestStatus = latestStatusByAppointment.get(appointmentId) || getAppointmentStatus(appointment);
-    return !isInactiveAppointmentStatus(latestStatus);
+    if (Number(appointmentId) === Number(excludeAppointmentId)) return false;
+    return isCapacityConsumingAppointmentStatus(getAppointmentStatus(appointment));
   });
 
   const overrideByDate = new Map();
@@ -1279,7 +1236,58 @@ export const scheduleWalkInDropoff = async ({
     };
   }
 
+  if (freshSubmissionResult.data.from_event !== false) {
+    return { success: false, error: 'Salon drop-off is only available for independent donations.' };
+  }
+
+  const currentLogisticsResult = await fetchHairSubmissionLogisticsBySubmissionId(
+    freshSubmissionResult.data.submission_id
+  );
+  if (currentLogisticsResult.error) {
+    return { success: false, error: currentLogisticsResult.error.message || 'Unable to verify the delivery method.' };
+  }
+  if (String(currentLogisticsResult.data?.logistics_type || '').trim().toLowerCase() !== 'salon dropoff') {
+    return { success: false, error: 'Choose Salon Dropoff before scheduling a salon appointment.' };
+  }
+
+  const existingAppointmentResult = await fetchSalonDonationAppointmentBySubmissionId(
+    freshSubmissionResult.data.submission_id
+  );
+  if (existingAppointmentResult.error) {
+    return { success: false, error: existingAppointmentResult.error.message || 'Unable to verify the current appointment.' };
+  }
+
+  const todayKey = normalizeDateKey(new Date());
+  const selectedDay = new Date(`${cleanDate}T00:00:00`);
+  const todayDay = new Date(`${todayKey}T00:00:00`);
+  const daysAhead = Math.max(1, Math.ceil((selectedDay.getTime() - todayDay.getTime()) / 86400000));
+  const availabilityResult = await getWalkInDropoffAvailability({
+    daysAhead,
+    excludeAppointmentId: existingAppointmentResult.data?.appointment_id || null,
+  });
+  if (availabilityResult.error) {
+    return { success: false, error: availabilityResult.error };
+  }
+  const selectedAvailability = (availabilityResult.data || [])
+    .find((entry) => entry.value === cleanDate)
+    ?.windows?.find((slot) => (
+      slot.start_at === appointmentStartAt && slot.end_at === appointmentEndAt
+    ));
+  if (!selectedAvailability) {
+    return { success: false, error: 'That salon appointment slot is no longer available. Choose another time.' };
+  }
+
+  const permission = await canSubmitHairDonation(databaseUserId);
+  if (!permission.allowed) {
+    return {
+      success: false,
+      error: mapDonationPermissionError(permission.reason),
+      errorCode: permission.reason,
+    };
+  }
+
   const appointmentResult = await upsertSalonDonationAppointment({
+    appointmentId: existingAppointmentResult.data?.appointment_id || null,
     userId: databaseUserId,
     submissionId: freshSubmissionResult.data.submission_id,
     startAt: appointmentStartAt,
@@ -1287,12 +1295,10 @@ export const scheduleWalkInDropoff = async ({
     contactName: String(contactName || '').trim(),
     contactEmail: String(contactEmail || '').trim() || null,
     contactNumber: String(contactNumber || '').trim(),
-    hairDetails: {
-      submission_id: freshSubmissionResult.data.submission_id,
-      donation_source: freshSubmissionResult.data.donation_source || submission.donation_source || 'Independent',
-    },
-    screeningAnswers: {},
     donorNotes: `Walk-in hair donation scheduled from the mobile Donations module.`,
+    bookingSource: 'Mobile',
+    isMinor: Number(permission.donorAge) < 18,
+    guardianConsentId: permission.guardianConsentId || null,
   });
 
   if (appointmentResult.error || !appointmentResult.data?.appointment_id) {
@@ -1303,25 +1309,6 @@ export const scheduleWalkInDropoff = async ({
     return {
       success: false,
       error: friendlyAppointmentError || 'Unable to create the salon drop-off appointment.',
-    };
-  }
-
-  const logisticsResult = await upsertSubmissionLogistics({
-    submissionId: freshSubmissionResult.data.submission_id,
-    logisticsType: 'onsite_delivery',
-    shipmentStatus: 'Walk-in scheduled',
-    pickupScheduleDate: cleanDate,
-    pickupScheduledAt: appointmentStartAt,
-    queueNumber: 0,
-    dropoffWindow: cleanWindow,
-    dropoffStatus: 'Scheduled',
-    notes: `Walk-in drop-off scheduled for ${cleanDate}, ${cleanWindow}. Staff can scan the donor QR when the donor arrives.`,
-  });
-
-  if (logisticsResult.error || !logisticsResult.data?.submission_logistics_id) {
-    return {
-      success: false,
-      error: logisticsResult.error?.message || 'Unable to save the walk-in schedule.',
     };
   }
 
@@ -1351,8 +1338,38 @@ export const scheduleWalkInDropoff = async ({
   return {
     success: true,
     appointment: appointmentResult.data,
-    logistics: logisticsResult.data,
+    logistics: currentLogisticsResult.data,
   };
+};
+
+export const scheduleIndependentPickup = async ({
+  submission,
+  databaseUserId,
+  pickupScheduledAt,
+  notes = 'Pickup requested by donor.',
+}) => {
+  if (!submission?.submission_id || submission?.from_event === true || Number(submission?.donation_drive_id) > 0) {
+    return { success: false, error: 'Pickup is only available for an independent donation.' };
+  }
+
+  const scheduledAt = new Date(pickupScheduledAt || '');
+  if (Number.isNaN(scheduledAt.getTime()) || scheduledAt.getTime() <= Date.now()) {
+    return { success: false, error: 'Choose a valid future pickup date and time.' };
+  }
+
+  const logisticsResult = await upsertSubmissionLogistics({
+    submissionId: submission.submission_id,
+    logisticsType: 'Pickup',
+    shipmentStatus: 'Scheduled',
+    pickupScheduledAt: scheduledAt.toISOString(),
+    pickupApprovedAt: null,
+    notes,
+    updatedBy: databaseUserId || null,
+  });
+
+  return logisticsResult.error
+    ? { success: false, error: logisticsResult.error.message || 'Unable to schedule pickup.' }
+    : { success: true, logistics: logisticsResult.data };
 };
 
 export const discardUnscheduledWalkInDonationDraft = async ({
@@ -1381,9 +1398,6 @@ export const discardUnscheduledWalkInDonationDraft = async ({
   const isUnscheduledWalkInDonation = matchesAnyToken(logistics?.logistics_type, ['onsite_delivery', 'walk_in', 'walk-in', 'dropoff', 'drop-off']);
   const hasSchedule = Boolean(
     appointmentResult.data?.appointment_id
-    || logistics?.dropoff_window
-    || logistics?.pickup_schedule_date
-    || logistics?.pickup_scheduled_at
   );
 
   if (!isUnscheduledWalkInDonation || hasSchedule) {
@@ -1405,7 +1419,6 @@ export const discardUnscheduledWalkInDonationDraft = async ({
 
   const imagePaths = (imagesResult.data || []).map((image) => image?.file_path).filter(Boolean);
   const deleteSteps = [
-    async () => deleteDonorRecommendationsBySubmissionId(submissionId),
     async () => deleteAiScreeningsBySubmissionId(submissionId),
     async () => deleteHairBundleTrackingHistoryBySubmissionId(submissionId),
     async () => deleteSalonDonationAppointmentsBySubmissionId(submissionId),
@@ -1462,7 +1475,7 @@ export const markDonationShippedByDonor = async ({
   const shippedAt = new Date().toISOString();
   const logisticsResult = await upsertSubmissionLogistics({
     submissionId: submission.submission_id,
-    logisticsType: 'independent_shipping',
+    logisticsType: 'Courier',
     shipmentStatus: 'Shipped',
     notes: 'The donor confirmed that the parcel was sent with the printed waybill QR attached.',
   });
@@ -1484,7 +1497,7 @@ export const saveIndependentDonationShipment = async ({
   logisticsType = '',
   courierName = '',
   trackingNumber = '',
-  pickupScheduleDate = null,
+  pickupScheduledAt = null,
   notes = '',
 }) => {
   if (!submission?.submission_id) {
@@ -1508,7 +1521,8 @@ export const saveIndependentDonationShipment = async ({
     notes,
     courierName,
     trackingNumber,
-    pickupScheduleDate,
+    pickupScheduledAt,
+    updatedBy: databaseUserId || null,
   });
 
   if (logisticsResult.error || !logisticsResult.data?.submission_logistics_id) {
@@ -1558,13 +1572,14 @@ const syncIndependentDonationSubmission = async ({
   shouldTrack = false,
   shouldNotify = false,
   donationDriveId = null,
-  logisticsType = 'shipping',
+  logisticsType = undefined,
   qrStatus = undefined,
   qrGeneratedAt = undefined,
 }) => {
   if (!submission?.submission_id) {
     return { success: false, error: 'A valid donation submission is required.' };
   }
+  const isEventDonation = submission?.from_event === true || Number(donationDriveId || submission?.donation_drive_id) > 0;
 
   const nextNotes = mergeDonationNotes(
     submission?.donor_notes || '',
@@ -1588,12 +1603,15 @@ const syncIndependentDonationSubmission = async ({
     };
   }
 
-  const logisticsResult = await upsertSubmissionLogistics({
-    submissionId: submissionResult.data.submission_id,
-    logisticsType,
-    shipmentStatus: logisticsStatus,
-    notes: logisticsNotes,
-  });
+  const logisticsResult = isEventDonation
+    ? { data: null, error: null }
+    : await upsertSubmissionLogistics({
+        submissionId: submissionResult.data.submission_id,
+        logisticsType,
+        shipmentStatus: logisticsStatus,
+        notes: logisticsNotes,
+        updatedBy: databaseUserId || null,
+      });
 
   if (logisticsResult.error) {
     return {
@@ -1825,26 +1843,6 @@ const hasIndependentDonationProgress = (submission = null) => (
   )
 );
 
-const hasLogisticDonationEvidence = ({
-  submission = null,
-  logistics = null,
-  appointment = null,
-  parcelImages = [],
-  trackingEntries = [],
-} = {}) => (
-  Boolean(
-    submission?.submission_id
-    && !Number(submission?.donation_drive_id)
-    && (
-      isManualDonationSubmission(submission)
-      || Boolean(logistics?.submission_logistics_id)
-      || Boolean(appointment?.appointment_id)
-      || Boolean((parcelImages || []).length)
-      || hasMeaningfulTrackingEntries(trackingEntries)
-    )
-  )
-);
-
 const isSubmissionCompleted = ({ submission = null }) => (
   Boolean(
     !submission?.submission_id
@@ -1880,7 +1878,7 @@ const resolveQualifiedDonationRecordForSubmission = ({ submission = null, donati
       submission,
       detail,
       screening: latestQualifiedAiScreeningEntry.screening,
-      recommendations: submission?.donor_recommendations || [],
+      recommendations: latestQualifiedAiScreeningEntry.screening?.recommendations || [],
       qualification: latestQualifiedAiScreeningEntry.qualification,
       created_at: submission?.updated_at || submission?.created_at || latestQualifiedAiScreeningEntry.screening?.created_at || null,
     };
@@ -2006,6 +2004,32 @@ const buildDonationHistory = ({ submissions = [], activeSubmission = null }) => 
       bundle_quantity: Array.isArray(submission?.submission_details) ? submission.submission_details.length : 0,
     }))
 );
+
+/** Page-specific history loader; avoids initializing logistics, events, QR, and tracking. */
+export const getDonorDonationHistory = async ({ userId, limit = 100 } = {}) => {
+  if (!userId) return { donationHistory: [], error: 'Your session is not ready.' };
+
+  const submissionsResult = await fetchHairSubmissionSummariesByUserId(userId, limit);
+  if (submissionsResult.error) {
+    return {
+      donationHistory: [],
+      error: submissionsResult.error.message || 'Unable to load donation history.',
+    };
+  }
+
+  const history = buildDonationHistory({ submissions: submissionsResult.data || [] });
+  const countsResult = await fetchHairSubmissionDetailCountsBySubmissionIds(
+    history.map((item) => item.submission_id)
+  );
+
+  return {
+    donationHistory: history.map((item) => ({
+      ...item,
+      bundle_quantity: countsResult.data?.[Number(item.submission_id)] || 0,
+    })),
+    error: countsResult.error?.message || null,
+  };
+};
 
 const getCompletedDonationAt = (submission = null) => {
   if (!submission?.submission_id) return null;
@@ -2161,9 +2185,6 @@ const resolveTimelineStages = ({
   const hasWalkInSchedule = isWalkInFlow && Boolean(
     appointment?.appointment_id
     || appointment?.appointment_start_at
-    || logistics?.dropoff_window
-    || logistics?.pickup_schedule_date
-    || logistics?.pickup_scheduled_at
   );
   const attendanceEvidenceAt = isEventFlow && isMarkedPresentRegistration(registration)
     ? registration?.rsvp_scanned_at
@@ -2331,7 +2352,7 @@ const resolveTimelineStages = ({
     {
       key: 'dropoff_scheduled',
       label: 'Drop-off Visit',
-      statusLabel: appointment?.checked_in_at ? 'Dropped off' : (appointment?.status || logistics?.dropoff_status || 'Scheduled'),
+      statusLabel: appointment?.checked_in_at ? 'Dropped off' : (appointment?.status || 'Scheduled'),
       savedNote: appointment?.appointment_start_at
         ? `Scheduled arrival: ${formatDateTime(appointment.appointment_start_at)}`
         : 'Bring your donation during your selected salon schedule.',
@@ -3058,6 +3079,79 @@ export const saveDonationQrPngToDevice = async ({
   }
 };
 
+/**
+ * Data needed by one donor event page. This deliberately excludes event lists,
+ * logistics, certificates, parcel images, and production timelines.
+ */
+export const getDonorEventParticipationData = async ({
+  userId,
+  databaseUserId,
+  driveId,
+} = {}) => {
+  if (!userId || !databaseUserId || !driveId) {
+    return { error: 'Your account and event are required.' };
+  }
+
+  const [analysisResult, eventSubmissionResult, requirementResult] = await Promise.all([
+    fetchLatestHairAnalysisSummaryByUserId(databaseUserId, 50),
+    fetchHairSubmissionForEventByUserId({ userId: databaseUserId, eventRequestId: driveId }),
+    fetchLatestDonationRequirement(),
+  ]);
+
+  const submissions = analysisResult.data?.submissions || [];
+  const latestAnalysisEntry = analysisResult.data?.latestAnalysisEntry || null;
+  const latestScreening = latestAnalysisEntry?.screening || null;
+  const latestCompletedDonation = resolveLatestCompletedDonation(submissions);
+  const latestScreeningMs = latestScreening?.created_at
+    ? new Date(latestScreening.created_at).getTime()
+    : NaN;
+  const latestCompletedDonationMs = latestCompletedDonation?.completed_at
+    ? new Date(latestCompletedDonation.completed_at).getTime()
+    : NaN;
+  const requiresPostDonationAnalysis = Boolean(
+    Number.isFinite(latestCompletedDonationMs)
+    && (!Number.isFinite(latestScreeningMs) || latestScreeningMs <= latestCompletedDonationMs)
+  );
+  const rawEligibility = evaluateAiDonationEligibility({
+    screening: latestScreening,
+    detail: latestAnalysisEntry?.detail || null,
+    donationRequirement: requirementResult.data || null,
+  });
+  const postDonationMessage = 'Your previous donated hair has already been cut. Run Hair Analysis again so the app can verify if your current hair is long enough for another event donation.';
+  const latestAiEligibility = requiresPostDonationAnalysis
+    ? {
+        ...rawEligibility,
+        isQualified: false,
+        reason: postDonationMessage,
+        reasons: [postDonationMessage],
+      }
+    : rawEligibility;
+  const ongoingSubmission = submissions.find((submission) => (
+    submission?.submission_id
+    && !isTerminalDonationStatus(submission.status)
+    && !getCompletedDonationAt(submission)
+    && !isHairCheckOnlySubmission(submission)
+  )) || null;
+
+  return {
+    submissions: eventSubmissionResult.data ? [eventSubmissionResult.data] : [],
+    latestSubmission: eventSubmissionResult.data || null,
+    latestAnalysisEntry,
+    latestScreening,
+    latestAiEligibility,
+    isAiEligible: Boolean(!requiresPostDonationAnalysis && latestAiEligibility?.isQualified),
+    requiresPostDonationAnalysis,
+    hasOngoingDonation: Boolean(ongoingSubmission),
+    ongoingDonationMessage: ongoingSubmission
+      ? 'You already have an ongoing donation. Please finish or cancel the current donation before starting a new one.'
+      : '',
+    error: analysisResult.error?.message
+      || eventSubmissionResult.error?.message
+      || requirementResult.error?.message
+      || null,
+  };
+};
+
 export const getDonorDonationsModuleData = async ({ userId, databaseUserId, driveLimit = 6 }) => {
   if (!userId) {
     return {
@@ -3076,15 +3170,16 @@ export const getDonorDonationsModuleData = async ({ userId, databaseUserId, driv
     };
   }
 
-  const [submissionsResult, drivesResult, registeredDrivesResult, certificateResult, donationRequirementResult] = await Promise.all([
-    fetchHairSubmissionsByUserId(databaseUserId || userId, 50),
+  const [submissionsResult, analysisResult, drivesResult, registeredDrivesResult, certificateResult, donationRequirementResult] = await Promise.all([
+    fetchHairSubmissionsByUserId(databaseUserId || userId, 50, { relationLimit: 12 }),
+    fetchLatestHairAnalysisSummaryByUserId(databaseUserId || userId, 50),
     fetchUpcomingDonationDrives(driveLimit, databaseUserId || null),
     fetchRegisteredDonationDrivesByUserId({ databaseUserId: databaseUserId || null, limit: 50 }),
     fetchLatestDonationCertificateByUserId(databaseUserId || userId),
     fetchLatestDonationRequirement(),
   ]);
 
-  if (submissionsResult.error) {
+  if (submissionsResult.error || analysisResult.error) {
     return {
       latestAnalysisEntry: null,
       latestAiEligibility: null,
@@ -3098,13 +3193,14 @@ export const getDonorDonationsModuleData = async ({ userId, databaseUserId, driv
       timelineStages: [],
       timelineEvents: [],
       certificate: certificateResult.data || null,
-      error: submissionsResult.error.message || 'Unable to load donation data.',
+      error: submissionsResult.error?.message
+        || analysisResult.error?.message
+        || 'Unable to load donation data.',
     };
   }
 
   let submissions = submissionsResult.data || [];
-  const sortedEntries = sortScreeningEntries(flattenScreeningEntries(submissions));
-  const latestAnalysisEntry = sortedEntries[0] || null;
+  const latestAnalysisEntry = analysisResult.data?.latestAnalysisEntry || null;
   const latestScreening = latestAnalysisEntry?.screening || null;
   const rawLatestAiEligibility = evaluateAiDonationEligibility({
     screening: latestAnalysisEntry?.screening || null,
@@ -3155,10 +3251,10 @@ export const getDonorDonationsModuleData = async ({ userId, databaseUserId, driv
   let activeFlowSubmission = resolveCurrentFlowSubmission({
     submissions: flowEligibleSubmissions,
   });
-  let activeFlowSubmissions = resolveCurrentFlowSubmissions({
+  const activeFlowSubmissions = resolveCurrentFlowSubmissions({
     submissions: flowEligibleSubmissions,
   });
-  let independentFlowSubmissions = activeFlowSubmissions.filter(
+  const independentFlowSubmissions = activeFlowSubmissions.filter(
     (submission) => submission?.submission_id && !Number(submission?.donation_drive_id)
   );
   let submissionFlowRecords = await Promise.all(independentFlowSubmissions.map(async (submission) => {
@@ -3184,38 +3280,24 @@ export const getDonorDonationsModuleData = async ({ userId, databaseUserId, driv
         ? fetchDonationTimelineProductionByBundleId(submission.bundle_id)
         : Promise.resolve({ data: null, error: null }),
     ]);
+    const appointmentHistoryResult = submissionAppointmentResult.data?.appointment_id
+      ? await fetchSalonAppointmentStatusHistoryByAppointmentIds([
+          submissionAppointmentResult.data.appointment_id,
+        ])
+      : { data: [], error: null };
     return {
       submission_id: submission.submission_id,
       logistics: submissionLogisticsResult.data || null,
       appointment: submissionAppointmentResult.data || null,
+      appointmentHistory: appointmentHistoryResult.data || [],
+      appointmentHistoryError: appointmentHistoryResult.error || null,
       trackingEntries: submissionTrackingResult.data || [],
       parcelImages: submissionParcelImages || [],
       production: submissionProductionResult.data || null,
     };
   }));
-  submissionFlowRecords = submissionFlowRecords.filter((record) => {
-    const flowSubmission = independentFlowSubmissions.find(
-      (submission) => Number(submission?.submission_id) === Number(record.submission_id)
-    );
-    return hasLogisticDonationEvidence({
-      submission: flowSubmission,
-      logistics: record.logistics,
-      appointment: record.appointment,
-      parcelImages: record.parcelImages,
-      trackingEntries: record.trackingEntries,
-    });
-  });
-  const logisticSubmissionIds = new Set(
-    submissionFlowRecords
-      .map((record) => Number(record.submission_id))
-      .filter(Boolean)
-  );
-  independentFlowSubmissions = independentFlowSubmissions.filter(
-    (submission) => logisticSubmissionIds.has(Number(submission?.submission_id))
-  );
-  activeFlowSubmissions = activeFlowSubmissions.filter(
-    (submission) => Number(submission?.donation_drive_id) || logisticSubmissionIds.has(Number(submission?.submission_id))
-  );
+  // Hair_Submissions is the root record. Keep it visible even if a failed or
+  // interrupted child write temporarily leaves logistics or appointment null.
   activeFlowSubmission = resolveCurrentFlowSubmission({ submissions: activeFlowSubmissions });
   const isAiEligible = Boolean(!requiresPostDonationAnalysis && aiRecord?.qualification?.isQualified);
   const isManualQualified = Boolean(manualRecord?.qualification?.isQualified);
@@ -3234,6 +3316,8 @@ export const getDonorDonationsModuleData = async ({ userId, databaseUserId, driv
   let productionTimelineError = null;
   let appointment = null;
   let appointmentError = null;
+  let appointmentHistory = [];
+  let appointmentHistoryError = null;
   const prefetchedActiveFlowRecord = activeSubmission?.submission_id
     ? submissionFlowRecords.find((record) => (
         Number(record?.submission_id) === Number(activeSubmission.submission_id)
@@ -3245,6 +3329,8 @@ export const getDonorDonationsModuleData = async ({ userId, databaseUserId, driv
     trackingEntries = prefetchedActiveFlowRecord.trackingEntries || [];
     parcelImages = prefetchedActiveFlowRecord.parcelImages || [];
     appointment = prefetchedActiveFlowRecord.appointment || null;
+    appointmentHistory = prefetchedActiveFlowRecord.appointmentHistory || [];
+    appointmentHistoryError = prefetchedActiveFlowRecord.appointmentHistoryError || null;
     productionTimeline = prefetchedActiveFlowRecord.production || null;
   } else if (activeSubmission?.submission_id && activeDetail?.submission_detail_id) {
     const [logisticsResult, trackingResult, parcelImagesResult, appointmentResult] = await Promise.all([
@@ -3265,6 +3351,13 @@ export const getDonorDonationsModuleData = async ({ userId, databaseUserId, driv
     parcelImages = parcelImagesResult;
     appointment = appointmentResult.data || null;
     appointmentError = appointmentResult.error;
+    if (appointment?.appointment_id) {
+      const appointmentHistoryResult = await fetchSalonAppointmentStatusHistoryByAppointmentIds([
+        appointment.appointment_id,
+      ]);
+      appointmentHistory = appointmentHistoryResult.data || [];
+      appointmentHistoryError = appointmentHistoryResult.error || null;
+    }
   }
 
   if (activeSubmission?.bundle_id && !prefetchedActiveFlowRecord) {
@@ -3302,7 +3395,8 @@ export const getDonorDonationsModuleData = async ({ userId, databaseUserId, driv
     trackingEntries,
   });
   const hasIndependentFlow = Boolean(
-    independentQrState?.reference
+    activeSubmission?.from_event === false
+    || independentQrState?.reference
     || logistics
     || appointment
     || parcelImages.length
@@ -3462,6 +3556,7 @@ const hasCompletedDonation = Boolean(
     completedEventDrives,
     logistics,
     appointment,
+    appointmentHistory,
     independentQrState,
     trackingEntries,
     parcelImages,
@@ -3473,6 +3568,7 @@ const hasCompletedDonation = Boolean(
       || registeredDrivesResult.error?.message
       || logisticsError?.message
       || appointmentError?.message
+      || appointmentHistoryError?.message
       || trackingError?.message
       || productionTimelineError?.message
       || activeDriveError?.message
@@ -3495,24 +3591,27 @@ export const getEventDonationProgressData = async ({
     };
   }
 
-  const [driveResult, submissionsResult] = await Promise.all([
+  const [driveResult, submissionResult] = await Promise.all([
     fetchDonationDrivePreview(normalizedDriveId, databaseUserId),
-    fetchHairSubmissionsByUserId(databaseUserId, 50),
+    fetchHairSubmissionForEventByUserId({
+      userId: databaseUserId,
+      eventRequestId: normalizedDriveId,
+    }),
   ]);
 
-  if (driveResult.error || submissionsResult.error) {
+  if (driveResult.error || submissionResult.error) {
     return {
       data: null,
-      error: driveResult.error || submissionsResult.error,
+      error: driveResult.error || submissionResult.error,
     };
   }
 
   const drive = driveResult.data || null;
   const registration = drive?.registration || null;
-  const submission = (submissionsResult.data || []).find((item) => (
-    Number(item?.donation_drive_id) === normalizedDriveId
-    && !['cancelled', 'canceled', 'rejected'].includes(normalizeStatus(item?.status))
-  )) || null;
+  const submission = submissionResult.data
+    && !['cancelled', 'canceled', 'rejected'].includes(normalizeStatus(submissionResult.data?.status))
+    ? submissionResult.data
+    : null;
   const isDonationParticipant = isDonationParticipantRegistration(registration);
   const isCheckedIn = isMarkedPresentRegistration(registration);
 
@@ -3548,7 +3647,14 @@ export const getEventDonationProgressData = async ({
     };
   }
 
-  const detail = getLatestSubmissionDetail(submission);
+  const detailResult = await fetchLatestHairSubmissionDetailBySubmissionId(submission.submission_id);
+  const detailImagesResult = detailResult.data?.submission_detail_id
+    ? await fetchHairSubmissionImagesByDetailIds([detailResult.data.submission_detail_id])
+    : { data: [], error: null };
+  const detail = detailResult.data ? {
+    ...detailResult.data,
+    images: detailImagesResult.data || [],
+  } : null;
   const [logisticsResult, trackingResult, parcelImages, productionResult, appointmentResult, certificateResult] = await Promise.all([
     fetchHairSubmissionLogisticsBySubmissionId(submission.submission_id),
     detail?.submission_detail_id
@@ -3596,6 +3702,8 @@ export const getEventDonationProgressData = async ({
       certificate: certificateResult.data || null,
     },
     error: logisticsResult.error
+      || detailResult.error
+      || detailImagesResult.error
       || trackingResult.error
       || productionResult.error
       || appointmentResult.error
@@ -3722,7 +3830,7 @@ export const saveIndependentDonationParcelLog = async ({
 
   const logisticsResult = await fetchHairSubmissionLogisticsBySubmissionId(submission.submission_id);
   const logisticsPayload = {
-    logistics_type: 'shipping',
+    logistics_type: 'Courier',
     shipment_status: 'Pending',
     notes: `Independent donor parcel prepared. QR payload attached for monitoring. ${qrPayloadText ? 'QR reference generated.' : ''}`.trim(),
   };
@@ -3843,12 +3951,15 @@ export const cancelDonorDonation = async ({
     };
   }
 
-  const logisticsResult = await upsertSubmissionLogistics({
-    submissionId: submission.submission_id,
-    logisticsType: 'shipping',
-    shipmentStatus: 'Cancelled',
-    notes: cancellationNote,
-  });
+  const isEventDonation = submission?.from_event === true || Number(submission?.donation_drive_id) > 0;
+  const logisticsResult = isEventDonation
+    ? { data: null, error: null }
+    : await upsertSubmissionLogistics({
+        submissionId: submission.submission_id,
+        shipmentStatus: 'Cancelled',
+        notes: cancellationNote,
+        updatedBy: databaseUserId,
+      });
 
   if (logisticsResult.error) {
     return {
@@ -3920,7 +4031,7 @@ export const markIndependentDonationShipped = async ({
 
   const logisticsResult = await upsertSubmissionLogistics({
     submissionId: submission.submission_id,
-    logisticsType: 'shipping',
+    logisticsType: 'Courier',
     shipmentStatus: 'Shipped',
     notes: shipmentNote,
   });
@@ -4124,6 +4235,7 @@ export const ensureIndependentDonationQr = async ({
     const logisticsResult = await fetchHairSubmissionLogisticsBySubmissionId(submission.submission_id);
     const logistics = logisticsResult.data || null;
     const isWalkInDonation = matchesAnyToken(logistics?.logistics_type, ['onsite_delivery', 'walk_in', 'walk-in', 'dropoff', 'drop-off']);
+    const isPickupDonation = matchesAnyToken(logistics?.logistics_type, ['pickup']);
     if (isWalkInDonation) {
       const appointmentResult = await fetchSalonDonationAppointmentBySubmissionId(submission.submission_id);
       if (appointmentResult.error) {
@@ -4200,11 +4312,13 @@ export const ensureIndependentDonationQr = async ({
     }
 
     if (!isWalkInDonation) {
-      const deliveryNote = 'The donor submitted the logistic donation for delivery with the printed waybill QR attached to the outside of the package.';
+      const deliveryNote = isPickupDonation
+        ? 'The donor submitted a pickup donation. Pickup scheduling and staff approval are pending.'
+        : 'The donor submitted the logistic donation for delivery with the printed waybill QR attached to the outside of the package.';
       const logisticsUpdate = await upsertSubmissionLogistics({
         submissionId: submission.submission_id,
-        logisticsType: logistics?.logistics_type || 'independent_shipping',
-        shipmentStatus: 'Shipped',
+        logisticsType: logistics?.logistics_type || 'Courier',
+        shipmentStatus: isPickupDonation ? 'Pending' : 'Shipped',
         notes: deliveryNote,
       });
       if (logisticsUpdate.error) {
@@ -4217,8 +4331,8 @@ export const ensureIndependentDonationQr = async ({
       const deliveryTrackingResult = await createHairBundleTrackingEntry({
         submission_id: submission.submission_id,
         submission_detail_id: generatedDetails[0]?.submission_detail_id || null,
-        status: 'sent_by_donor',
-        title: 'Donation submitted and sent by donor',
+        status: isPickupDonation ? 'pickup_requested' : 'sent_by_donor',
+        title: isPickupDonation ? 'Pickup requested' : 'Donation submitted and sent by donor',
         description: deliveryNote,
         changed_by: databaseUserId,
       });
@@ -4417,6 +4531,12 @@ export const startIndependentDonationDraft = async ({
   logisticsMethod = 'shipping',
 }) => {
   if (!submission?.submission_id) {
+    if (Number(donationDriveId) > 0) {
+      return {
+        success: false,
+        error: 'Event donation starts only after staff checks in the donor as present.',
+      };
+    }
     if (!userId || !databaseUserId) {
       return { success: false, error: 'Your session is not ready.' };
     }
@@ -4430,9 +4550,36 @@ export const startIndependentDonationDraft = async ({
       };
     }
 
+    const screeningResult = await fetchLatestEligibleAiScreeningByUserId(databaseUserId);
+    if (screeningResult.error || !screeningResult.data?.ai_screening_id) {
+      return {
+        success: false,
+        error: screeningResult.error?.message || 'Pass Hair Analysis before starting a donation.',
+      };
+    }
+
+    const existingSubmissionsResult = await fetchHairSubmissionSummariesByUserId(databaseUserId, 50);
+    if (existingSubmissionsResult.error) {
+      return {
+        success: false,
+        error: existingSubmissionsResult.error.message || 'Unable to verify the selected hair screening.',
+      };
+    }
+    const screeningAlreadyInUse = (existingSubmissionsResult.data || []).some((candidate) => (
+      Number(candidate?.ai_screening_id) === Number(screeningResult.data.ai_screening_id)
+      && !['cancelled', 'canceled'].includes(String(candidate?.status || '').trim().toLowerCase())
+    ));
+    if (screeningAlreadyInUse) {
+      return {
+        success: false,
+        error: 'This eligible hair screening is already attached to an active donation.',
+      };
+    }
+
     const createResult = await createHairSubmission({
       user_id: userId,
       database_user_id: databaseUserId,
+      ai_screening_id: screeningResult.data.ai_screening_id,
       donation_drive_id: null,
       donation_reference: createDonationReference('DON'),
       donation_source: 'Independent',
@@ -4450,20 +4597,40 @@ export const startIndependentDonationDraft = async ({
       };
     }
 
+    const logisticsType = resolveIndependentLogisticsType(logisticsMethod);
+    const isDropoffDraft = logisticsType === 'Salon Dropoff';
+    const logisticsResult = await createHairSubmissionLogistics({
+      submission_id: createResult.data.submission_id,
+      logistics_type: logisticsType,
+      shipment_status: isDropoffDraft ? null : 'Pending',
+      notes: isDropoffDraft
+        ? 'Walk-in drop-off donation started. Confirm an appointment to continue.'
+        : 'Hair logistics donation started. Add the donation details before submitting.',
+    });
+
+    if (logisticsResult.error) {
+      await deleteHairSubmissionById(createResult.data.submission_id).catch(() => null);
+      return {
+        success: false,
+        error: logisticsResult.error?.message || 'Could not start donation logistics.',
+      };
+    }
+
     return {
       success: true,
       submission: createResult.data,
-      logistics: null,
+      logistics: logisticsResult.data || null,
     };
   }
 
-  const isDropoffDraft = String(logisticsMethod || '').trim().toLowerCase() === 'dropoff';
+  const logisticsType = resolveIndependentLogisticsType(logisticsMethod);
+  const isDropoffDraft = logisticsType === 'Salon Dropoff';
   const syncedResult = await syncIndependentDonationSubmission({
     userId,
     databaseUserId,
     submission,
     status: 'Draft',
-    logisticsStatus: isDropoffDraft ? 'Pending drop-off schedule' : 'Pending',
+    logisticsStatus: isDropoffDraft ? null : 'Pending',
     logisticsNotes: isDropoffDraft
       ? 'Walk-in drop-off draft saved. Confirm a salon drop-off appointment before submitting.'
       : 'Independent donation draft saved. Add hair items and generate each QR before submitting.',
@@ -4475,7 +4642,7 @@ export const startIndependentDonationDraft = async ({
     shouldTrack: true,
     shouldNotify: false,
     donationDriveId: donationDriveId || null,
-    logisticsType: isDropoffDraft ? 'onsite_delivery' : 'shipping',
+    logisticsType,
   });
 
   if (!syncedResult.success) {
@@ -4604,6 +4771,9 @@ export const addDonationBundleFromAnalysis = async ({
   if (!screening) {
     return { success: false, error: 'No hair analysis result is available for bundle attachment.' };
   }
+  if (!screening?.ai_screening_id || !ELIGIBLE_DECISIONS.has(String(screening?.decision || '').trim().toLowerCase())) {
+    return { success: false, error: 'An eligible saved Hair Analysis is required for this donation.' };
+  }
   const ownerError = validateHairOwnerPayload({
     donorType,
     donorName,
@@ -4630,22 +4800,19 @@ export const addDonationBundleFromAnalysis = async ({
     donorIsMinor,
   });
 
-  const normalizedEstimatedLengthCm = resolveEstimatedLengthCm(screening);
-  const estimatedLengthInches = convertLengthToInches(normalizedEstimatedLengthCm, 'cm');
-
   const detailResult = await createHairSubmissionDetail({
     submission_id: submission.submission_id,
-    declared_length: estimatedLengthInches ?? referenceDetail?.declared_length ?? null,
-    declared_color: screening?.detected_color || referenceDetail?.declared_color || null,
-    declared_texture: screening?.detected_texture || referenceDetail?.declared_texture || null,
-    declared_density: screening?.detected_density || referenceDetail?.declared_density || null,
-    declared_condition: screening?.detected_condition || referenceDetail?.declared_condition || 'Analyzed',
+    declared_length: referenceDetail?.declared_length ?? null,
+    declared_color: referenceDetail?.declared_color || null,
+    declared_texture: referenceDetail?.declared_texture || null,
+    declared_density: referenceDetail?.declared_density || null,
+    declared_condition: referenceDetail?.declared_condition || 'Pending donation verification',
     is_chemically_treated: referenceDetail?.is_chemically_treated ?? false,
     is_colored: referenceDetail?.is_colored ?? false,
     is_bleached: referenceDetail?.is_bleached ?? false,
     is_rebonded: referenceDetail?.is_rebonded ?? false,
     detail_notes: detailNotes,
-    input_method: 'AI Analysis',
+    input_method: 'Donation verification',
     ...ownerPayload,
     status: 'Draft',
     current_tracking_status: 'Draft',
@@ -4658,25 +4825,6 @@ export const addDonationBundleFromAnalysis = async ({
       error: detailResult.error?.message || 'Unable to add the scanned bundle right now.',
     };
   }
-
-  await createAiScreening({
-    submission_id: submission.submission_id,
-    submission_detail_id: detailResult.data.submission_detail_id,
-    estimated_length: normalizedEstimatedLengthCm,
-    detected_color: screening?.detected_color || null,
-    detected_texture: screening?.detected_texture || null,
-    detected_density: screening?.detected_density || null,
-    detected_condition: screening?.detected_condition || null,
-    visible_damage_notes: screening?.visible_damage_notes || null,
-    confidence_score: screening?.confidence_score ?? null,
-    shine_level: screening?.shine_level ?? null,
-    frizz_level: screening?.frizz_level ?? null,
-    dryness_level: screening?.dryness_level ?? null,
-    oiliness_level: screening?.oiliness_level ?? null,
-    damage_level: screening?.damage_level ?? null,
-    decision: screening?.decision || null,
-    summary: screening?.summary || null,
-  }).catch(() => null);
 
   const qrResult = await ensureHairItemQr({
     submission,
@@ -4692,6 +4840,7 @@ export const addDonationBundleFromAnalysis = async ({
   }
 
   const submissionResult = await updateHairSubmissionById(submission.submission_id, {
+    ai_screening_id: screening.ai_screening_id,
     status: 'Draft',
     donation_source: submission?.donation_source || 'Independent',
     donor_notes: mergeDonationNotes(
@@ -5110,20 +5259,63 @@ export const saveManualDonationQualification = async ({
   const submissionNotes = buildManualDonationNotes({ manualDetails, evaluation, donorType });
   const uploadPayload = await getPhotoUploadPayload(photo);
 
-  const submissionResult = await createHairSubmission({
-    user_id: userId,
-    database_user_id: databaseUserId,
-    donation_drive_id: donationDriveId || null,
-    donation_reference: createDonationReference('MAN'),
-    donation_source: donationDriveId ? MANUAL_DONATION_SOURCE : 'Independent',
-    donor_notes: submissionNotes,
-    guardian_consent_id: permission.guardianConsentId || null,
-    donor_age_at_submission: permission.donorAge,
-    consent_checked_at: new Date().toISOString(),
-    recipient_type: recipientType === 'patient' ? 'Patient' : 'Organization',
-    recipient_patient_id: recipientType === 'patient' ? Number(recipientPatientId || 0) || null : null,
-    status: donationDriveId ? 'Pending' : 'Draft',
-  });
+  const screeningResult = await fetchLatestEligibleAiScreeningByUserId(databaseUserId);
+  if (screeningResult.error || !screeningResult.data?.ai_screening_id) {
+    return {
+      success: false,
+      error: screeningResult.error?.message || 'Pass Hair Analysis before starting a donation.',
+    };
+  }
+
+  if (!donationDriveId) {
+    const existingSubmissionsResult = await fetchHairSubmissionSummariesByUserId(databaseUserId, 50);
+    if (existingSubmissionsResult.error) {
+      return {
+        success: false,
+        error: existingSubmissionsResult.error.message || 'Unable to verify the selected hair screening.',
+      };
+    }
+    const screeningAlreadyInUse = (existingSubmissionsResult.data || []).some((candidate) => (
+      Number(candidate?.ai_screening_id) === Number(screeningResult.data.ai_screening_id)
+      && !['cancelled', 'canceled'].includes(String(candidate?.status || '').trim().toLowerCase())
+    ));
+    if (screeningAlreadyInUse) {
+      return {
+        success: false,
+        error: 'This eligible hair screening is already attached to an active donation.',
+      };
+    }
+  }
+
+  let submissionResult;
+  if (donationDriveId) {
+    submissionResult = await fetchHairSubmissionForEventByUserId({
+      userId: databaseUserId,
+      eventRequestId: donationDriveId,
+    });
+    if (!submissionResult.data?.submission_id) {
+      return {
+        success: false,
+        error: 'Event donation starts only after staff checks in the donor as present.',
+      };
+    }
+  } else {
+    submissionResult = await createHairSubmission({
+      user_id: userId,
+      database_user_id: databaseUserId,
+      ai_screening_id: screeningResult.data.ai_screening_id,
+      donation_drive_id: null,
+      donation_reference: createDonationReference('MAN'),
+      donation_source: 'Independent',
+      donor_notes: submissionNotes,
+      guardian_consent_id: permission.guardianConsentId || null,
+      donor_age_at_submission: permission.donorAge,
+      consent_checked_at: new Date().toISOString(),
+      recipient_type: recipientType === 'patient' ? 'Patient' : 'Organization',
+      recipient_patient_id: recipientType === 'patient' ? Number(recipientPatientId || 0) || null : null,
+      status: 'Draft',
+    });
+  }
 
   if (submissionResult.error || !submissionResult.data?.submission_id) {
     return {

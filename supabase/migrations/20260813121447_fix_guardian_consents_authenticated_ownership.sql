@@ -3,9 +3,7 @@
 -- through public.users so donors can only access consent rows for themselves.
 
 alter table public.guardian_consents enable row level security;
-
 grant select, insert, update on table public.guardian_consents to authenticated;
-
 drop policy if exists "guardian_consents_read_own" on public.guardian_consents;
 create policy "guardian_consents_read_own"
 on public.guardian_consents
@@ -20,7 +18,6 @@ using (
       and u.auth_user_id = (select auth.uid())
   )
 );
-
 drop policy if exists "guardian_consents_insert_own" on public.guardian_consents;
 create policy "guardian_consents_insert_own"
 on public.guardian_consents
@@ -35,7 +32,6 @@ with check (
       and u.auth_user_id = (select auth.uid())
   )
 );
-
 drop policy if exists "guardian_consents_update_own" on public.guardian_consents;
 create policy "guardian_consents_update_own"
 on public.guardian_consents

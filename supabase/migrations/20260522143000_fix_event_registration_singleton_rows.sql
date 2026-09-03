@@ -9,7 +9,6 @@ from public."Event_Attendees" ea
 where hs."Event_Attendee_ID" = ea."Event_Attendee_ID"
   and hs."Event_Attendee_ID" is not null
   and hs."Event_Request_ID" is null;
-
 -- 2) Remove safe duplicates by User_ID + Event_Request_ID
 --    (keep newest row, remove only pending rows without child records).
 with ranked as (
@@ -46,7 +45,6 @@ safe_dupes as (
 delete from public."Hair_Submissions" hs
 using safe_dupes d
 where hs."Submission_ID" = d."Submission_ID";
-
 -- 3) Remove safe duplicates by Event_Attendee_ID
 with ranked as (
   select
@@ -81,23 +79,18 @@ safe_dupes as (
 delete from public."Hair_Submissions" hs
 using safe_dupes d
 where hs."Submission_ID" = d."Submission_ID";
-
 -- 4) Enforce singleton constraints.
 create unique index if not exists uq_event_attendees_user_event_request
 on public."Event_Attendees" ("User_ID", "Event_Request_ID");
-
 create unique index if not exists uq_hair_submissions_user_event_request
 on public."Hair_Submissions" ("User_ID", "Event_Request_ID")
 where "Event_Request_ID" is not null;
-
 create unique index if not exists uq_hair_submissions_event_attendee
 on public."Hair_Submissions" ("Event_Attendee_ID")
 where "Event_Attendee_ID" is not null;
-
 -- 5) Prevent event-linked rows without event keys.
 alter table public."Hair_Submissions"
 drop constraint if exists hair_submissions_event_link_required_check;
-
 alter table public."Hair_Submissions"
 add constraint hair_submissions_event_link_required_check
 check (

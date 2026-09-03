@@ -17,7 +17,6 @@ as $$
   where u.auth_user_id = auth.uid()
   limit 1
 $$;
-
 create or replace function public.current_app_user_is_staff()
 returns boolean
 language sql
@@ -32,13 +31,11 @@ as $$
       and lower(coalesce(u.role, '')) in ('admin', 'staff', 'qa_stylist', 'organization', 'super_admin')
   )
 $$;
-
 alter table public."Event_Attendees" enable row level security;
 alter table public."Hair_Submissions" enable row level security;
 alter table public."Hair_Submission_Details" enable row level security;
 alter table public."AI_Screenings" enable row level security;
 alter table public."Donation_Certificates" enable row level security;
-
 update public."AI_Screenings"
 set "Estimated_Length" = coalesce("Estimated_Length", 0),
     "Detected_Color" = coalesce(nullif(trim("Detected_Color"), ''), 'Unclear'),
@@ -65,7 +62,6 @@ set "Estimated_Length" = coalesce("Estimated_Length", 0),
     "Scalp_Coverage_Notes" = coalesce(nullif(trim("Scalp_Coverage_Notes"), ''), 'No clear scalp coverage issue was reported.'),
     "Improvement_Tracking_Status" = coalesce(nullif(trim("Improvement_Tracking_Status"), ''), 'Needs improvement tracking'),
     "Improvement_Recommendation" = coalesce(nullif(trim("Improvement_Recommendation"), ''), 'Keep tracking hair length and condition with future CheckHair scans before donating.');
-
 alter table public."AI_Screenings"
   alter column "Estimated_Length" set default 0,
   alter column "Detected_Color" set default 'Unclear',
@@ -111,7 +107,6 @@ alter table public."AI_Screenings"
   alter column "Scalp_Coverage_Notes" set not null,
   alter column "Improvement_Tracking_Status" set not null,
   alter column "Improvement_Recommendation" set not null;
-
 with ranked_event_attendees as (
   select
     "Event_Attendee_ID",
@@ -143,7 +138,6 @@ set "Event_Attendee_ID" = dea.keep_event_attendee_id,
     "Updated_At" = timezone('Asia/Manila', now())
 from duplicate_event_attendees dea
 where hs."Event_Attendee_ID" = dea."Event_Attendee_ID";
-
 with ranked_event_attendees as (
   select
     "Event_Attendee_ID",
@@ -162,7 +156,6 @@ delete from public."Event_Attendees" ea
 using ranked_event_attendees rea
 where ea."Event_Attendee_ID" = rea."Event_Attendee_ID"
   and rea.rn > 1;
-
 with ranked_hair_submissions as (
   select
     "Submission_ID",
@@ -186,7 +179,6 @@ update public."Hair_Bundle_Tracking_History" hbth
 set "Submission_ID" = dhs.keep_submission_id
 from duplicate_hair_submissions dhs
 where hbth."Submission_ID" = dhs."Submission_ID";
-
 with ranked_hair_submissions as (
   select
     "Submission_ID",
@@ -215,7 +207,6 @@ where hsl."Submission_ID" = dhs."Submission_ID"
     from public."Hair_Submission_Logistics" existing
     where existing."Submission_ID" = dhs.keep_submission_id
   );
-
 with ranked_hair_submissions as (
   select
     "Submission_ID",
@@ -244,7 +235,6 @@ where dc."Submission_ID" = dhs."Submission_ID"
     from public."Donation_Certificates" existing
     where existing."Submission_ID" = dhs.keep_submission_id
   );
-
 with ranked_hair_submissions as (
   select
     "Submission_ID",
@@ -274,7 +264,6 @@ where hsd."Submission_ID" = dhs."Submission_ID"
     from public."Hair_Submission_Details" existing
     where existing."Submission_ID" = dhs.keep_submission_id
   );
-
 with ranked_hair_submissions as (
   select
     "Submission_ID",
@@ -303,7 +292,6 @@ where ai."Submission_ID" = dhs."Submission_ID"
     from public."AI_Screenings" existing
     where existing."Submission_ID" = dhs.keep_submission_id
   );
-
 with ranked_hair_submissions as (
   select
     "Submission_ID",
@@ -326,7 +314,6 @@ duplicate_hair_submissions as (
 delete from public."AI_Screenings" ai
 using duplicate_hair_submissions dhs
 where ai."Submission_ID" = dhs."Submission_ID";
-
 with ranked_hair_submissions as (
   select
     "Submission_ID",
@@ -345,7 +332,6 @@ duplicate_hair_submissions as (
 delete from public."Hair_Submission_Logistics" hsl
 using duplicate_hair_submissions dhs
 where hsl."Submission_ID" = dhs."Submission_ID";
-
 with ranked_hair_submissions as (
   select
     "Submission_ID",
@@ -360,7 +346,6 @@ delete from public."Hair_Submissions" hs
 using ranked_hair_submissions rhs
 where hs."Submission_ID" = rhs."Submission_ID"
   and rhs.rn > 1;
-
 with ranked_details as (
   select
     hsd."Submission_Detail_ID",
@@ -376,7 +361,6 @@ delete from public."Hair_Submission_Details" hsd
 using ranked_details rd
 where hsd."Submission_Detail_ID" = rd."Submission_Detail_ID"
   and rd.rn > 1;
-
 with ranked_all_details as (
   select
     "Submission_Detail_ID",
@@ -390,7 +374,6 @@ delete from public."Hair_Submission_Details" hsd
 using ranked_all_details rad
 where hsd."Submission_Detail_ID" = rad."Submission_Detail_ID"
   and rad.rn > 1;
-
 with ranked_screenings as (
   select
     "AI_Screening_ID",
@@ -404,57 +387,46 @@ delete from public."AI_Screenings" ai
 using ranked_screenings rs
 where ai."AI_Screening_ID" = rs."AI_Screening_ID"
   and rs.rn > 1;
-
 create unique index if not exists uq_event_attendees_user_event_request
 on public."Event_Attendees" ("User_ID", "Event_Request_ID");
-
 create unique index if not exists uq_hair_submissions_user_event_request_full
 on public."Hair_Submissions" ("User_ID", "Event_Request_ID");
-
 create unique index if not exists uq_hair_submission_details_submission
 on public."Hair_Submission_Details" ("Submission_ID");
-
 create unique index if not exists uq_ai_screenings_submission
 on public."AI_Screenings" ("Submission_ID");
-
 drop policy if exists "donors_read_own_event_attendees" on public."Event_Attendees";
 create policy "donors_read_own_event_attendees"
 on public."Event_Attendees"
 for select
 using ("User_ID" = public.current_app_user_id() or public.current_app_user_is_staff());
-
 drop policy if exists "donors_insert_own_event_attendees" on public."Event_Attendees";
 create policy "donors_insert_own_event_attendees"
 on public."Event_Attendees"
 for insert
 with check ("User_ID" = public.current_app_user_id());
-
 drop policy if exists "staff_update_event_attendees_scan" on public."Event_Attendees";
 create policy "staff_update_event_attendees_scan"
 on public."Event_Attendees"
 for update
 using (public.current_app_user_is_staff())
 with check (public.current_app_user_is_staff());
-
 drop policy if exists "donors_read_own_hair_submissions" on public."Hair_Submissions";
 create policy "donors_read_own_hair_submissions"
 on public."Hair_Submissions"
 for select
 using ("User_ID" = public.current_app_user_id() or public.current_app_user_is_staff());
-
 drop policy if exists "donors_insert_own_hair_submissions" on public."Hair_Submissions";
 create policy "donors_insert_own_hair_submissions"
 on public."Hair_Submissions"
 for insert
 with check ("User_ID" = public.current_app_user_id());
-
 drop policy if exists "donors_update_own_hair_submissions" on public."Hair_Submissions";
 create policy "donors_update_own_hair_submissions"
 on public."Hair_Submissions"
 for update
 using ("User_ID" = public.current_app_user_id() or public.current_app_user_is_staff())
 with check ("User_ID" = public.current_app_user_id() or public.current_app_user_is_staff());
-
 drop policy if exists "donors_read_own_hair_submission_details" on public."Hair_Submission_Details";
 create policy "donors_read_own_hair_submission_details"
 on public."Hair_Submission_Details"
@@ -468,7 +440,6 @@ using (
       and hs."User_ID" = public.current_app_user_id()
   )
 );
-
 drop policy if exists "donors_insert_own_hair_submission_details" on public."Hair_Submission_Details";
 create policy "donors_insert_own_hair_submission_details"
 on public."Hair_Submission_Details"
@@ -481,7 +452,6 @@ with check (
       and hs."User_ID" = public.current_app_user_id()
   )
 );
-
 drop policy if exists "donors_update_own_hair_submission_details" on public."Hair_Submission_Details";
 create policy "donors_update_own_hair_submission_details"
 on public."Hair_Submission_Details"
@@ -504,7 +474,6 @@ with check (
       and hs."User_ID" = public.current_app_user_id()
   )
 );
-
 drop policy if exists "donors_read_own_ai_screenings" on public."AI_Screenings";
 create policy "donors_read_own_ai_screenings"
 on public."AI_Screenings"
@@ -518,7 +487,6 @@ using (
       and hs."User_ID" = public.current_app_user_id()
   )
 );
-
 drop policy if exists "donors_insert_own_ai_screenings" on public."AI_Screenings";
 create policy "donors_insert_own_ai_screenings"
 on public."AI_Screenings"
@@ -531,19 +499,16 @@ with check (
       and hs."User_ID" = public.current_app_user_id()
   )
 );
-
 drop policy if exists "donors_read_own_donation_certificates" on public."Donation_Certificates";
 create policy "donors_read_own_donation_certificates"
 on public."Donation_Certificates"
 for select
 using ("User_ID" = public.current_app_user_id() or public.current_app_user_is_staff());
-
 drop policy if exists "staff_insert_donation_certificates" on public."Donation_Certificates";
 create policy "staff_insert_donation_certificates"
 on public."Donation_Certificates"
 for insert
 with check ("User_ID" = public.current_app_user_id() or public.current_app_user_is_staff());
-
 create or replace function public.ensure_event_donation_records_after_rsvp()
 returns trigger
 language plpgsql
@@ -785,14 +750,12 @@ begin
   return new;
 end;
 $$;
-
 drop trigger if exists trg_ensure_event_donation_records_after_rsvp on public."Event_Attendees";
 create trigger trg_ensure_event_donation_records_after_rsvp
 after insert or update of "Registration_Status", "User_ID", "Event_Request_ID"
 on public."Event_Attendees"
 for each row
 execute function public.ensure_event_donation_records_after_rsvp();
-
 create or replace function public.issue_event_certificate_after_rsvp_scan()
 returns trigger
 language plpgsql
@@ -854,7 +817,6 @@ begin
   return new;
 end;
 $$;
-
 drop trigger if exists trg_issue_event_certificate_after_rsvp_scan on public."Event_Attendees";
 create trigger trg_issue_event_certificate_after_rsvp_scan
 after insert or update of "RSVP_Scanned_At", "Attendance_Status"

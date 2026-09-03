@@ -104,6 +104,26 @@ const toNumberOrDefault = (value, fallback) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const normalizeSheddingLevel = (value, fallback = 'mild') => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return fallback;
+
+  if (/^(none|no|absent|normal)$/.test(normalized) || /\b(no|without)\s+(visible\s+)?(hair\s+)?(fall|loss|shedding)\b/.test(normalized)) {
+    return 'none';
+  }
+  if (/^(mild|low|minimal|slight|light)$/.test(normalized) || /\b(mild|low|minimal|slight|light)\b/.test(normalized)) {
+    return 'mild';
+  }
+  if (/^(moderate|medium|average)$/.test(normalized) || /\b(moderate|medium|average)\b/.test(normalized)) {
+    return 'moderate';
+  }
+  if (/^(severe|high|heavy|excessive|significant)$/.test(normalized) || /\b(severe|high|heavy|excessive|significant)\b/.test(normalized)) {
+    return 'severe';
+  }
+
+  return fallback;
+};
+
 const hasVisibleDandruffEvidence = (value = '') => {
   const normalized = String(value || '').toLowerCase();
   if (!normalized) return false;
@@ -148,7 +168,7 @@ const normalizeAnalysis = (data, donationRequirementContext = null) => {
     bald_spots_present: data?.bald_spots_present === true,
     affected_regions: normalizeStringArray(data?.affected_regions || []),
     hair_density_score: toNumberOrDefault(data?.hair_density_score, 50),
-    shedding_level: data?.shedding_level || 'mild',
+    shedding_level: normalizeSheddingLevel(data?.shedding_level),
     visible_scalp_area: data?.visible_scalp_area || 'low',
     scalp_coverage_notes: scalpCoverageNotes,
     dandruff_detected: dandruffDetected,
@@ -209,7 +229,13 @@ const isLowDetailPlaceholderAnalysis = (analysis = {}) => {
 
 const isSupportedAiProviderMarker = (value) => {
   const normalized = String(value || '').trim().toLowerCase();
-  return normalized === 'groq' || normalized === 'gemini' || normalized === 'google-ai' || normalized === 'openai';
+  return (
+    normalized === 'openrouter'
+    || normalized === 'groq'
+    || normalized === 'gemini'
+    || normalized === 'google-ai'
+    || normalized === 'openai'
+  );
 };
 
 const resolvePhotoQualityIssueMessage = (analysis = {}) => {
@@ -262,6 +288,19 @@ const resolvePhotoQualityIssueMessage = (analysis = {}) => {
 };
 
 const prepareImagesForAnalysis = async (images = []) => images || [];
+
+const selectVerifiedImagePayloads = (images = []) => images.map((image) => {
+  const verifiedDataUrl = image?.validationDataUrl || image?.dataUrl || '';
+  const base64SeparatorIndex = verifiedDataUrl.indexOf(',');
+  return {
+    ...image,
+    dataUrl: verifiedDataUrl,
+    base64: base64SeparatorIndex >= 0
+      ? verifiedDataUrl.slice(base64SeparatorIndex + 1)
+      : image?.base64 || '',
+    mimeType: image?.validationMimeType || image?.mimeType || 'image/jpeg',
+  };
+});
 
 const isStaleHairEndsRequirementError = (message = '') => {
   const normalized = String(message || '').toLowerCase();
@@ -443,6 +482,18 @@ const isTemporaryUnavailableError = (message = '', errorType = '') => {
   );
 };
 
+const isRetryableProviderOutputError = (message = '', errorType = '') => {
+  const normalizedMessage = String(message || '').toLowerCase();
+  const normalizedType = String(errorType || '').trim().toLowerCase();
+
+  return (
+    ['empty_response', 'invalid_response', 'incomplete_response'].includes(normalizedType)
+    || normalizedMessage.includes('empty response')
+    || normalizedMessage.includes('invalid json')
+    || normalizedMessage.includes('response was incomplete')
+  );
+};
+
 const isProviderAccessDeniedError = (message = '', errorType = '', status = null) => {
   const normalizedMessage = String(message || '').toLowerCase();
   const normalizedType = String(errorType || '').trim().toLowerCase();
@@ -534,7 +585,10 @@ export const analyzeHairPhotos = async ({
     }
 
     const preparedImages = await prepareImagesForAnalysis(images);
-    const invalidImages = preparedImages.filter((image) => !image?.dataUrl || !image?.mimeType);
+    // The verification token is signed against validationDataUrl. Reuse those
+    // exact bytes for analysis so the server can verify the token digest.
+    const verifiedAnalysisImages = selectVerifiedImagePayloads(preparedImages);
+    const invalidImages = verifiedAnalysisImages.filter((image) => !image?.dataUrl || !image?.mimeType);
     if (invalidImages.length) {
       throw new Error('One or more uploaded photos could not be read. Please upload or retake the unclear image again.');
     }
@@ -548,13 +602,25 @@ export const analyzeHairPhotos = async ({
       throw new Error('Please confirm the photo compliance checklist before analysis.');
     }
 
+    if (!String(complianceContext?.photoVerificationToken || '').trim()) {
+      throw buildStructuredAnalysisError(
+        'Please complete the photo verification before starting hair analysis.',
+        {
+          errorType: 'photo_verification_required',
+          edgeFunctionInvoked: false,
+          providerRequestAttempted: false,
+        }
+      );
+    }
+
     const payload = {
       concern_type: normalizedAnswers.concern_type,
       questionnaire_answers: normalizedAnswers.questionnaire_answers,
       compliance_context: {
         acknowledged: Boolean(complianceContext?.acknowledged),
+        photo_verification_token: String(complianceContext?.photoVerificationToken || '').trim(),
       },
-      images: preparedImages.map((image) => ({
+      images: verifiedAnalysisImages.map((image) => ({
         mimeType: image.mimeType,
         dataUrl: image.dataUrl,
         viewKey: image.viewKey,
@@ -645,8 +711,8 @@ export const analyzeHairPhotos = async ({
       questionKeys: Object.keys(payload.questionnaire_answers || {}),
       imageCount: payload.images.length,
       imageViews: payload.images.map((image) => image.viewLabel || image.viewKey).filter(Boolean),
-      usesWebOptimizedImages: preparedImages.some((image, index) => image?.dataUrl !== images?.[index]?.dataUrl),
-      estimatedImagePayloadBytes: estimateImagePayloadBytes(preparedImages),
+      usesWebOptimizedImages: verifiedAnalysisImages.some((image, index) => image?.dataUrl !== images?.[index]?.dataUrl),
+      estimatedImagePayloadBytes: estimateImagePayloadBytes(verifiedAnalysisImages),
     });
 
     let functionResult = null;
@@ -677,7 +743,16 @@ export const analyzeHairPhotos = async ({
         && HAIR_ANALYSIS_RETRYABLE_STATUS.has(Number(providerResponseStatus))
         && isTemporaryUnavailableError(resolvedErrorMessage, normalizedErrorType)
       );
-      const canRetry = (isRetryableProviderBusyError || canRetryWithStaleHairEndsCompatibility)
+      const isRetryableProviderOutputFailure = (
+        edgeFunctionInvoked
+        && providerRequestAttempted
+        && isRetryableProviderOutputError(resolvedErrorMessage, normalizedErrorType)
+      );
+      const canRetry = (
+        isRetryableProviderBusyError
+        || isRetryableProviderOutputFailure
+        || canRetryWithStaleHairEndsCompatibility
+      )
         && attempt < HAIR_ANALYSIS_MAX_INVOKE_ATTEMPTS;
 
       logAppEvent('hairAnalysis.invoke', 'Hair analysis edge invoke failed before a usable result was returned.', {
@@ -687,6 +762,10 @@ export const analyzeHairPhotos = async ({
         providerRequestAttempted,
         providerResponseStatus,
         providerParseSuccess,
+        providerModel: errorPayload?.provider_model || null,
+        providerFinishReason: errorPayload?.provider_finish_reason || null,
+        providerNativeFinishReason: errorPayload?.provider_native_finish_reason || null,
+        errorType: normalizedErrorType || null,
         attempt,
         maxAttempts: HAIR_ANALYSIS_MAX_INVOKE_ATTEMPTS,
         willRetry: canRetry,
@@ -711,7 +790,7 @@ export const analyzeHairPhotos = async ({
 
         return {
           analysis: fallbackAnalysis,
-          provider: 'openai',
+          provider: 'openrouter',
           error: null,
           recoveredFromPhotoQualityError: true,
           edgeFunctionInvoked,
@@ -740,13 +819,14 @@ export const analyzeHairPhotos = async ({
 
       if (canRetry) {
         const retryDelayMs = resolveRetryDelayMs({ attempt, retryAfterSeconds });
-        logAppEvent('hairAnalysis.invoke', 'Retrying hair analysis after provider temporary-unavailable response.', {
+        logAppEvent('hairAnalysis.invoke', 'Retrying hair analysis after a retryable provider response.', {
           functionName: hairAnalysisFunctionName,
           attempt,
           maxAttempts: HAIR_ANALYSIS_MAX_INVOKE_ATTEMPTS,
           retryDelayMs,
           retryAfterSeconds: retryAfterSeconds ?? null,
           providerResponseStatus,
+          providerParseSuccess,
           errorType: normalizedErrorType || null,
         }, 'info');
         await waitFor(retryDelayMs);
@@ -756,12 +836,15 @@ export const analyzeHairPhotos = async ({
       throw buildStructuredAnalysisError(
         resolvedErrorMessage,
         {
-          errorType: providerRequestAttempted ? errorPayload?.error_type || null : null,
+          errorType: errorPayload?.error_type || null,
           retryAfterSeconds: providerRequestAttempted ? errorPayload?.retry_after_seconds ?? null : null,
           edgeFunctionInvoked,
           providerRequestAttempted,
           providerResponseStatus,
           providerParseSuccess,
+          providerModel: errorPayload?.provider_model || null,
+          providerFinishReason: errorPayload?.provider_finish_reason || null,
+          providerNativeFinishReason: errorPayload?.provider_native_finish_reason || null,
         }
       );
     }
@@ -821,7 +904,7 @@ export const analyzeHairPhotos = async ({
 
       return {
         analysis: null,
-        provider: functionResult.data?.provider || 'openai',
+        provider: functionResult.data?.provider || 'openrouter',
         error: 'The AI returned incomplete hair details instead of a usable photo-specific analysis. Please tap Try again to analyze the photos again.',
         errorType: 'insufficient_detail',
         edgeFunctionInvoked: true,
@@ -849,7 +932,7 @@ export const analyzeHairPhotos = async ({
 
         return {
           analysis: fallbackAnalysis,
-          provider: functionResult.data?.provider || 'openai',
+          provider: functionResult.data?.provider || 'openrouter',
           error: null,
           recoveredFromPhotoQualityError: true,
           edgeFunctionInvoked: true,
@@ -906,7 +989,16 @@ export const analyzeHairPhotos = async ({
     });
 
     if (!isSupportedAiProviderMarker(providerMarker)) {
-      throw new Error('Hair analysis returned an unexpected AI provider response.');
+      throw buildStructuredAnalysisError(
+        'Hair analysis returned an unexpected AI provider response.',
+        {
+          edgeFunctionInvoked: functionResult.data?.edge_function_invoked ?? true,
+          providerRequestAttempted: functionResult.data?.provider_request_attempted ?? true,
+          providerResponseStatus: functionResult.data?.provider_response_status ?? null,
+          providerParseSuccess: functionResult.data?.provider_parse_success ?? null,
+          providerMarker,
+        }
+      );
     }
 
     return {
@@ -926,9 +1018,7 @@ export const analyzeHairPhotos = async ({
     const retryAfterSeconds = Number.isFinite(directRetryAfterSeconds) && directRetryAfterSeconds > 0
       ? Math.max(1, Math.ceil(directRetryAfterSeconds))
       : null;
-    const errorType = providerRequestAttempted
-      ? String(error?.errorType || '').trim().toLowerCase()
-      : '';
+    const errorType = String(error?.errorType || '').trim().toLowerCase();
     const isRateLimitError = providerRequestAttempted && isQuotaLikeError(resolvedMessage, errorType);
     const isTemporaryBusyError = providerRequestAttempted && isTemporaryUnavailableError(resolvedMessage, errorType);
     const isProviderAccessDenied = providerRequestAttempted && isProviderAccessDeniedError(
@@ -953,7 +1043,7 @@ export const analyzeHairPhotos = async ({
 
       return {
         analysis: fallbackAnalysis,
-        provider: 'openai',
+        provider: 'openrouter',
         error: null,
         edgeFunctionInvoked,
         providerRequestAttempted,
@@ -1005,6 +1095,11 @@ export const analyzeHairPhotos = async ({
           ...logContext,
           message: resolvedMessage || 'Photo quality did not meet the analysis requirements.',
         }, 'info');
+      } else if (['incomplete_response', 'insufficient_detail', 'empty_response', 'invalid_response'].includes(errorType)) {
+        logAppEvent('hairAnalysis.analyzeHairPhotos', 'AI provider returned a retryable incomplete analysis result.', {
+          ...logContext,
+          message: 'The captured photos remain valid. Retry analysis without sending the user back to camera capture.',
+        }, 'warn');
       } else if (!edgeFunctionInvoked) {
         logAppEvent('hairAnalysis.analyzeHairPhotos', 'Hair analysis invoke failed before the edge function was reached.', {
           ...logContext,
@@ -1020,7 +1115,9 @@ export const analyzeHairPhotos = async ({
       }
     }
 
-    const userMessage = technicalMessage.includes('at least one hair photo')
+    const userMessage = errorType === 'photo_verification_required'
+      ? 'Your photos need a completed verification before analysis. Please run the photo check again.'
+      : technicalMessage.includes('at least one hair photo')
       ? 'Please upload at least one clear hair photo before running the analysis.'
       : isRateLimitError
         ? Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0

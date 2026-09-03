@@ -22,19 +22,43 @@ export const deriveHairMetrics = (screening = null) => {
   };
 };
 
-const hasNegatedCareConcern = (text = '') => (
-  /\b(no|not|without)\s+(?:visible\s+|significant\s+|major\s+)?(?:damage|dryness|frizz|breakage|split\s+ends?|issues?)\b/i.test(text)
-  || /\bno\s+significant\s+damage\s+or\s+issues\b/i.test(text)
-  || /\bsealed\s+ends?\b/i.test(text)
-);
+const normalizeConcernText = (text = '') => String(text || '')
+  .toLowerCase()
+  // Do not turn reassuring AI statements such as "no significant damage"
+  // into a positive damage finding merely because they contain the keyword.
+  .replace(
+    /\b(?:no|not|without)\s+(?:(?:visible|significant|major|noticeable|obvious|meaningful|apparent)\s+)*(?:signs?\s+of\s+)?(?:damage(?:d)?|dryness|dry\s+hair|frizz|breakage|split\s+(?:ends?|tips?)|issues?)\b/gi,
+    ' ',
+  )
+  .replace(
+    /\b(?:minimal|minor|mild|slight|low)\s+(?:visible\s+)?(?:damage|dryness|frizz|breakage|split\s+(?:ends?|tips?))\b/gi,
+    ' ',
+  )
+  .replace(/\bsealed\s+ends?\b/gi, ' ');
 
 const hasExplicitCareConcern = (text = '') => {
-  const normalized = String(text || '').toLowerCase();
-  const negated = hasNegatedCareConcern(normalized);
+  const normalized = normalizeConcernText(text);
   if (/(split\s+ends?|split\s+tips?|breakage|brittle|fray(?:ed|ing)|frizz|flyaways|oily|greasy|stressed\s+ends)/i.test(normalized)) {
     return true;
   }
-  return /(dry|dull|damage|damaged|needs care|improve hair condition)/i.test(normalized) && !negated;
+  return /(dry|dull|damage|damaged|needs care|improve hair condition)/i.test(normalized);
+};
+
+const getConditionIssueLabel = (text = '') => {
+  const normalized = normalizeConcernText(text);
+  if (/split|breakage|damage|damaged|fray|brittle|stressed/i.test(normalized)) return 'Damage';
+  if (/dry|dull/i.test(normalized)) return 'Dryness';
+  if (/frizz|flyaway/i.test(normalized)) return 'Frizz';
+  if (/oily|greasy/i.test(normalized)) return 'Oiliness';
+  return '';
+};
+
+const getMetricIssueLabel = (metrics) => {
+  if (metrics.damage >= 6) return 'Damage';
+  if (metrics.dryness >= 6) return 'Dryness';
+  if (metrics.frizz >= 6) return 'Frizz';
+  if (metrics.oiliness >= 7) return 'Oiliness';
+  return '';
 };
 
 export const getCanonicalHairAssessment = (screening = null) => {
@@ -42,32 +66,35 @@ export const getCanonicalHairAssessment = (screening = null) => {
     return { label: 'No result yet', needsCare: false, issueLabel: 'No result' };
   }
 
+  const condition = String(screening.detected_condition || '').trim();
+  // Detected_Condition is the AI's canonical, most-prominent condition. Keep
+  // the summary card consistent with the condition shown in the detail list.
+  if (/^(healthy|good(?: condition)?)$/i.test(condition)) {
+    return { label: condition, needsCare: false, issueLabel: 'Good result' };
+  }
+
+  const conditionIssue = getConditionIssueLabel(condition);
+  if (conditionIssue) {
+    return { label: condition, needsCare: true, issueLabel: conditionIssue };
+  }
+
   const combined = [
     screening.detected_condition,
     screening.visible_damage_notes,
     screening.summary,
-    screening.decision,
   ].filter(Boolean).join(' ');
-  const condition = String(screening.detected_condition || '').trim();
   const metrics = deriveHairMetrics(screening);
-  const metricConcern = (
-    metrics.dryness >= 6
-    || metrics.damage >= 6
-    || metrics.frizz >= 6
-    || metrics.oiliness >= 7
-  );
-  const needsCare = hasExplicitCareConcern(combined) || metricConcern;
+  const metricIssue = getMetricIssueLabel(metrics);
+  const textIssue = getConditionIssueLabel(combined);
+  const needsCare = hasExplicitCareConcern(combined) || Boolean(metricIssue);
 
   if (!needsCare && (/healthy|good|eligible/i.test(combined) || condition)) {
     return { label: condition || 'Healthy', needsCare: false, issueLabel: 'Good result' };
   }
 
-  const issueLabel = [
-    metrics.damage >= 6 || /split|breakage|damage|fray|stressed/i.test(combined) ? 'Damage' : '',
-    metrics.dryness >= 6 || /dry|dull/i.test(combined) ? 'Dryness' : '',
-    metrics.frizz >= 6 || /frizz|flyaway/i.test(combined) ? 'Frizz' : '',
-    metrics.oiliness >= 7 || /oily|greasy/i.test(combined) ? 'Oiliness' : '',
-  ].filter(Boolean)[0] || 'Needs care';
+  // A metric concern names its own issue. In particular, a high dryness or
+  // frizz score must not be relabelled as Damage by "no significant damage".
+  const issueLabel = metricIssue || textIssue || 'Needs care';
 
   return {
     label: condition && !/healthy/i.test(condition) ? condition : issueLabel,
@@ -95,13 +122,14 @@ export const getHairScreeningMood = (screening = null) => {
     screening.visible_damage_notes,
     screening.summary,
   ].filter(Boolean).join(' ');
+  const concernText = normalizeConcernText(combined);
 
-  const hasStrongConcern = (
+  const hasStrongConcern = assessment.needsCare && (
     metrics.damage >= 7
     || metrics.dryness >= 7
     || metrics.frizz >= 7
     || metrics.oiliness >= 8
-    || /severe|significant|\bdamage(?:d)?\b|breakage|split\s+ends?|brittle|fray/i.test(combined)
+    || /severe|significant|\bdamage(?:d)?\b|breakage|split\s+ends?|brittle|fray/i.test(concernText)
   );
 
   if (hasStrongConcern) {

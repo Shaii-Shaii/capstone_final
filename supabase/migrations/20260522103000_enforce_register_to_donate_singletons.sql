@@ -37,7 +37,6 @@ set "Event_Attendee_ID" = dea.keep_event_attendee_id,
     "Updated_At" = timezone('Asia/Manila', now())
 from duplicate_event_attendees dea
 where hs."Event_Attendee_ID" = dea."Event_Attendee_ID";
-
 with ranked_event_attendees as (
   select
     "Event_Attendee_ID",
@@ -56,7 +55,6 @@ delete from public."Event_Attendees" ea
 using ranked_event_attendees rea
 where ea."Event_Attendee_ID" = rea."Event_Attendee_ID"
   and rea.rn > 1;
-
 with ranked_submissions as (
   select
     "Submission_ID",
@@ -87,7 +85,6 @@ update public."Hair_Bundle_Tracking_History" hbth
 set "Submission_ID" = ds.keep_submission_id
 from duplicate_submissions ds
 where hbth."Submission_ID" = ds."Submission_ID";
-
 with ranked_submissions as (
   select
     "Submission_ID",
@@ -112,7 +109,6 @@ update public."Donor_Recommendations" dr
 set "Submission_ID" = ds.keep_submission_id
 from duplicate_submissions ds
 where dr."Submission_ID" = ds."Submission_ID";
-
 with ranked_submissions as (
   select
     "Submission_ID",
@@ -142,7 +138,6 @@ where hsl."Submission_ID" = ds."Submission_ID"
     from public."Hair_Submission_Logistics" existing
     where existing."Submission_ID" = ds.keep_submission_id
   );
-
 with ranked_submissions as (
   select
     "Submission_ID",
@@ -172,7 +167,6 @@ where dc."Submission_ID" = ds."Submission_ID"
     from public."Donation_Certificates" existing
     where existing."Submission_ID" = ds.keep_submission_id
   );
-
 with ranked_submissions as (
   select
     "Submission_ID",
@@ -202,7 +196,6 @@ where ai."Submission_ID" = ds."Submission_ID"
     from public."AI_Screenings" existing
     where existing."Submission_ID" = ds.keep_submission_id
   );
-
 with ranked_submissions as (
   select
     "Submission_ID",
@@ -246,7 +239,6 @@ update public."Hair_Submission_Images" hsi
 set "Submission_Detail_ID" = duplicate_details.keep_detail_id
 from duplicate_details
 where hsi."Submission_Detail_ID" = duplicate_details."Submission_Detail_ID";
-
 with ranked_submissions as (
   select
     "Submission_ID",
@@ -286,7 +278,6 @@ set "Submission_ID" = movable_details.keep_submission_id,
     "Updated_At" = timezone('Asia/Manila', now())
 from movable_details
 where hsd."Submission_Detail_ID" = movable_details."Submission_Detail_ID";
-
 with ranked_submissions as (
   select
     "Submission_ID",
@@ -302,7 +293,6 @@ delete from public."AI_Screenings" ai
 using ranked_submissions rs
 where ai."Submission_ID" = rs."Submission_ID"
   and rs.rn > 1;
-
 with ranked_submissions as (
   select
     "Submission_ID",
@@ -318,7 +308,6 @@ delete from public."Hair_Submission_Details" hsd
 using ranked_submissions rs
 where hsd."Submission_ID" = rs."Submission_ID"
   and rs.rn > 1;
-
 with ranked_submissions as (
   select
     "Submission_ID",
@@ -334,7 +323,6 @@ delete from public."Hair_Submission_Logistics" hsl
 using ranked_submissions rs
 where hsl."Submission_ID" = rs."Submission_ID"
   and rs.rn > 1;
-
 with ranked_submissions as (
   select
     "Submission_ID",
@@ -350,7 +338,6 @@ delete from public."Donation_Certificates" dc
 using ranked_submissions rs
 where dc."Submission_ID" = rs."Submission_ID"
   and rs.rn > 1;
-
 with ranked_submissions as (
   select
     "Submission_ID",
@@ -366,7 +353,6 @@ delete from public."Hair_Submissions" hs
 using ranked_submissions rs
 where hs."Submission_ID" = rs."Submission_ID"
   and rs.rn > 1;
-
 with ranked_details as (
   select
     "Submission_Detail_ID",
@@ -389,7 +375,6 @@ update public."Hair_Submission_Images" hsi
 set "Submission_Detail_ID" = dd.keep_detail_id
 from duplicate_details dd
 where hsi."Submission_Detail_ID" = dd."Submission_Detail_ID";
-
 with ranked_details as (
   select
     "Submission_Detail_ID",
@@ -403,7 +388,6 @@ delete from public."Hair_Submission_Details" hsd
 using ranked_details rd
 where hsd."Submission_Detail_ID" = rd."Submission_Detail_ID"
   and rd.rn > 1;
-
 with ranked_screenings as (
   select
     "AI_Screening_ID",
@@ -417,19 +401,14 @@ delete from public."AI_Screenings" ai
 using ranked_screenings rs
 where ai."AI_Screening_ID" = rs."AI_Screening_ID"
   and rs.rn > 1;
-
 create unique index if not exists uq_event_attendees_user_event_request
 on public."Event_Attendees" ("User_ID", "Event_Request_ID");
-
 create unique index if not exists uq_hair_submissions_user_event_request_full
 on public."Hair_Submissions" ("User_ID", "Event_Request_ID");
-
 create unique index if not exists uq_hair_submissions_event_attendee
 on public."Hair_Submissions" ("Event_Attendee_ID")
 where "Event_Attendee_ID" is not null;
-
 create unique index if not exists uq_hair_submission_details_submission
 on public."Hair_Submission_Details" ("Submission_ID");
-
 create unique index if not exists uq_ai_screenings_submission
 on public."AI_Screenings" ("Submission_ID");

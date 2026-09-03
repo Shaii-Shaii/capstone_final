@@ -16,6 +16,9 @@ import { createAppError, getErrorMessage, logAppError, logAppEvent } from '../ut
 const IMAGE_MEDIA_TYPES = ['images'];
 const PREVIEW_IMAGE_MAX_SIZE = 768;
 const PREVIEW_IMAGE_QUALITY = 0.48;
+const WIG_CONTEXT_CACHE_TTL_MS = 30 * 1000;
+const wigContextCache = new Map();
+const wigContextInflightRequests = new Map();
 
 const FRONT_PHOTO_REQUIRED_ERROR = createAppError(
   'Front Photo Required',
@@ -156,6 +159,20 @@ const mapPatientWigRequestError = (type, error) => {
   }
 
   if (type === 'cancel') {
+    if (message.includes('seven-day') || message.includes('cancellation window')) {
+      return createAppError(
+        'Cancellation Window Ended',
+        'Wig requests can be cancelled only within seven days of submission.'
+      );
+    }
+
+    if (message.includes('preparation has started')) {
+      return createAppError(
+        'Wig Preparation Started',
+        'This request can no longer be cancelled because wig preparation has already started.'
+      );
+    }
+
     if (message.includes('no longer') || message.includes('active')) {
       return createAppError(
         'Request Already In Review',
@@ -318,7 +335,11 @@ const buildSelectedPreview = (preview, selectedOptionId) => {
   };
 };
 
-export const usePatientWigRequest = ({ userId }) => {
+export const usePatientWigRequest = ({
+  userId,
+  loadWigCatalog = true,
+  loadPreferenceOptions = true,
+}) => {
   const [referenceImage, setReferenceImage] = useState(null);
   const [preview, setPreview] = useState(null);
   const [context, setContext] = useState({
@@ -362,13 +383,35 @@ export const usePatientWigRequest = ({ userId }) => {
     return 'Start a wig request';
   }, [hasSubmittedRequest, isGeneratingPreview, isSavingRequest, preview]);
 
-  const refreshContext = useCallback(async ({ silent = false } = {}) => {
+  const refreshContext = useCallback(async ({ silent = false, force = false } = {}) => {
     if (!silent) {
       setIsLoadingContext(true);
     }
     setError(null);
 
-    const result = await getPatientWigRequestContext(userId);
+    const cached = wigContextCache.get(userId);
+    const cacheIsFresh = Boolean(
+      cached?.fetchedAt && Date.now() - cached.fetchedAt < WIG_CONTEXT_CACHE_TTL_MS
+    );
+    let result = !force && cacheIsFresh ? cached.result : null;
+
+    if (!result) {
+      let request = !force ? wigContextInflightRequests.get(userId) : null;
+      if (!request) {
+        request = getPatientWigRequestContext(userId)
+          .then((nextResult) => {
+            wigContextCache.set(userId, { fetchedAt: Date.now(), result: nextResult });
+            return nextResult;
+          })
+          .finally(() => {
+            if (wigContextInflightRequests.get(userId) === request) {
+              wigContextInflightRequests.delete(userId);
+            }
+          });
+        wigContextInflightRequests.set(userId, request);
+      }
+      result = await request;
+    }
 
     if (!silent) {
       setIsLoadingContext(false);
@@ -439,8 +482,8 @@ export const usePatientWigRequest = ({ userId }) => {
   }, [userId]);
 
   useEffect(() => {
-    refreshAvailableWigs();
-  }, [refreshAvailableWigs]);
+    if (loadWigCatalog && hasLoadedContext && !hasSubmittedRequest) refreshAvailableWigs();
+  }, [hasLoadedContext, hasSubmittedRequest, loadWigCatalog, refreshAvailableWigs]);
 
   const refreshWigPreferenceOptions = useCallback(async () => {
     setIsLoadingWigPreferenceOptions(true);
@@ -464,8 +507,8 @@ export const usePatientWigRequest = ({ userId }) => {
   }, [userId]);
 
   useEffect(() => {
-    refreshWigPreferenceOptions();
-  }, [refreshWigPreferenceOptions]);
+    if (loadPreferenceOptions && hasLoadedContext && !hasSubmittedRequest) refreshWigPreferenceOptions();
+  }, [hasLoadedContext, hasSubmittedRequest, loadPreferenceOptions, refreshWigPreferenceOptions]);
 
   useEffect(() => {
     setRequestedSavedPreviewId(null);
@@ -665,7 +708,7 @@ export const usePatientWigRequest = ({ userId }) => {
         ? 'You already have a pending request.'
         : 'Wig request submitted successfully. Waiting for organization approval.'
     );
-    void refreshContext({ silent: true }).catch((refreshError) => {
+    void refreshContext({ silent: true, force: true }).catch((refreshError) => {
       logAppError('patientWigRequest.refreshAfterSave', refreshError, { userId });
     });
     return { success: true, wigRequest: result.wigRequest, alreadyExists: Boolean(result.alreadyExists) };
@@ -699,7 +742,7 @@ export const usePatientWigRequest = ({ userId }) => {
     setSuccessMessage('Request cancelled.');
     setReferenceImage(null);
     setPreview(null);
-    await refreshContext();
+    await refreshContext({ force: true });
     return { success: true, wigRequest: result.wigRequest };
   };
 

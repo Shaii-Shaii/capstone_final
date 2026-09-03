@@ -15,7 +15,12 @@ const isProcessTrackingCacheFresh = (cacheEntry) => (
   Boolean(cacheEntry?.fetchedAt && Date.now() - cacheEntry.fetchedAt < PROCESS_TRACKING_CACHE_TTL_MS)
 );
 
-export const useProcessTracking = ({ role, userId, databaseUserId: preferredDatabaseUserId = null }) => {
+export const useProcessTracking = ({
+  role,
+  userId,
+  databaseUserId: preferredDatabaseUserId = null,
+  enabled = true,
+}) => {
   const [tracker, setTracker] = useState(null);
   const [trackingError, setTrackingError] = useState(null);
   const [isLoadingTracking, setIsLoadingTracking] = useState(false);
@@ -27,7 +32,7 @@ export const useProcessTracking = ({ role, userId, databaseUserId: preferredData
     let isMounted = true;
 
     const syncDatabaseUserId = async () => {
-      if (!userId) {
+      if (!enabled || !userId) {
         if (isMounted) setDatabaseUserId(null);
         return;
       }
@@ -48,7 +53,7 @@ export const useProcessTracking = ({ role, userId, databaseUserId: preferredData
     return () => {
       isMounted = false;
     };
-  }, [preferredDatabaseUserId, userId]);
+  }, [enabled, preferredDatabaseUserId, userId]);
 
   const applyTrackingResult = useCallback((result) => {
     setTracker(result?.tracker || null);
@@ -56,6 +61,7 @@ export const useProcessTracking = ({ role, userId, databaseUserId: preferredData
   }, []);
 
   const loadTracking = useCallback(async ({ silent = false, force = false } = {}) => {
+    if (!enabled) return { success: true, tracker: null, error: null };
     if (!userId || !role) return { success: false, error: 'Session is not ready.' };
 
     const cached = processTrackingCache.get(cacheKey);
@@ -68,7 +74,10 @@ export const useProcessTracking = ({ role, userId, databaseUserId: preferredData
       };
     }
 
-    if (!force && processTrackingInflightRequests.has(cacheKey)) {
+    // Realtime events often arrive in a burst across related tables. Even a
+    // forced refresh should join the active request instead of starting the
+    // same tracking batch several times in parallel.
+    if (processTrackingInflightRequests.has(cacheKey)) {
       const inflightResult = await processTrackingInflightRequests.get(cacheKey);
       applyTrackingResult(inflightResult);
       return {
@@ -118,14 +127,14 @@ export const useProcessTracking = ({ role, userId, databaseUserId: preferredData
       tracker: result.tracker,
       error: result.error,
     };
-  }, [applyTrackingResult, cacheKey, role, userId]);
+  }, [applyTrackingResult, cacheKey, enabled, role, userId]);
 
   const refreshTracking = useCallback(async () => (
     await loadTracking({ silent: true, force: true })
   ), [loadTracking]);
 
   useEffect(() => {
-    if (!userId || !role) return;
+    if (!enabled || !userId || !role) return;
     const cached = processTrackingCache.get(cacheKey);
     if (cached?.result) {
       applyTrackingResult(cached.result);
@@ -133,10 +142,10 @@ export const useProcessTracking = ({ role, userId, databaseUserId: preferredData
     if (!isProcessTrackingCacheFresh(cached)) {
       loadTracking({ silent: Boolean(cached?.result) });
     }
-  }, [applyTrackingResult, cacheKey, loadTracking, role, userId]);
+  }, [applyTrackingResult, cacheKey, enabled, loadTracking, role, userId]);
 
   useEffect(() => {
-    if (!userId || !role) return undefined;
+    if (!enabled || !userId || !role) return undefined;
     if (role === 'donor' && !databaseUserId) return undefined;
 
     const watch = tracker?.watch || {};
@@ -241,7 +250,7 @@ export const useProcessTracking = ({ role, userId, databaseUserId: preferredData
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [databaseUserId, refreshTracking, role, tracker?.watch, userId]);
+  }, [databaseUserId, enabled, refreshTracking, role, tracker?.watch, userId]);
 
   return {
     tracker,

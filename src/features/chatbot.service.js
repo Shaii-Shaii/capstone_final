@@ -3,9 +3,7 @@ import * as ChatbotAPI from './chatbot.api';
 import { chatbotAiFunctionName } from './chatbot.constants';
 import { getProcessTracking } from './processTracking.service';
 import {
-  fetchDonorRecommendationsBySubmissionId,
   fetchHairSubmissionsByUserId,
-  fetchLatestHairSubmissionByUserId,
 } from './hairSubmission.api';
 import {
   fetchLatestWigAllocationByPatientDetailsId,
@@ -226,10 +224,8 @@ const buildSupportContextBundle = async ({ role, userId, text }) => {
   supportContext.savedAddress = formatAddress(profile, roleProfile);
 
   if (role === 'donor') {
-    const [{ data: latestSubmission }, { data: submissionRows }] = await Promise.all([
-      fetchLatestHairSubmissionByUserId(userId).catch(() => ({ data: null })),
-      fetchHairSubmissionsByUserId(userId, 1).catch(() => ({ data: [] })),
-    ]);
+    const { data: submissionRows } = await fetchHairSubmissionsByUserId(userId, 1)
+      .catch(() => ({ data: [] }));
 
     const latestScreening = submissionRows?.[0]?.ai_screenings?.[0] || null;
     supportContext.latestScreeningSummary = latestScreening
@@ -242,11 +238,9 @@ const buildSupportContextBundle = async ({ role, userId, text }) => {
       ].filter(Boolean).join(' ')
       : '';
 
-    if (latestSubmission?.id) {
-      const { data: recommendations } = await fetchDonorRecommendationsBySubmissionId(latestSubmission.id, 3)
-        .catch(() => ({ data: [] }));
-
-      supportContext.latestDonorRecommendations = (recommendations || [])
+    const screeningCareTips = latestScreening?.recommendations || latestScreening?.care_tips || [];
+    if (screeningCareTips.length) {
+      supportContext.latestDonorRecommendations = screeningCareTips
         .map((item) => removeAdvertisedNames(item?.recommendation_text))
         .filter(Boolean);
     }

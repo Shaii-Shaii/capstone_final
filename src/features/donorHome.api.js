@@ -13,12 +13,6 @@ const donationDriveRequestsTable = 'Event_Requests';
 const donationDriveRegistrationsTable = 'Event_Attendees';
 const hairSubmissionsTable = 'Hair_Submissions';
 const hairSubmissionDetailsTable = 'Hair_Submission_Details';
-const TRANSIENT_READ_MAX_ATTEMPTS = 2;
-const TRANSIENT_READ_RETRY_DELAY_MS = 450;
-
-const waitFor = (milliseconds = 0) => new Promise((resolve) => {
-  setTimeout(resolve, Math.max(0, Number(milliseconds) || 0));
-});
 
 const isStatementTimeoutError = (error) => (
   String(error?.code || '').trim() === '57014'
@@ -53,39 +47,28 @@ const createFriendlyTransientReadError = (error) => ({
 });
 
 const executeTransientRegistrationRead = async ({ queryFactory, scope, extras = {} }) => {
-  let latestResult = { data: null, error: null };
-
-  for (let attempt = 1; attempt <= TRANSIENT_READ_MAX_ATTEMPTS; attempt += 1) {
-    try {
-      latestResult = await queryFactory();
-    } catch (error) {
-      latestResult = { data: null, error };
-    }
-
-    if (!latestResult?.error || !isTransientReadError(latestResult.error)) {
-      return latestResult;
-    }
-
-    if (attempt < TRANSIENT_READ_MAX_ATTEMPTS) {
-      logAppEvent(`${scope}.retry`, 'Event registrations were temporarily unavailable. Retrying the read.', {
-        ...extras,
-        attempt,
-        errorCode: latestResult.error?.code || null,
-        errorType: isConnectionTimeoutError(latestResult.error) ? 'connection_timeout' : 'statement_timeout',
-      }, 'info');
-      await waitFor(TRANSIENT_READ_RETRY_DELAY_MS * attempt);
-    }
+  let result = { data: null, error: null };
+  try {
+    result = await queryFactory();
+  } catch (error) {
+    result = { data: null, error };
   }
 
-  const friendlyError = createFriendlyTransientReadError(latestResult.error);
+  if (!result?.error || !isTransientReadError(result.error)) {
+    return result;
+  }
+
+  // Do not automatically repeat a read while Postgres is already timing out.
+  // The screen exposes a manual refresh, which is safer than doubling load.
+  const friendlyError = createFriendlyTransientReadError(result.error);
   logAppEvent(`${scope}.temporarily_unavailable`, friendlyError.message, {
     ...extras,
-    attempts: TRANSIENT_READ_MAX_ATTEMPTS,
+    attempts: 1,
     errorCode: friendlyError.code,
-    errorType: isConnectionTimeoutError(latestResult.error) ? 'connection_timeout' : 'statement_timeout',
+    errorType: isConnectionTimeoutError(result.error) ? 'connection_timeout' : 'statement_timeout',
   }, 'warn');
 
-  return { ...latestResult, error: friendlyError };
+  return { ...result, error: friendlyError };
 };
 
 const donationDriveSelect = `
@@ -218,6 +201,40 @@ const isUpcomingDrive = (drive) => {
   const compareDate = getDriveCompareDate(drive);
   if (!compareDate) return false;
   return new Date(compareDate).getTime() >= new Date(getStartOfTodayIso()).getTime();
+};
+
+export const shouldRefreshDonationDrivesForRealtimePayload = (
+  payload = {},
+  visibleDriveIds = []
+) => {
+  const nextRow = payload?.new || {};
+  const previousRow = payload?.old || {};
+  const eventId = Number(
+    nextRow?.Event_Request_ID
+    || nextRow?.event_request_id
+    || previousRow?.Event_Request_ID
+    || previousRow?.event_request_id
+  );
+  const visibleIds = new Set(
+    (visibleDriveIds || []).map((value) => Number(value)).filter(Number.isFinite)
+  );
+
+  // Updates/removals for a row already on screen must refresh so it can move or disappear.
+  if (Number.isFinite(eventId) && visibleIds.has(eventId)) return true;
+  if (payload?.eventType === 'DELETE') return false;
+
+  const status = normalizeDriveStatus(nextRow?.Status || nextRow?.status || '');
+  if (status !== 'approved') return false;
+
+  const compareDate = nextRow?.End_Date
+    || nextRow?.end_date
+    || nextRow?.Start_Date
+    || nextRow?.start_date;
+  if (!compareDate) return false;
+
+  const compareTime = new Date(compareDate).getTime();
+  return Number.isFinite(compareTime)
+    && compareTime >= new Date(getStartOfTodayIso()).getTime();
 };
 
 const sortDrivesForHome = (rows = []) => (
@@ -1159,7 +1176,8 @@ export const fetchFeaturedOrganizations = async (limit = 8) => {
 
 export const fetchUpcomingDonationDrives = async (limit = 6, databaseUserId = null) => {
   const normalizedLimit = Math.max(1, Number(limit) || 6);
-  const queryLimit = Math.min(Math.max(normalizedLimit * 8, 40), 120);
+  const queryLimit = Math.min(Math.max(normalizedLimit * 3, 12), 60);
+  const todayIso = getStartOfTodayIso();
 
   logAppEvent('donor_home.drives', 'Loading upcoming donation drives.', {
     table: donationDriveRequestsTable,
@@ -1173,6 +1191,7 @@ export const fetchUpcomingDonationDrives = async (limit = 6, databaseUserId = nu
     .from(donationDriveRequestsTable)
     .select(donationDriveSelect)
     .ilike('Status', 'approved')
+    .or(`End_Date.gte.${todayIso},and(End_Date.is.null,Start_Date.gte.${todayIso})`)
     .order('Start_Date', { ascending: true })
     .limit(queryLimit);
 

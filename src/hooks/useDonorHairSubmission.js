@@ -3,15 +3,19 @@ import { Platform } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { manipulateAsync, SaveFormat } from 'expo-image-manipulator';
 import { analyzeHairPhotos } from '../features/hairAnalysis.service';
-import { getHairDonationModuleContext, saveHairSubmissionFlow } from '../features/hairSubmission.service';
+import { getHairDonationModuleContext, saveHairScreeningFlow } from '../features/hairSubmission.service';
 import { hairAnalysisRequiredViews } from '../features/hairSubmission.constants';
 import { canSubmitHairDonation, mapDonationPermissionError } from '../features/donorCompliance.service';
 import { logAppEvent } from '../utils/appErrors';
 
 const MAX_PHOTO_COUNT = hairAnalysisRequiredViews.length;
 const IMAGE_MEDIA_TYPES = ['images'];
-const NATIVE_SLOT_IMAGE_MAX_SIZE = 1280;
-const NATIVE_SLOT_IMAGE_QUALITY = 0.72;
+// Keep enough detail for hair screening while reducing base64 conversion and
+// upload time before the remote accessory gate can accept the capture.
+const NATIVE_SLOT_IMAGE_MAX_SIZE = 1080;
+const NATIVE_SLOT_IMAGE_QUALITY = 0.7;
+const VALIDATION_IMAGE_MAX_SIZE = 768;
+const VALIDATION_IMAGE_QUALITY = 0.58;
 
 const createErrorState = (title, message, extras = {}) => ({
   title,
@@ -76,7 +80,42 @@ const normalizeNativeAssetForHairAnalysis = async (asset) => {
   };
 };
 
-const normalizeAssetForHairAnalysis = async (asset) => normalizeNativeAssetForHairAnalysis(asset);
+const normalizeAssetForHairAnalysis = async (asset) => {
+  if (asset?.uri && asset?.base64 && asset?.dataUrl && asset?.mimeType) return asset;
+  return normalizeNativeAssetForHairAnalysis(asset);
+};
+
+const prepareAssetForHairValidation = async (asset) => {
+  if (!asset?.uri) return asset;
+
+  const validationAsset = await manipulateAsync(
+    asset.uri,
+    buildResizeAction({
+      width: asset?.width,
+      height: asset?.height,
+      maxSize: VALIDATION_IMAGE_MAX_SIZE,
+    }),
+    {
+      compress: VALIDATION_IMAGE_QUALITY,
+      format: SaveFormat.JPEG,
+      base64: true,
+    }
+  );
+
+  if (!validationAsset?.uri || !validationAsset?.base64) {
+    throw new Error('The captured photo could not be prepared for validation.');
+  }
+
+  return {
+    ...asset,
+    uri: validationAsset.uri,
+    base64: validationAsset.base64,
+    dataUrl: `data:image/jpeg;base64,${validationAsset.base64}`,
+    mimeType: 'image/jpeg',
+    width: validationAsset.width || asset?.width,
+    height: validationAsset.height || asset?.height,
+  };
+};
 
 const mapImagePickerError = (message = '') => {
   const normalized = message.toLowerCase();
@@ -154,8 +193,39 @@ const mapAnalysisError = (message = '', extras = {}) => {
     return createErrorState('Checklist Needed', 'Confirm the photo checklist first before analysis.');
   }
 
-  if (normalized.includes('response was incomplete')) {
-    return createErrorState('Analysis Was Incomplete', 'The scan did not finish properly. Please try analyzing the photos again.');
+  if (
+    normalizedErrorType === 'photo_verification_required'
+    || normalized.includes('completed verification before analysis')
+    || normalized.includes('photo verification before starting')
+  ) {
+    return createErrorState(
+      'Photo Check Required',
+      'Your photos need to be verified before analysis. Run the photo check again; your captured photos will stay on this screen.',
+      {
+        errorType: 'photo_verification_required',
+        photoVerificationRequired: true,
+        retryable: true,
+      }
+    );
+  }
+
+  if (
+    normalizedErrorType === 'incomplete_response'
+    || normalizedErrorType === 'empty_response'
+    || normalizedErrorType === 'invalid_response'
+    || normalized.includes('response was incomplete')
+    || normalized.includes('empty response')
+    || normalized.includes('invalid json')
+  ) {
+    return createErrorState(
+      'Analysis Needs Another Try',
+      'Your photos passed their checks, but the AI returned an incomplete result. Try the analysis again; you do not need to retake your photos.',
+      {
+        errorType: normalizedErrorType || 'incomplete_response',
+        analysisRetryRequired: true,
+        retryable: true,
+      }
+    );
   }
 
   if (
@@ -165,7 +235,12 @@ const mapAnalysisError = (message = '', extras = {}) => {
   ) {
     return createErrorState(
       'Analysis Needs One More Pass',
-      'Your photos passed validation, but the AI returned incomplete hair details. Tap Try again to rerun analysis.'
+      'Your photos passed validation, but the AI returned incomplete hair details. Tap Try again to rerun analysis.',
+      {
+        errorType: 'insufficient_detail',
+        analysisRetryRequired: true,
+        retryable: true,
+      }
     );
   }
 
@@ -305,7 +380,11 @@ const mapAnalysisError = (message = '', extras = {}) => {
   }
 
   if (String(extras?.errorType || '').trim().toLowerCase() === 'photo_quality') {
-    return createErrorState('Retake Photos', message || 'Please retake the front, left side, right side, scalp, hair ends, and back hair photos in bright light with one person visible and the scalp/crown area clear.');
+    return createErrorState(
+      'Retake Photos',
+      message || 'Please retake the front, left side, right side, scalp, hair ends, and back hair photos in bright light with one person visible and the scalp/crown area clear.',
+      { errorType: 'photo_quality', photoRetakeRequired: true }
+    );
   }
 
   if (normalized.includes('does not represent a valid image')) {
@@ -414,6 +493,8 @@ const buildPhotoRecord = (asset, slotIndex, sourceType = 'upload', metadata = {}
     width: asset.width,
     height: asset.height,
     dataUrl: `data:${asset.mimeType || 'image/jpeg'};base64,${asset.base64}`,
+    validationDataUrl: metadata.validationDataUrl || asset.validationDataUrl || null,
+    validationMimeType: metadata.validationMimeType || asset.validationMimeType || null,
     viewKey: view?.key || `view_${slotIndex + 1}`,
     viewLabel: view?.label || `View ${slotIndex + 1}`,
     file: asset.file || null,
@@ -948,15 +1029,11 @@ export const useDonorHairSubmission = ({ userId, databaseUserId = null }) => {
 
     let result;
     try {
-      result = await saveHairSubmissionFlow({
+      result = await saveHairScreeningFlow({
         userId,
         databaseUserId,
         photos: photos.filter(Boolean),
         aiAnalysis: analysisForSave,
-        confirmedValues,
-        questionnaireAnswers: options.questionnaireAnswers,
-        donationModeValue: options.donationModeValue || '',
-        logisticsSettings: analyzerContext.logisticsSettings,
       });
     } finally {
       if (activeSaveRequestRef.current === saveRequestId) {
@@ -989,17 +1066,13 @@ export const useDonorHairSubmission = ({ userId, databaseUserId = null }) => {
     logAppEvent('donor_hair_submission.save', 'Hair check save completed in hook.', {
       userId,
       saveRequestId,
-      submissionId: result.submission?.submission_id || null,
+      screeningId: result.screening?.ai_screening_id || null,
     });
 
-    setSuccessMessage(
-      result.submission?.donation_reference
-        ? `Hair check saved. Attach the QR label for ${result.submission.donation_reference} to your parcel before shipment.`
-        : 'Hair check saved successfully. Your AI result is now added to your hair log.'
-    );
+    setSuccessMessage('Hair check saved successfully. Your AI result is now added to your hair log.');
     setPhotos(createEmptyPhotoSlots());
     setAnalysis(null);
-    return { success: true, submission: result.submission };
+    return { success: true, screening: result.screening };
   };
 
   const resetFlow = () => {
@@ -1032,6 +1105,8 @@ export const useDonorHairSubmission = ({ userId, databaseUserId = null }) => {
     progressLabel,
     pickPhotoForSlot,
     capturePhotoForSlot,
+    preparePhotoAssetForAnalysis: normalizeAssetForHairAnalysis,
+    preparePhotoAssetForValidation: prepareAssetForHairValidation,
     savePhotoAssetForSlot,
     removePhoto,
     analyzePhotos,

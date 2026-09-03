@@ -14,7 +14,7 @@ import { EmptyDataState } from '../../src/components/ui/EmptyDataState';
 import { DonivraLoadingOverlay } from '../../src/components/ui/DonivraLoadingOverlay';
 import { donorDashboardNavItems } from '../../src/constants/dashboard';
 import {
-  fetchHairSubmissionsByUserId,
+  fetchAiScreeningsByUserId,
   fetchLatestDonationRequirement,
 } from '../../src/features/hairSubmission.api';
 import { evaluateAiDonationEligibility } from '../../src/features/donorDonations.service';
@@ -26,7 +26,6 @@ import { buildProfileCompletionMeta } from '../../src/features/profile/services/
 import {
   getCanonicalHairAssessment,
   getHairScreeningMood,
-  getScreeningEntriesNewestFirst,
 } from '../../src/features/hairScreeningPresentation';
 import { useNotifications } from '../../src/hooks/useNotifications';
 import { useAuth } from '../../src/providers/AuthProvider';
@@ -325,11 +324,12 @@ function HairAnalysisHomeModule() {
   const roles = resolveThemeRoles(resolvedTheme);
   const locale = language === 'fil' ? 'fil-PH' : 'en-US';
   const cachedHome = getCachedHairAnalysisHomeData(user?.id);
-  const cacheMatchesUser = Boolean(cachedHome);
-  const submissionsRef = React.useRef(cachedHome?.submissions || []);
+  const cachedScreenings = Array.isArray(cachedHome?.screenings) ? cachedHome.screenings : [];
+  const cacheMatchesUser = Boolean(cachedHome && Array.isArray(cachedHome?.screenings));
+  const screeningsRef = React.useRef(cachedScreenings);
   const [isLoading, setIsLoading] = React.useState(!cacheMatchesUser);
   const [error, setError] = React.useState('');
-  const [submissions, setSubmissions] = React.useState(cachedHome?.submissions || []);
+  const [screenings, setScreenings] = React.useState(cachedScreenings);
   const [donationRequirement, setDonationRequirement] = React.useState(cachedHome?.donationRequirement || null);
   const [isFirstCheckPromptVisible, setIsFirstCheckPromptVisible] = React.useState(false);
   const [isProfileCompletionPromptVisible, setIsProfileCompletionPromptVisible] = React.useState(false);
@@ -383,15 +383,15 @@ function HairAnalysisHomeModule() {
     analysisLoadRequestRef.current = requestId;
 
     if (!user?.id) {
-      setSubmissions([]);
+      setScreenings([]);
       setIsLoading(false);
       return;
     }
 
-    if (!submissionsRef.current.length) setIsLoading(true);
+    if (!screeningsRef.current.length) setIsLoading(true);
     setError('');
     const [result, requirementResult] = await Promise.all([
-      fetchHairSubmissionsByUserId(user.id, 30),
+      fetchAiScreeningsByUserId(profile?.user_id || user.id, 30),
       fetchLatestDonationRequirement(),
     ]);
 
@@ -399,16 +399,28 @@ function HairAnalysisHomeModule() {
 
     if (result.error) {
       setError(result.error.message || 'Could not load hair analysis history.');
+      if (!Array.isArray(result.data)) {
+        setDonationRequirement(requirementResult.data || null);
+        setIsLoading(false);
+        return;
+      }
     }
 
-    const normalized = Array.isArray(result.data) ? result.data : [];
+    const normalized = (Array.isArray(result.data) ? result.data : [])
+      .sort((left, right) => {
+        const timeDifference = new Date(right?.created_at || 0).getTime()
+          - new Date(left?.created_at || 0).getTime();
+        if (timeDifference) return timeDifference;
+        return Number(right?.ai_screening_id || 0) - Number(left?.ai_screening_id || 0);
+      })
+      .map((screening) => ({ ...screening, submission: null }));
     const nextDonationRequirement = requirementResult.data || null;
-    setCachedHairAnalysisHomeData(user.id, { submissions: normalized, donationRequirement: nextDonationRequirement });
-    submissionsRef.current = normalized;
-    setSubmissions(normalized);
+    setCachedHairAnalysisHomeData(user.id, { screenings: normalized, donationRequirement: nextDonationRequirement });
+    screeningsRef.current = normalized;
+    setScreenings(normalized);
     setDonationRequirement(nextDonationRequirement);
     setIsLoading(false);
-  }, [user?.id]);
+  }, [profile?.user_id, user?.id]);
 
   useFocusEffect(
     React.useCallback(() => {
@@ -418,13 +430,6 @@ function HairAnalysisHomeModule() {
       };
     }, [loadAnalysisHomeData])
   );
-
-  const screenings = React.useMemo(() => (
-    getScreeningEntriesNewestFirst(submissions).map(({ submission, screening }) => ({
-      ...screening,
-      submission,
-    }))
-  ), [submissions]);
 
   const latestScreening = screenings[0] || null;
   const latestEligibility = React.useMemo(() => {

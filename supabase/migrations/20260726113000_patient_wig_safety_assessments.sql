@@ -23,12 +23,9 @@ create table if not exists public.patient_wig_safety_assessments (
   constraint patient_wig_safety_assessments_review_status_check
     check (review_status in ('Pending', 'Cleared', 'Needs Clarification', 'Requires Medical Clearance'))
 );
-
 alter table public.patient_wig_safety_assessments enable row level security;
-
 grant select, insert, update on public.patient_wig_safety_assessments to authenticated;
 grant usage, select on sequence public.patient_wig_safety_assessments_assessment_id_seq to authenticated;
-
 drop policy if exists "patients_read_own_wig_safety_assessment" on public.patient_wig_safety_assessments;
 create policy "patients_read_own_wig_safety_assessment"
 on public.patient_wig_safety_assessments
@@ -43,7 +40,6 @@ using (
       and p."User_ID" = public.current_app_user_id()
   )
 );
-
 drop policy if exists "patients_insert_own_wig_safety_assessment" on public.patient_wig_safety_assessments;
 create policy "patients_insert_own_wig_safety_assessment"
 on public.patient_wig_safety_assessments
@@ -60,7 +56,6 @@ with check (
       and p."User_ID" = public.current_app_user_id()
   )
 );
-
 drop policy if exists "patients_update_own_pending_wig_safety_assessment" on public.patient_wig_safety_assessments;
 create policy "patients_update_own_pending_wig_safety_assessment"
 on public.patient_wig_safety_assessments
@@ -87,7 +82,6 @@ with check (
       and p."User_ID" = public.current_app_user_id()
   )
 );
-
 drop policy if exists "staff_review_wig_safety_assessments" on public.patient_wig_safety_assessments;
 create policy "staff_review_wig_safety_assessments"
 on public.patient_wig_safety_assessments

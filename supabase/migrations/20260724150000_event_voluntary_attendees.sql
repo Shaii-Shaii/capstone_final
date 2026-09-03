@@ -3,19 +3,15 @@
 
 alter table public."Event_Attendees"
 add column if not exists "Attendee_Type" text not null default 'Donor';
-
 alter table public."Event_Attendees"
 drop constraint if exists "Event_Attendees_Attendee_Type_check";
-
 alter table public."Event_Attendees"
 add constraint "Event_Attendees_Attendee_Type_check"
 check ("Attendee_Type" in ('Donor', 'Voluntary'));
-
 update public."Event_Attendees"
 set "Attendee_Type" = 'Donor'
 where "Attendee_Type" is null
    or "Attendee_Type" not in ('Donor', 'Voluntary');
-
 create or replace function public.ensure_event_donation_records_after_rsvp()
 returns trigger
 language plpgsql
@@ -256,14 +252,12 @@ begin
   return new;
 end;
 $$;
-
 drop trigger if exists trg_ensure_event_donation_records_after_rsvp on public."Event_Attendees";
 create trigger trg_ensure_event_donation_records_after_rsvp
 after insert or update of "Registration_Status", "User_ID", "Event_Request_ID", "Attendee_Type"
 on public."Event_Attendees"
 for each row
 execute function public.ensure_event_donation_records_after_rsvp();
-
 create or replace function public.issue_event_certificate_after_rsvp_scan()
 returns trigger
 language plpgsql

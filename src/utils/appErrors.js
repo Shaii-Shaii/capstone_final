@@ -32,11 +32,15 @@ const shouldWriteConsoleLog = (level = 'info') => {
 };
 
 const writeConsoleLog = (level, scope, message, extras = {}, error = undefined) => {
-  if (!shouldWriteConsoleLog(level)) {
+  const normalizedLevel = LOG_LEVEL_PRIORITY[level] ? level : 'info';
+
+  if (!shouldWriteConsoleLog(normalizedLevel)) {
     return;
   }
 
-  const logger = typeof console?.[level] === 'function' ? console[level] : console.log;
+  const logger = typeof console?.[normalizedLevel] === 'function'
+    ? console[normalizedLevel]
+    : console.log;
   logger(`[${scope}] ${message}`, {
     timestamp: new Date().toISOString(),
     scope,

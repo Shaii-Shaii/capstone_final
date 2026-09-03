@@ -29,7 +29,7 @@ import {
 } from '../../../src/features/donorHome.api';
 import {
   buildDriveInvitationQrPayload,
-  getDonorDonationsModuleData,
+  getDonorEventParticipationData,
   isDonationParticipantRegistration,
 } from '../../../src/features/donorDonations.service';
 import { DONOR_PERMISSION_REASONS } from '../../../src/features/donorCompliance.service';
@@ -700,10 +700,10 @@ export default function DonorDriveDetailRoute() {
 
     const [driveResult, donationModuleResult] = await Promise.all([
       fetchDonationDriveDetail(numericDriveId, profile?.user_id || null),
-      getDonorDonationsModuleData({
+      getDonorEventParticipationData({
         userId: user?.id || null,
         databaseUserId: profile?.user_id || null,
-        driveLimit: 8,
+        driveId: numericDriveId,
       }),
       loadRegistrationCount(),
     ]);

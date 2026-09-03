@@ -17,7 +17,6 @@ import { AppCard } from '../ui/AppCard';
 import { AppIcon } from '../ui/AppIcon';
 import { SectionTitleRow } from '../ui/SectionTitleRow';
 import {
-  fetchDonorRecommendationsBySubmissionId,
   getHairSubmissionImageSignedUrl,
 } from '../../features/hairSubmission.api';
 import { resolveThemeRoles, theme } from '../../design-system/theme';
@@ -404,13 +403,6 @@ export function HairLogDetailModal({
     if (savedRecommendations.length) {
       setRecommendations(filterDisplayRecommendations(savedRecommendations, activeEntry.screening));
       setIsLoadingRecommendations(false);
-    } else if (activeEntry.submission?.submission_id) {
-      setIsLoadingRecommendations(true);
-      fetchDonorRecommendationsBySubmissionId(activeEntry.submission.submission_id, 5).then((result) => {
-        if (isCancelled) return;
-        setRecommendations(filterDisplayRecommendations(result.data || [], activeEntry.screening));
-        setIsLoadingRecommendations(false);
-      });
     } else {
       setRecommendations([]);
       setIsLoadingRecommendations(false);

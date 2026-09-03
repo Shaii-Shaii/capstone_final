@@ -23,10 +23,9 @@ import { SectionTitleRow } from '../../src/components/ui/SectionTitleRow';
 import { StatusBanner } from '../../src/components/ui/StatusBanner';
 import { donorDashboardNavItems } from '../../src/constants/dashboard';
 import {
-  ensureCertificatesForScannedEventDonations,
   fetchDonationCertificatesByUserId,
   fetchDonorPatientImpactByBundleIds,
-  fetchHairSubmissionsByUserId,
+  fetchHairSubmissionCertificateRecordsByIds,
   isCompletedDonationSubmission,
 } from '../../src/features/hairSubmission.api';
 import { fetchOrganizationPreview } from '../../src/features/donorHome.api';
@@ -529,11 +528,11 @@ export default function DonorAchievementsScreen() {
 
       setState((current) => ({ ...current, isLoading: true, error: '' }));
 
-      await ensureCertificatesForScannedEventDonations(user.id, 24);
-      const [certificateResult, submissionsResult] = await Promise.all([
-        fetchDonationCertificatesByUserId(user.id, 24),
-        fetchHairSubmissionsByUserId(user.id, 24),
-      ]);
+      const certificateResult = await fetchDonationCertificatesByUserId(user.id, 24);
+      const certificateSubmissionIds = (certificateResult.data || [])
+        .map((certificate) => certificate?.submission_id)
+        .filter(Boolean);
+      const submissionsResult = await fetchHairSubmissionCertificateRecordsByIds(certificateSubmissionIds);
 
       if (cancelled) return;
 

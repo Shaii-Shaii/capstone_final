@@ -19,6 +19,8 @@ import {
     createHairSubmissionDetail,
     createHairSubmissionImages,
     createHairSubmissionLogistics,
+    fetchHairSubmissionForEventByUserId,
+    fetchLatestEligibleAiScreeningByUserId,
     updateHairSubmissionById,
     uploadHairSubmissionImage,
 } from './hairSubmission.api';
@@ -101,18 +103,34 @@ export const submitDonation = async ({
       throw new Error('Missing required donation information');
     }
 
-    // Create hair submission record
-    const submissionResult = await createHairSubmission({
-      user_id: userId,
-      donation_drive_id: driveId,
-      donation_reference: null,
-      donation_source: sourceType,
-      donor_notes: `Donation from logistics flow - ${donationDetails.hairLengthValue}${donationDetails.hairLengthUnit}`,
-      status: 'Pending',
-    });
+    const screeningResult = await fetchLatestEligibleAiScreeningByUserId(userId);
+    if (screeningResult.error || !screeningResult.data?.ai_screening_id) {
+      throw screeningResult.error || new Error('Pass Hair Analysis before starting a donation.');
+    }
+
+    // Event submissions are created by the database only after staff check-in.
+    // Logistics submissions begin here because this action confirms the method.
+    const submissionResult = driveId
+      ? await fetchHairSubmissionForEventByUserId({
+          userId,
+          eventRequestId: driveId,
+        })
+      : await createHairSubmission({
+          user_id: userId,
+          ai_screening_id: screeningResult.data.ai_screening_id,
+          donation_drive_id: null,
+          donation_reference: null,
+          donation_source: sourceType,
+          donor_notes: `Donation from logistics flow - ${donationDetails.hairLengthValue}${donationDetails.hairLengthUnit}`,
+          status: 'Pending',
+        });
 
     if (submissionResult.error || !submissionResult.data?.submission_id) {
-      throw submissionResult.error || new Error('Unable to create donation submission');
+      throw submissionResult.error || new Error(
+        driveId
+          ? 'Event donation starts only after staff checks in the donor as present.'
+          : 'Unable to create donation submission'
+      );
     }
 
     const createdSubmission = submissionResult.data;
@@ -193,16 +211,27 @@ export const submitDonation = async ({
       }
     }
 
-    // Create hair submission logistics record linked to the created submission
-    const logisticsData = {
-      submission_id: createdSubmission.submission_id,
-      logistics_type: 'shipping',
-      shipment_status: 'Pending',
-      notes: `Donation submitted via logistics flow. QR attached.`,
-    };
+    // Event donations already happen at the event and must never receive a
+    // logistics extension. Independent donations keep exactly one child row.
+    const logisticsRecord = driveId
+      ? { data: null, error: null }
+      : await createHairSubmissionLogistics({
+          submission_id: createdSubmission.submission_id,
+          logistics_type: 'Courier',
+          shipment_status: 'Pending',
+          notes: 'Donation submitted via logistics flow. QR attached.',
+        });
 
-    const logisticsRecord = await createHairSubmissionLogistics(logisticsData);
-    logAppEvent('donation_logistics', 'Logistics record created', { donationReference, logisticsId: logisticsRecord.data?.submission_logistics_id });
+    if (logisticsRecord.error) {
+      throw logisticsRecord.error;
+    }
+
+    if (logisticsRecord.data) {
+      logAppEvent('donation_logistics', 'Logistics record saved', {
+        donationReference,
+        logisticsId: logisticsRecord.data.submission_logistics_id,
+      });
+    }
 
     // Create bundle tracking entry
     try {

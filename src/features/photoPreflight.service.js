@@ -13,30 +13,6 @@ const normalizeViewKey = (view = {}) => (
     .toLowerCase()
 );
 
-const normalizeViewLabel = (value = '') => {
-  const normalized = String(value || '').trim().toLowerCase();
-  if (!normalized) return '';
-  if (normalized.includes('back hair') || normalized.includes('back view') || normalized === 'back' || normalized.includes('back')) {
-    return 'Back Hair Photo';
-  }
-  if (normalized.includes('hair ends') || normalized.includes('ends close')) {
-    return 'Hair Ends Close-Up';
-  }
-  if (normalized.includes('hair scalp') || normalized.includes('scalp') || normalized.includes('crown')) {
-    return 'Hair Scalp';
-  }
-  if (normalized.includes('front view') || normalized === 'front' || normalized.includes('front')) {
-    return 'Front View Photo';
-  }
-  if (normalized.includes('right side') || normalized.includes('right_side')) {
-    return 'Right Side Photo';
-  }
-  if (normalized.includes('side profile') || normalized.includes('side view') || normalized.includes('left side') || normalized.includes('right side') || normalized.includes('side')) {
-    return 'Side Profile Photo';
-  }
-  return String(value || '').trim();
-};
-
 const hasImagePayload = (photo = null) => Boolean(
   photo?.uri
   && (photo?.dataUrl || photo?.base64 || photo?.file)
@@ -51,10 +27,6 @@ const buildMissingPhotoDetails = ({ photos = [], requiredViews = [] } = {}) => (
     .filter((item) => item.error)
 );
 
-const hasCanonicalView = (photos = [], canonicalLabel = '') => photos.some((photo) => (
-  normalizeViewLabel(photo?.viewLabel || photo?.viewKey) === canonicalLabel
-));
-
 const hasRequiredViewSet = (requiredViews = []) => {
   const keys = requiredViews.map(normalizeViewKey);
   return (
@@ -67,11 +39,12 @@ const hasRequiredViewSet = (requiredViews = []) => {
 const buildValidationPayloadImages = ({ photos = [], requiredViews = [] } = {}) => (
   photos
     .map((photo, index) => {
-      if (!photo?.dataUrl) return null;
+      const validationDataUrl = photo?.validationDataUrl || photo?.dataUrl;
+      if (!validationDataUrl) return null;
       const view = requiredViews[index] || {};
       return {
-        dataUrl: photo.dataUrl,
-        mimeType: photo.mimeType || 'image/jpeg',
+        dataUrl: validationDataUrl,
+        mimeType: photo.validationMimeType || photo.mimeType || 'image/jpeg',
         viewKey: photo.viewKey || view?.key || `view_${index + 1}`,
         viewLabel: photo.viewLabel || view?.label || `Photo ${index + 1}`,
       };
@@ -87,42 +60,43 @@ const buildRemoteValidationDetails = (failedViews = [], reason = '') => {
   }));
 };
 
-const isSoftCrossViewMismatchReason = (reason = '') => {
-  const normalized = String(reason || '').toLowerCase();
-  return (
-    normalized.includes('views do not match')
-    || normalized.includes('hair views do not match')
-    || normalized.includes('front view are inconsistent')
-    || normalized.includes('front and side')
-    || normalized.includes('side profile and front')
-    || normalized.includes('inconsistent')
-  ) && !(
-    normalized.includes('different person')
-    || normalized.includes('different people')
-    || normalized.includes('unrelated')
-    || normalized.includes('stock')
-    || normalized.includes('watermark')
-    || normalized.includes('downloaded')
-    || normalized.includes('wig')
-    || normalized.includes('extension')
-    || normalized.includes('hairpiece')
-    || normalized.includes('accessor')
-    || normalized.includes('headband')
-    || normalized.includes('clip')
-  );
-};
+const normalizeRemoteAccessoryFindings = (value = []) => (
+  Array.isArray(value)
+    ? value.map((finding) => ({
+        viewLabel: String(finding?.view_label || '').trim(),
+        accessory: String(finding?.accessory || '').trim(),
+        blocksRequiredHair: finding?.blocks_required_hair === true,
+        accepted: finding?.accepted === true || finding?.blocks_required_hair === false,
+        note: String(finding?.note || '').trim(),
+      })).filter((finding) => finding.viewLabel && finding.accessory)
+    : []
+);
 
-const isInternalValidationReason = (reason = '') => {
-  const normalized = String(reason || '').toLowerCase();
-  return (
-    normalized.includes('incomplete json')
-    || normalized.includes('invalid json')
-    || normalized.includes('json input')
-    || normalized.includes('json schema')
-    || normalized.includes('schema')
-    || normalized.includes('provider')
-    || normalized.includes('api')
-  );
+const normalizeRemotePerViewChecks = (value = []) => (
+  Array.isArray(value)
+    ? value.map((check) => ({
+        viewLabel: String(check?.view_label || '').trim(),
+        viewCorrect: check?.view_correct === true,
+        observedPose: String(check?.observed_pose || '').trim().toLowerCase(),
+        poseCorrect: check?.pose_correct === true,
+        sameSubjectStatus: String(check?.same_subject_status || '').trim().toLowerCase(),
+        confidence: Number(check?.confidence || 0),
+        note: String(check?.note || '').trim(),
+      })).filter((check) => check.viewLabel)
+    : []
+);
+
+const buildPerViewValidationDetails = ({ failedViews = [], perViewChecks = [], reason = '' } = {}) => {
+  const failedViewSet = new Set((Array.isArray(failedViews) ? failedViews : []).map((view) => String(view || '').trim()));
+  const detailedFailures = perViewChecks
+    .filter((check) => failedViewSet.has(check.viewLabel) || !check.viewCorrect || check.sameSubjectStatus === 'mismatch')
+    .map((check) => ({
+      viewLabel: check.viewLabel,
+      error: check.note || reason || 'This photo needs another check.',
+    }));
+
+  if (detailedFailures.length) return detailedFailures;
+  return buildRemoteValidationDetails([...failedViewSet], reason);
 };
 
 const toMillis = (value) => {
@@ -143,6 +117,13 @@ const buildQuickImageFingerprint = (photo = null) => {
   const head = base64.slice(0, 48);
   const tail = base64.slice(-48);
   return `${base64.length}:${head}:${tail}`;
+};
+
+const getCapturedYawAngle = (photo = null) => {
+  const value = photo?.photoValidation?.yawAngle;
+  if (value === null || value === undefined || value === '') return null;
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? numericValue : null;
 };
 
 const evaluateFraudRiskSignals = ({ photos = [], requiredViews = [] } = {}) => {
@@ -201,6 +182,37 @@ const evaluateFraudRiskSignals = ({ photos = [], requiredViews = [] } = {}) => {
     details.push({ viewLabel: 'Duplicate', error: 'Duplicate photo detected across required views.' });
   }
 
+  const leftSideIndex = requiredViews.findIndex((view) => {
+    const key = String(view?.key || '').trim().toLowerCase();
+    const label = String(view?.label || '').trim().toLowerCase();
+    return key === 'side_profile' || (label.includes('left') && label.includes('side'));
+  });
+  const rightSideIndex = requiredViews.findIndex((view) => {
+    const key = String(view?.key || '').trim().toLowerCase();
+    const label = String(view?.label || '').trim().toLowerCase();
+    return key === 'right_side_profile' || (label.includes('right') && label.includes('side'));
+  });
+  const leftYaw = leftSideIndex >= 0 ? getCapturedYawAngle(photos[leftSideIndex]) : null;
+  const rightYaw = rightSideIndex >= 0 ? getCapturedYawAngle(photos[rightSideIndex]) : null;
+  if (leftYaw !== null && rightYaw !== null) {
+    const hasClearTurns = Math.abs(leftYaw) >= 18 && Math.abs(rightYaw) >= 18;
+    const showsOppositeDirections = leftYaw * rightYaw < 0;
+    if (!hasClearTurns || !showsOppositeDirections) {
+      riskScore += 60;
+      const error = !hasClearTurns
+        ? 'Turn farther to the requested side, then retake this photo.'
+        : 'The left and right photos show the same head-turn direction. Retake this side.';
+      details.push({
+        viewLabel: requiredViews[leftSideIndex]?.label || 'Left Side Photo',
+        error,
+      });
+      details.push({
+        viewLabel: requiredViews[rightSideIndex]?.label || 'Right Side Photo',
+        error,
+      });
+    }
+  }
+
   const riskLevel = riskScore >= 60 ? 'high' : riskScore >= 25 ? 'medium' : 'low';
   return { riskScore, riskLevel, details };
 };
@@ -225,14 +237,19 @@ const runCrossViewPhotoValidation = async ({ photos = [], requiredViews = [] } =
 
   if (result.error) {
     return {
-      ok: true,
+      ok: false,
       skipped: false,
-      hardBlock: false,
-      title: 'Photos Ready',
-      message: 'Photo check will continue in the full analysis.',
+      hardBlock: true,
+      retryable: true,
+      title: 'Photo Check Temporarily Unavailable',
+      message: 'We could not verify your photos right now. Your photos are still here, so please try the photo check again shortly.',
       details: [],
-      validationMode: 'remote_cross_view_unavailable_pass',
+      validationMode: 'remote_cross_view_unavailable_block',
       validationWarning: toSafeMessage(result.error, 'Remote photo match check unavailable.'),
+      accessoriesDetected: null,
+      hairAuthenticityStatus: 'unclear',
+      visualScreeningCompleted: false,
+      verificationToken: null,
     };
   }
 
@@ -258,58 +275,48 @@ const runCrossViewPhotoValidation = async ({ photos = [], requiredViews = [] } =
   const appearanceFlags = Array.isArray(validation.appearance_flags)
     ? validation.appearance_flags.map((flag) => String(flag || '').trim()).filter(Boolean)
     : [];
+  const accessoryFindings = normalizeRemoteAccessoryFindings(validation.accessory_findings);
+  const allowedAccessories = normalizeRemoteAccessoryFindings(validation.allowed_accessories)
+    .filter((finding) => finding.accepted && !finding.blocksRequiredHair);
+  const perViewChecks = normalizeRemotePerViewChecks(validation.per_view_checks);
+  const sameSubjectVerified = validation.same_subject_verified === true;
+  const differentFacesDetected = validation.different_faces_detected === true;
+  const faceMismatchViews = Array.isArray(validation.face_mismatch_views)
+    ? validation.face_mismatch_views.map((view) => String(view || '').trim()).filter(Boolean)
+    : [];
   const hasArtificialHairConcern = hairAuthenticityStatus === 'possible_wig_or_extensions';
+  const verificationToken = typeof result.data?.verification_token === 'string'
+    ? result.data.verification_token.trim()
+    : '';
   const isAcceptable = validation.is_acceptable === true
-    && accessoriesDetected !== true
-    && !hasArtificialHairConcern;
+    && visualScreeningCompleted
+    && accessoriesDetected === false
+    && hairAuthenticityStatus === 'likely_natural'
+    && sameSubjectVerified
+    && Boolean(verificationToken);
   const visualConcernReason = accessoriesDetected === true
     ? toSafeMessage(validation.accessory_notes, 'Remove accessories or objects blocking the hair, then retake the affected views.')
     : hasArtificialHairConcern
       ? toSafeMessage(validation.hair_authenticity_notes, 'Possible wig, hairpiece, or extensions detected. Retake with the natural hairline and roots clearly visible.')
       : '';
-  const reason = visualConcernReason || toSafeMessage(validation.reason, isAcceptable
-    ? 'Ready for analysis.'
-    : 'Photos must show the same person and same current hair.');
+  const reason = visualConcernReason || (!visualScreeningCompleted
+    ? 'We could not finish checking these photos. Please try the photo check again before analysis.'
+    : hairAuthenticityStatus === 'unclear'
+      ? 'The natural hairline and roots are not clear enough to verify. Remove any head covering or obstruction, then retake the affected views.'
+      : !verificationToken && validation.is_acceptable === true
+        ? 'Photo verification could not be secured. Please run the photo check again.'
+        : toSafeMessage(validation.reason, isAcceptable
+          ? 'Ready for analysis.'
+          : 'Photos must show the same person and same current hair.'));
   const failedViews = Array.isArray(validation.failed_views)
     ? validation.failed_views
     : [];
   const resolvedFailedViews = failedViews.length || !visualConcernReason
     ? failedViews
     : ['Photo set'];
-
-  if (!isAcceptable && isInternalValidationReason(reason)) {
-    return {
-      ok: true,
-      skipped: false,
-      hardBlock: false,
-      title: 'Photos Ready',
-      message: 'Photo check will continue in the full analysis.',
-      details: [],
-      validationMode: 'remote_cross_view_internal_pass',
-      validationWarning: reason,
-      accessoriesDetected,
-      hairAuthenticityStatus,
-      appearanceFlags,
-      visualScreeningCompleted,
-    };
-  }
-
-  if (!isAcceptable && isSoftCrossViewMismatchReason(reason)) {
-    return {
-      ok: true,
-      skipped: false,
-      hardBlock: false,
-      title: 'Photos Ready',
-      message: 'Photo check passed. The full analysis will verify the hair details.',
-      details: [],
-      validationMode: 'remote_cross_view_soft_pass',
-      validationWarning: reason,
-      accessoriesDetected,
-      hairAuthenticityStatus,
-      appearanceFlags,
-      visualScreeningCompleted,
-    };
-  }
+  const retryable = validation.retryable === true
+    || !visualScreeningCompleted
+    || (!verificationToken && validation.is_acceptable === true);
 
   return {
     ok: isAcceptable,
@@ -317,20 +324,35 @@ const runCrossViewPhotoValidation = async ({ photos = [], requiredViews = [] } =
     hardBlock: !isAcceptable,
     title: isAcceptable
       ? 'Photos Ready'
-      : accessoriesDetected === true
-        ? 'Remove Hair Accessories'
-        : hasArtificialHairConcern
-          ? 'Hair Verification Needed'
-          : 'Photos Do Not Match',
+      : retryable
+        ? 'Photo Check Needs Retry'
+        : accessoriesDetected === true
+          ? 'Remove Hair Accessories'
+          : hasArtificialHairConcern || hairAuthenticityStatus === 'unclear'
+            ? 'Hair Verification Needed'
+            : 'Photos Do Not Match',
     message: isAcceptable ? 'Ready for analysis.' : reason,
-    details: isAcceptable ? [] : buildRemoteValidationDetails(resolvedFailedViews, reason),
+    details: isAcceptable ? [] : buildPerViewValidationDetails({
+      failedViews: resolvedFailedViews,
+      perViewChecks,
+      reason,
+    }),
     validationMode: 'remote_cross_view',
     accessoriesDetected,
     accessoryNotes: toSafeMessage(validation.accessory_notes),
+    accessoryFindings,
+    allowedAccessories,
     hairAuthenticityStatus,
     hairAuthenticityNotes: toSafeMessage(validation.hair_authenticity_notes),
     appearanceFlags,
+    perViewChecks,
+    sameSubjectVerified,
+    differentFacesDetected,
+    faceMismatchViews,
+    faceComparisonStatus: String(result.data?.face_comparison?.status || '').trim().toLowerCase(),
     visualScreeningCompleted,
+    verificationToken: isAcceptable ? verificationToken : null,
+    retryable,
   };
 };
 
@@ -364,24 +386,6 @@ export const validateHairPhotosBeforeAnalysis = async ({ photos = [], requiredVi
 
   const crossViewResult = await runCrossViewPhotoValidation({ photos, requiredViews });
   if (!crossViewResult?.ok) {
-    const failedViewLabels = Array.isArray(crossViewResult?.details)
-      ? crossViewResult.details.map((detail) => normalizeViewLabel(detail?.viewLabel || '')).filter(Boolean)
-      : [];
-    const scalpOnlyFailure = failedViewLabels.length === 1 && failedViewLabels[0] === 'Hair Scalp';
-    const hasAppearanceConcern = crossViewResult?.accessoriesDetected === true
-      || crossViewResult?.hairAuthenticityStatus === 'possible_wig_or_extensions';
-    if (scalpOnlyFailure && !hasAppearanceConcern && hasCanonicalView(photos, 'Hair Scalp')) {
-      return {
-        ok: true,
-        skipped: false,
-        hardBlock: false,
-        title: 'Photos Ready',
-        message: 'Photo check passed. The full hair analysis will verify these photos.',
-        details: [],
-        validationMode: 'local_scalp_soft_pass',
-        validationWarning: crossViewResult?.message || 'Hair Scalp view was not clearly recognized.',
-      };
-    }
     return crossViewResult;
   }
 

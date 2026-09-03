@@ -13,7 +13,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import Svg, { Path } from 'react-native-svg';
 import { AppIcon } from './AppIcon';
-import { theme, resolveThemeRoles } from '../../design-system/theme';
+import { theme, resolvePatientThemeRoles, resolveThemeRoles } from '../../design-system/theme';
 import { useAuth } from '../../providers/AuthProvider';
 import { useLanguage } from '../../providers/LanguageProvider';
 import { donorDashboardNavItems } from '../../constants/dashboard';
@@ -79,10 +79,7 @@ function buildLiquidPillPath(width, height, notchCenterX = null) {
   return path.join(' ');
 }
 
-function DashboardTabItem({ item, isActive, onPress }) {
-  const { resolvedTheme } = useAuth();
-  const roles = resolveThemeRoles(resolvedTheme);
-
+function DashboardTabItem({ item, isActive, onPress, roles }) {
   const progress = useSharedValue(isActive ? 1 : 0);
   const pressScale = useSharedValue(1);
 
@@ -159,9 +156,7 @@ function DashboardTabItem({ item, isActive, onPress }) {
   );
 }
 
-function FloatingActiveBubble({ item, activeCenterX }) {
-  const { resolvedTheme } = useAuth();
-  const roles = resolveThemeRoles(resolvedTheme);
+function FloatingActiveBubble({ item, activeCenterX, roles }) {
   const liquidPulse = useSharedValue(1);
 
   React.useEffect(() => {
@@ -232,7 +227,9 @@ function FloatingActiveBubble({ item, activeCenterX }) {
 function DashboardTabBarComponent({ items, activeKey, onPress, variant = 'donor' }) {
   const { resolvedTheme } = useAuth();
   const { t } = useLanguage();
-  const roles = resolveThemeRoles(resolvedTheme);
+  const baseRoles = resolveThemeRoles(resolvedTheme);
+  const isPatientNav = variant === 'patient';
+  const roles = isPatientNav ? resolvePatientThemeRoles(resolvedTheme) : baseRoles;
   const insets = useSafeAreaInsets();
   const { width: screenWidth } = useWindowDimensions();
   const pressLockRef = React.useRef(false);
@@ -271,7 +268,6 @@ function DashboardTabBarComponent({ items, activeKey, onPress, variant = 'donor'
     d: buildLiquidPillPath(pillWidth, DASHBOARD_TAB_BAR_HEIGHT, activeCenterXProgress.value),
   }), [pillWidth]);
   const safeBottom = Math.max(insets.bottom, 0);
-  const isPatientNav = variant === 'patient';
   const bottomOffset = isPatientNav ? -safeBottom + theme.spacing.xs : safeBottom + theme.spacing.sm;
 
   React.useEffect(() => {
@@ -314,12 +310,13 @@ function DashboardTabBarComponent({ items, activeKey, onPress, variant = 'donor'
       </Svg>
 
       <View style={styles.pillOverlay}>
-        <FloatingActiveBubble item={activeItem} activeCenterX={activeCenterXProgress} />
+        <FloatingActiveBubble item={activeItem} activeCenterX={activeCenterXProgress} roles={roles} />
         {displayItems.map((item) => (
           <DashboardTabItem
             key={item.key}
             item={item}
             isActive={item.key === activeKey}
+            roles={roles}
             onPress={(pressedItem) => {
               if (pressLockRef.current) return;
               pressLockRef.current = true;

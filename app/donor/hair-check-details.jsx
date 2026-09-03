@@ -5,7 +5,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { HairLogDetailModal } from '../../src/components/hair/HairLogDetailModal';
 import { DonorTopBar } from '../../src/components/donor/DonorTopBar';
 import { DashboardHeaderSurface } from '../../src/components/layout/DashboardHeaderSurface';
-import { fetchHairSubmissionsByUserId, fetchLatestDonationRequirement } from '../../src/features/hairSubmission.api';
+import { fetchHairScreeningEntryById, fetchLatestDonationRequirement } from '../../src/features/hairSubmission.api';
 import { useNotifications } from '../../src/hooks/useNotifications';
 import { useAuth } from '../../src/providers/AuthProvider';
 import { resolveThemeRoles, theme } from '../../src/design-system/theme';
@@ -45,27 +45,14 @@ export default function DonorHairCheckDetailsScreen() {
       }
 
       const [result, requirementResult] = await Promise.all([
-        fetchHairSubmissionsByUserId(user.id, 30),
+        fetchHairScreeningEntryById({ userId: user.id, screeningId }),
         fetchLatestDonationRequirement(),
       ]);
       if (!mounted) return;
       setDonationRequirement(requirementResult.data || null);
 
-      const submissions = Array.isArray(result.data) ? result.data : [];
-      for (const submission of submissions) {
-        const screening = (submission.ai_screenings || []).find(
-          (item) => String(item.ai_screening_id || item.id) === String(screeningId)
-        );
-        if (!screening) continue;
-
-        setEntry({
-          screening,
-          submission,
-          recommendations: submission.donor_recommendations?.length
-            ? submission.donor_recommendations
-            : screening.recommendations || screening.analysis_result?.recommendations || [],
-          images: (submission.submission_details || []).flatMap((detail) => detail.images || []),
-        });
+      if (result.data) {
+        setEntry(result.data);
         return;
       }
 

@@ -25,7 +25,6 @@ update public."Hair_Bundle_Tracking_History" hbth
 set "Submission_ID" = deas.keep_submission_id
 from duplicate_event_attendee_submissions deas
 where hbth."Submission_ID" = deas."Submission_ID";
-
 with ranked_event_attendee_submissions as (
   select
     "Submission_ID",
@@ -54,7 +53,6 @@ where dc."Submission_ID" = deas."Submission_ID"
     from public."Donation_Certificates" existing
     where existing."Submission_ID" = deas.keep_submission_id
   );
-
 with ranked_event_attendee_submissions as (
   select
     "Submission_ID",
@@ -83,7 +81,6 @@ where hsl."Submission_ID" = deas."Submission_ID"
     from public."Hair_Submission_Logistics" existing
     where existing."Submission_ID" = deas.keep_submission_id
   );
-
 with ranked_event_attendee_submissions as (
   select
     "Submission_ID",
@@ -112,7 +109,6 @@ where ai."Submission_ID" = deas."Submission_ID"
     from public."AI_Screenings" existing
     where existing."Submission_ID" = deas.keep_submission_id
   );
-
 with ranked_event_attendee_submissions as (
   select
     "Submission_ID",
@@ -136,7 +132,6 @@ update public."Donor_Recommendations" dr
 set "Submission_ID" = deas.keep_submission_id
 from duplicate_event_attendee_submissions deas
 where dr."Submission_ID" = deas."Submission_ID";
-
 with ranked_event_attendee_submissions as (
   select
     "Submission_ID",
@@ -179,7 +174,6 @@ update public."Hair_Submission_Images" hsi
 set "Submission_Detail_ID" = duplicate_details.keep_detail_id
 from duplicate_details
 where hsi."Submission_Detail_ID" = duplicate_details."Submission_Detail_ID";
-
 with ranked_event_attendee_submissions as (
   select
     "Submission_ID",
@@ -218,7 +212,6 @@ set "Submission_ID" = movable_details.keep_submission_id,
     "Updated_At" = timezone('Asia/Manila', now())
 from movable_details
 where hsd."Submission_Detail_ID" = movable_details."Submission_Detail_ID";
-
 with ranked_event_attendee_submissions as (
   select
     "Submission_ID",
@@ -241,7 +234,6 @@ duplicate_event_attendee_submissions as (
 delete from public."AI_Screenings" ai
 using duplicate_event_attendee_submissions deas
 where ai."Submission_ID" = deas."Submission_ID";
-
 with ranked_event_attendee_submissions as (
   select
     "Submission_ID",
@@ -256,7 +248,6 @@ delete from public."Hair_Submission_Details" hsd
 using ranked_event_attendee_submissions reas
 where hsd."Submission_ID" = reas."Submission_ID"
   and reas.rn > 1;
-
 with ranked_event_attendee_submissions as (
   select
     "Submission_ID",
@@ -271,7 +262,6 @@ delete from public."Hair_Submission_Logistics" hsl
 using ranked_event_attendee_submissions reas
 where hsl."Submission_ID" = reas."Submission_ID"
   and reas.rn > 1;
-
 with ranked_event_attendee_submissions as (
   select
     "Submission_ID",
@@ -286,7 +276,6 @@ delete from public."Donation_Certificates" dc
 using ranked_event_attendee_submissions reas
 where dc."Submission_ID" = reas."Submission_ID"
   and reas.rn > 1;
-
 with ranked_event_attendee_submissions as (
   select
     "Submission_ID",
@@ -301,7 +290,6 @@ delete from public."Hair_Submissions" hs
 using ranked_event_attendee_submissions reas
 where hs."Submission_ID" = reas."Submission_ID"
   and reas.rn > 1;
-
 with ranked_details as (
   select
     "Submission_Detail_ID",
@@ -315,10 +303,8 @@ delete from public."Hair_Submission_Details" hsd
 using ranked_details rd
 where hsd."Submission_Detail_ID" = rd."Submission_Detail_ID"
   and rd.rn > 1;
-
 create unique index if not exists uq_hair_submissions_event_attendee
 on public."Hair_Submissions" ("Event_Attendee_ID")
 where "Event_Attendee_ID" is not null;
-
 create unique index if not exists uq_hair_submission_details_submission
 on public."Hair_Submission_Details" ("Submission_ID");

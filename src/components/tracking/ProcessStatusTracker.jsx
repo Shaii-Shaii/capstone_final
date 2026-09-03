@@ -5,7 +5,8 @@ import { AppButton } from '../ui/AppButton';
 import { AppIcon } from '../ui/AppIcon';
 import { DashboardSectionHeader } from '../ui/DashboardSectionHeader';
 import { StatusBanner } from '../ui/StatusBanner';
-import { theme } from '../../design-system/theme';
+import { resolveThemeRoles, theme } from '../../design-system/theme';
+import { useAuth } from '../../providers/AuthProvider';
 
 const SUMMARY_TONE_STYLES = {
   info: {
@@ -53,9 +54,18 @@ const STEP_STATE_STYLES = {
   },
 };
 
-function TrackerStep({ step, isLast, role }) {
-  const palette = STEP_STATE_STYLES[step.state] || STEP_STATE_STYLES.upcoming;
+function TrackerStep({ step, isLast, role, roles }) {
   const isPatient = role === 'patient';
+  const fallbackPalette = STEP_STATE_STYLES[step.state] || STEP_STATE_STYLES.upcoming;
+  const palette = isPatient ? {
+    dotColor: step.state === 'attention' ? theme.colors.textError : roles.primaryActionBackground,
+    lineColor: step.state === 'completed' ? roles.primaryActionBackground : roles.defaultCardBorder,
+    cardBackground: step.state === 'current' || step.state === 'attention'
+      ? roles.iconPrimarySurface
+      : roles.defaultCardBackground,
+    titleColor: step.state === 'upcoming' ? roles.metaText : roles.headingText,
+    bodyColor: step.state === 'attention' ? theme.colors.textError : (step.state === 'upcoming' ? roles.metaText : roles.bodyText),
+  } : fallbackPalette;
   const showDescription = !isPatient || step.state !== 'upcoming';
   const iconName = step.state === 'completed'
     ? 'success'
@@ -64,7 +74,7 @@ function TrackerStep({ step, isLast, role }) {
       : step.state === 'attention'
         ? 'error'
         : 'circle-outline';
-  const iconColor = step.state === 'upcoming' ? theme.colors.textMuted : theme.colors.textInverse;
+  const iconColor = step.state === 'upcoming' ? roles?.metaText || theme.colors.textMuted : roles?.primaryActionText || theme.colors.textInverse;
 
   return (
     <View style={[styles.stepRow, isPatient ? styles.stepRowPatient : null]}>
@@ -74,7 +84,12 @@ function TrackerStep({ step, isLast, role }) {
             styles.stepDot,
             isPatient ? styles.stepDotPatient : null,
             isPatient && step.state === 'upcoming' ? styles.stepDotPatientUpcoming : null,
-            { backgroundColor: isPatient && step.state === 'upcoming' ? theme.colors.surfaceSoft : palette.dotColor },
+            {
+              backgroundColor: isPatient && step.state === 'upcoming'
+                ? roles.defaultCardBackground
+                : palette.dotColor,
+              borderColor: isPatient ? roles.defaultCardBorder : undefined,
+            },
           ]}
         >
           {isPatient ? <AppIcon name={iconName} color={iconColor} size="sm" /> : null}
@@ -84,11 +99,22 @@ function TrackerStep({ step, isLast, role }) {
         ) : null}
       </View>
 
-      <View style={[styles.stepCard, isPatient ? styles.stepCardPatient : null, { backgroundColor: palette.cardBackground }]}>
+      <View style={[
+        styles.stepCard,
+        isPatient ? styles.stepCardPatient : null,
+        {
+          backgroundColor: palette.cardBackground,
+          borderColor: isPatient ? roles.defaultCardBorder : undefined,
+        },
+      ]}>
         <View style={[styles.stepTopRow, isPatient ? styles.stepTopRowPatient : null]}>
           <Text numberOfLines={2} style={[styles.stepTitle, { color: palette.titleColor }]}>{step.title}</Text>
-          <View style={[styles.stepBadge, isPatient ? styles.stepBadgePatient : null]}>
-            <Text numberOfLines={1} style={styles.stepBadgeText}>{step.label}</Text>
+          <View style={[
+            styles.stepBadge,
+            isPatient ? styles.stepBadgePatient : null,
+            isPatient ? { backgroundColor: roles.defaultCardBackground } : null,
+          ]}>
+            <Text numberOfLines={1} style={[styles.stepBadgeText, isPatient ? { color: roles.bodyText } : null]}>{step.label}</Text>
           </View>
         </View>
         {showDescription ? (
@@ -127,7 +153,10 @@ export function ProcessStatusTracker({
   isRefreshing,
   error,
   onRefresh,
+  hidePatientHeader = false,
 }) {
+  const { resolvedTheme } = useAuth();
+  const roles = resolveThemeRoles(resolvedTheme);
   const isPatient = role === 'patient';
   const summaryTone = SUMMARY_TONE_STYLES[tracker?.summary?.tone] || SUMMARY_TONE_STYLES.info;
   const cardVariant = role === 'donor' ? 'donorTint' : 'patientTint';
@@ -136,14 +165,16 @@ export function ProcessStatusTracker({
   return (
     <AppCard variant={cardVariant} radius="xl" padding={isPatient ? 'md' : 'lg'}>
       {isPatient ? (
-        <View style={styles.patientTrackerHeader}>
-          <View style={styles.patientTrackerTitleWrap}>
-            <Text style={styles.patientTrackerEyebrow}>Status</Text>
-            <Text numberOfLines={1} style={styles.patientTrackerTitle}>
-              {tracker?.summary?.label || 'Pending'}
-            </Text>
+        !hidePatientHeader ? (
+          <View style={styles.patientTrackerHeader}>
+            <View style={styles.patientTrackerTitleWrap}>
+              <Text style={[styles.patientTrackerEyebrow, { color: roles.metaText }]}>Status</Text>
+              <Text numberOfLines={1} style={[styles.patientTrackerTitle, { color: roles.headingText }]}>
+                {tracker?.summary?.label || 'Pending'}
+              </Text>
+            </View>
           </View>
-        </View>
+        ) : null
       ) : (
         <DashboardSectionHeader
           title={tracker?.title || (role === 'donor' ? 'Donation Status' : 'Wig Request Status')}
@@ -206,6 +237,7 @@ export function ProcessStatusTracker({
               key={step.key}
               step={step}
               role={role}
+              roles={roles}
               isLast={index === steps.length - 1}
             />
           ))}

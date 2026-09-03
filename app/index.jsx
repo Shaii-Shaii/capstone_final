@@ -13,6 +13,7 @@ import { AppButton } from '../src/components/ui/AppButton';
 import { AppInput } from '../src/components/ui/AppInput';
 import { OtpInput } from '../src/components/ui/OtpInput';
 import { DatePickerField } from '../src/components/ui/DatePickerField';
+import { DonivraLoadingOverlay } from '../src/components/ui/DonivraLoadingOverlay';
 import { LegalDocumentPreview } from '../src/components/legal/LegalDocumentPreview';
 import { AddressOptionSheet, AddressSelectField, SignupAddressSection } from '../src/components/auth/SignupAddressSection';
 import { useAuth } from '../src/providers/AuthProvider';
@@ -1802,7 +1803,15 @@ function FirstTimeOnboarding() {
                       placeholder="Search suffix"
                       options={profileSuffixOptions}
                       selectedValue={manualSuffixValue}
+                      allowDeselect
                       onClose={() => setActiveManualPicker('')}
+                      onClearSelection={() => {
+                        manualPatientForm.setValue('suffix', '', {
+                          shouldDirty: true,
+                          shouldTouch: true,
+                          shouldValidate: true,
+                        });
+                      }}
                       onSelect={(option) => {
                         manualPatientForm.setValue('suffix', option.value, {
                           shouldDirty: true,
@@ -2641,7 +2650,7 @@ function FirstTimeOnboarding() {
 
           {isIntroReady ? renderOnboardingCard() : <View style={styles.introSpacer} />}
 
-          {screenError ? (
+          {screenError && branchMode !== 'patient-manual' ? (
             <Text style={styles.errorText}>{screenError}</Text>
           ) : null}
 
@@ -2684,11 +2693,95 @@ function FirstTimeOnboarding() {
   );
 }
 
+function SessionConnectionState({ error, resolvedTheme, onRetry }) {
+  const roles = resolveThemeRoles(resolvedTheme);
+
+  return (
+    <View style={[styles.sessionIssueScreen, { backgroundColor: roles.pageBackground }]}>
+      <View pointerEvents="none" style={[styles.sessionIssueGlow, { backgroundColor: roles.iconPrimarySurface }]} />
+      <View pointerEvents="none" style={[styles.sessionIssueRing, { borderColor: roles.defaultCardBorder }]} />
+
+      <LinearGradient
+        colors={[theme.colors.palette.wine600, theme.colors.palette.wine800, theme.colors.palette.wine900]}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.sessionIssueHero}
+      >
+        <View style={styles.sessionIssueHeroGlow} />
+        <View style={styles.sessionIssueIcon}>
+          <MaterialCommunityIcons name="tools" size={34} color={theme.colors.palette.wine800} />
+        </View>
+        <Text style={styles.sessionIssueEyebrow}>SERVICE UPDATE</Text>
+        <Text style={styles.sessionIssueHeroTitle}>{error?.title || 'System maintenance'}</Text>
+      </LinearGradient>
+
+      <View style={[styles.sessionIssueCard, { backgroundColor: roles.defaultCardBackground, borderColor: roles.defaultCardBorder }]}>
+        <Text style={[styles.sessionIssueTitle, { color: roles.headingText }]}>We’ll be back shortly</Text>
+        <Text style={[styles.sessionIssueMessage, { color: roles.bodyText }]}>
+          {error?.message || 'Donivra is temporarily undergoing maintenance. Please try again in a few minutes.'}
+        </Text>
+
+        <View style={[styles.sessionIssueSafetyRow, { backgroundColor: roles.iconPrimarySurface }]}>
+          <MaterialCommunityIcons name="shield-check-outline" size={20} color={roles.primaryActionBackground} />
+          <Text style={[styles.sessionIssueSafetyText, { color: roles.bodyText }]}>Your account and submitted information remain safe.</Text>
+        </View>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Try loading Donivra again"
+          onPress={onRetry}
+          style={({ pressed }) => [styles.sessionIssueAction, pressed ? styles.sessionIssueActionPressed : null]}
+        >
+          <LinearGradient
+            colors={[theme.colors.palette.wine600, theme.colors.palette.wine800, theme.colors.palette.wine900]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.sessionIssueActionGradient}
+          >
+            <MaterialCommunityIcons name="refresh" size={21} color="#FFFFFF" />
+            <Text style={styles.sessionIssueActionText}>Try again</Text>
+          </LinearGradient>
+        </Pressable>
+
+        <View style={styles.sessionIssueHintRow}>
+          <MaterialCommunityIcons name="clock-outline" size={17} color={roles.metaText} />
+          <Text style={[styles.sessionIssueHint, { color: roles.metaText }]}>Please wait a few minutes, then try again. You do not need to re-enter your information.</Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
 export default function LandingScreen() {
-  const { user, needsOnboarding, isLoading } = useAuth();
+  const {
+    user,
+    needsOnboarding,
+    isLoading,
+    sessionError,
+    retrySession,
+    refreshResolvedTheme,
+    resolvedTheme,
+  } = useAuth();
 
   if (isLoading) {
-    return null;
+    return (
+      <View style={styles.sessionLoadingScreen}>
+        <DonivraLoadingOverlay visible label="Checking your secure session..." />
+      </View>
+    );
+  }
+
+  if (sessionError) {
+    return (
+      <SessionConnectionState
+        error={sessionError}
+        resolvedTheme={resolvedTheme}
+        onRetry={() => {
+          void refreshResolvedTheme?.({ force: true });
+          retrySession?.();
+        }}
+      />
+    );
   }
 
   if (!user) {
@@ -2703,6 +2796,157 @@ export default function LandingScreen() {
 }
 
 const styles = StyleSheet.create({
+
+  sessionLoadingScreen: {
+    flex: 1,
+    backgroundColor: theme.colors.backgroundCanvas,
+  },
+  sessionIssueScreen: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.lg,
+    paddingTop: 52,
+    paddingBottom: theme.spacing.xl,
+    overflow: 'hidden',
+  },
+  sessionIssueGlow: {
+    position: 'absolute',
+    width: 280,
+    height: 280,
+    borderRadius: 140,
+    top: -120,
+    right: -120,
+    opacity: 0.75,
+  },
+  sessionIssueRing: {
+    position: 'absolute',
+    width: 220,
+    height: 220,
+    borderRadius: 110,
+    borderWidth: 1,
+    bottom: -105,
+    left: -90,
+    opacity: 0.7,
+  },
+  sessionIssueHero: {
+    minHeight: 188,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.xs,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.lg,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    overflow: 'hidden',
+  },
+  sessionIssueHeroGlow: {
+    position: 'absolute',
+    width: 170,
+    height: 170,
+    borderRadius: 85,
+    top: -105,
+    right: -38,
+    backgroundColor: 'rgba(255,255,255,0.09)',
+  },
+  sessionIssueIcon: {
+    width: 64,
+    height: 64,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: theme.spacing.xs,
+    backgroundColor: '#FFFFFF',
+    ...theme.shadows.soft,
+  },
+  sessionIssueEyebrow: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: 9,
+    fontWeight: theme.typography.weights.bold,
+    letterSpacing: 1.1,
+    color: '#F7DDE4',
+  },
+  sessionIssueHeroTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.titleSm,
+    fontWeight: theme.typography.weights.bold,
+    color: '#FFFFFF',
+    textAlign: 'center',
+  },
+  sessionIssueCard: {
+    borderWidth: 1,
+    borderTopWidth: 0,
+    borderBottomLeftRadius: 28,
+    borderBottomRightRadius: 28,
+    padding: theme.spacing.lg,
+    gap: theme.spacing.md,
+    ...theme.shadows.card,
+  },
+  sessionIssueTitle: {
+    fontFamily: theme.typography.fontFamilyDisplay,
+    fontSize: theme.typography.semantic.titleSm,
+    fontWeight: theme.typography.weights.bold,
+    textAlign: 'center',
+  },
+  sessionIssueMessage: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.bodySm,
+    lineHeight: 21,
+    textAlign: 'center',
+  },
+  sessionIssueSafetyRow: {
+    minHeight: 52,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    borderRadius: theme.radius.lg,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+  },
+  sessionIssueSafetyText: {
+    flex: 1,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 17,
+    fontWeight: theme.typography.weights.medium,
+  },
+  sessionIssueAction: {
+    minHeight: 54,
+    borderRadius: 17,
+    overflow: 'hidden',
+    ...theme.shadows.soft,
+  },
+  sessionIssueActionPressed: {
+    opacity: 0.88,
+    transform: [{ scale: 0.985 }],
+  },
+  sessionIssueActionGradient: {
+    minHeight: 54,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.lg,
+  },
+  sessionIssueActionText: {
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.semantic.body,
+    fontWeight: theme.typography.weights.bold,
+    color: '#FFFFFF',
+  },
+  sessionIssueHintRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+    gap: 6,
+    paddingHorizontal: theme.spacing.xs,
+  },
+  sessionIssueHint: {
+    flex: 1,
+    fontFamily: theme.typography.fontFamily,
+    fontSize: theme.typography.compact.caption,
+    lineHeight: 17,
+    textAlign: 'left',
+  },
 
   // ── LoadingState ─────────────────────────────────────────────────
   loadShell: {

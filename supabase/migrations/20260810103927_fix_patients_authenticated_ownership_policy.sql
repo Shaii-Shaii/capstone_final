@@ -19,7 +19,6 @@ using (
     )
   )
 );
-
 drop policy if exists "patients_insert_own_patient_record" on public."Patients";
 create policy "patients_insert_own_patient_record"
 on public."Patients"
@@ -34,7 +33,6 @@ with check (
       and u.auth_user_id = (select auth.uid())
   )
 );
-
 drop policy if exists "patients_update_own_patient_record" on public."Patients";
 create policy "patients_update_own_patient_record"
 on public."Patients"

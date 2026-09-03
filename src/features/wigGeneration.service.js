@@ -94,18 +94,25 @@ const normalizeReferenceImage = (referenceImage = {}) => {
 const getEdgeFunctionErrorMessage = async (error) => {
   const response = error?.context;
   if (!response || typeof response.clone !== 'function') {
-    return error?.message || 'OpenAI wig recommendation request failed.';
+    return error?.message || 'AI wig recommendation request failed.';
   }
 
   try {
     const payload = await response.clone().json();
-    return payload?.message || payload?.error || error?.message || 'OpenAI wig recommendation request failed.';
+    const baseMessage = payload?.message || payload?.error || error?.message || 'AI wig recommendation request failed.';
+    const diagnostics = [
+      payload?.stage ? `stage=${payload.stage}` : '',
+      payload?.provider ? `provider=${payload.provider}` : '',
+      payload?.providerStatus ? `status=${payload.providerStatus}` : '',
+      payload?.errorType ? `type=${payload.errorType}` : '',
+    ].filter(Boolean).join(' ');
+    return diagnostics ? `${baseMessage} [${diagnostics}]` : baseMessage;
   } catch {
     try {
       const responseText = await response.clone().text();
-      return responseText || error?.message || 'OpenAI wig recommendation request failed.';
+      return responseText || error?.message || 'AI wig recommendation request failed.';
     } catch {
-      return error?.message || 'OpenAI wig recommendation request failed.';
+      return error?.message || 'AI wig recommendation request failed.';
     }
   }
 };
@@ -138,6 +145,7 @@ const resolveWigGenerationFailure = (technicalMessage = '') => {
     'insufficient quota',
     'billing',
     'payment required',
+    'status=402',
     'exceeded your current quota',
     'usage limit',
   ])) {
@@ -183,6 +191,10 @@ const resolveWigGenerationFailure = (technicalMessage = '') => {
   if (includesAny(message, [
     'not configured',
     'openai api key',
+    'openrouter api key',
+    'openrouter_image_model',
+    'stage=provider_configuration',
+    'type=configuration_error',
     'requested function was not found',
     'not_found',
     'incomplete set',
@@ -225,7 +237,7 @@ export const generatePatientWigPreview = async ({
       ? [normalizedSelectedWig, ...normalizedAvailableWigs.filter((wig) => wig.wig_id !== normalizedSelectedWig.wig_id)]
       : normalizedAvailableWigs;
 
-    logAppEvent('wigGeneration.openAiRequest', 'Requesting AI wig ranking and try-on images.', {
+    logAppEvent('wigGeneration.aiRequest', 'Requesting AI wig ranking and try-on images.', {
       candidateCount: orderedWigs.length,
       selectedWigId: normalizedSelectedWig?.wig_id || null,
       hasReferenceDataUrl: Boolean(normalizedReferenceImage.dataUrl),
@@ -248,7 +260,7 @@ export const generatePatientWigPreview = async ({
 
     const preview = normalizePreview(data);
     if (preview.options.length < 3 || preview.options.some((option) => !option.generated_image_data_url)) {
-      throw new Error('OpenAI returned an incomplete set of wig recommendations.');
+      throw new Error('AI returned an incomplete set of wig recommendations.');
     }
 
     return { preview, previews: preview.options, error: null };

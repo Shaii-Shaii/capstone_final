@@ -53,7 +53,7 @@ export const AppInput = ({
   const errorColor = resolvedTheme?.primaryColor || theme.colors.borderError;
   const primaryTextColor = resolvedTheme?.primaryTextColor || theme.colors.textPrimary;
   const secondaryTextColor = resolvedTheme?.secondaryTextColor || theme.colors.textSecondary;
-  const mutedTextColor = resolvedTheme?.secondaryTextColor || theme.colors.textMuted;
+  const mutedTextColor = theme.colors.textMuted;
   const backgroundColor = variant === 'filled'
     ? roles.supportCardBackground
     : roles.defaultCardBackground || config.backgroundColor;

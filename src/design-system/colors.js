@@ -64,7 +64,7 @@ export const colors = {
   // Text
   textPrimary: palette.black,
   textSecondary: '#4f4148',
-  textMuted: palette.blueGray500,
+  textMuted: '#806771',
   textLight: palette.white,
   textInverse: palette.white,
   textOnBrand: palette.white,

@@ -151,40 +151,25 @@ Deno.serve(async (request) => {
     return createJsonResponse({ message: 'The donor account does not have a registered email address.' }, 400);
   }
 
-  const submissionResult = await supabase
-    .from('Hair_Submissions')
-    .select('Submission_ID')
-    .eq('User_ID', resolvedUserId);
+  const screeningResult = await supabase
+    .from('AI_Screenings')
+    .select('AI_Screening_ID, Created_At')
+    .eq('User_ID', resolvedUserId)
+    .gte('Created_At', dayStart)
+    .lte('Created_At', dayEnd)
+    .order('Created_At', { ascending: false })
+    .limit(1);
 
-  if (submissionResult.error) {
-    return createJsonResponse({ message: submissionResult.error.message || 'Unable to check donor submissions.' }, 500);
+  if (screeningResult.error) {
+    return createJsonResponse({ message: screeningResult.error.message || 'Unable to check today\'s hair analysis.' }, 500);
   }
 
-  const submissionIds = (submissionResult.data || [])
-    .map((row: { Submission_ID?: number | null }) => row?.Submission_ID)
-    .filter((value: unknown): value is number => Number.isInteger(value));
-
-  if (submissionIds.length) {
-    const screeningResult = await supabase
-      .from('AI_Screenings')
-      .select('AI_Screening_ID, Created_At')
-      .in('Submission_ID', submissionIds)
-      .gte('Created_At', dayStart)
-      .lte('Created_At', dayEnd)
-      .order('Created_At', { ascending: false })
-      .limit(1);
-
-    if (screeningResult.error) {
-      return createJsonResponse({ message: screeningResult.error.message || 'Unable to check today\'s hair analysis.' }, 500);
-    }
-
-    if ((screeningResult.data || []).length) {
-      return createJsonResponse({
-        sent: false,
-        skipped: true,
-        reason: 'analysis_already_completed_today',
-      });
-    }
+  if ((screeningResult.data || []).length) {
+    return createJsonResponse({
+      sent: false,
+      skipped: true,
+      reason: 'analysis_already_completed_today',
+    });
   }
 
   const auditResult = await supabase

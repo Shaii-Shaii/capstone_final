@@ -17,12 +17,9 @@ create table if not exists public."Donor_Feedback" (
   constraint "Donor_Feedback_Status_check"
     check ("Status" in ('New', 'Reviewed', 'Resolved', 'Archived'))
 );
-
 alter table public."Donor_Feedback" enable row level security;
-
 grant select, insert, update on public."Donor_Feedback" to authenticated;
 grant usage, select on sequence public."Donor_Feedback_Feedback_ID_seq" to authenticated;
-
 drop policy if exists "donors_insert_own_feedback" on public."Donor_Feedback";
 create policy "donors_insert_own_feedback"
 on public."Donor_Feedback"
@@ -32,7 +29,6 @@ with check (
   and "App_Role" = 'donor'
   and "Status" = 'New'
 );
-
 drop policy if exists "donors_read_own_feedback" on public."Donor_Feedback";
 create policy "donors_read_own_feedback"
 on public."Donor_Feedback"
@@ -41,7 +37,6 @@ using (
   public.current_app_user_is_staff()
   or "User_ID" = public.current_app_user_id()
 );
-
 drop policy if exists "staff_update_feedback_status" on public."Donor_Feedback";
 create policy "staff_update_feedback_status"
 on public."Donor_Feedback"

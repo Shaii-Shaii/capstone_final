@@ -7,7 +7,6 @@ alter table public."Hair_Submission_Logistics"
   add column if not exists "Queue_Number" integer,
   add column if not exists "Dropoff_Window" text,
   add column if not exists "Dropoff_Status" text default 'Scheduled';
-
 create or replace function public.assign_walkin_dropoff_queue_number()
 returns trigger
 language plpgsql
@@ -34,14 +33,12 @@ begin
   return new;
 end;
 $$;
-
 drop trigger if exists trg_assign_walkin_dropoff_queue_number on public."Hair_Submission_Logistics";
 create trigger trg_assign_walkin_dropoff_queue_number
 before insert or update of "Logistics_Type", "Pickup_Schedule_Date", "Queue_Number", "Dropoff_Status"
 on public."Hair_Submission_Logistics"
 for each row
 execute function public.assign_walkin_dropoff_queue_number();
-
 drop policy if exists "donors_update_own_hair_submission_logistics" on public."Hair_Submission_Logistics";
 create policy "donors_update_own_hair_submission_logistics"
 on public."Hair_Submission_Logistics"

@@ -206,6 +206,58 @@ const uploadSelectedImages = async ({ userId, submissionId, detailId, photos }) 
   }));
 };
 
+const uploadScreeningImages = async ({ userId, photos }) => {
+  if (!userId) {
+    throw new Error('Your authenticated session is required to save screening photos.');
+  }
+
+  const batchKey = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  const uploadResults = await Promise.allSettled(photos.map(async (photo, index) => {
+    const imageType = resolveAnalysisImageType(photo?.viewKey);
+    const uploadPayload = await getPhotoUploadPayload(photo);
+    const extension = getFileExtension(uploadPayload.contentType, uploadPayload.fileName);
+    const filePath = `${userId}/screenings/${batchKey}/${String(index + 1).padStart(2, '0')}-${imageType}.${extension}`;
+    const uploadResult = await HairSubmissionAPI.uploadHairSubmissionImage({
+      path: filePath,
+      fileBody: uploadPayload.fileBody,
+      contentType: uploadPayload.contentType,
+      bucket: hairSubmissionStorageBucket,
+    });
+
+    if (uploadResult.error) {
+      const uploadMessage = uploadResult.error.message || 'Failed to upload one of the screening photos.';
+      if (uploadMessage.toLowerCase().includes('bucket not found')) {
+        throw new Error(buildStorageBucketMissingMessage());
+      }
+      throw new Error(uploadMessage);
+    }
+
+    return {
+      file_path: filePath,
+      image_type: imageType,
+      capture_order: index + 1,
+      uploaded_at: new Date().toISOString(),
+    };
+  }));
+  const completedImages = uploadResults
+    .filter((result) => result.status === 'fulfilled')
+    .map((result) => result.value);
+  const failedUpload = uploadResults.find((result) => result.status === 'rejected');
+
+  if (failedUpload) {
+    const completedPaths = completedImages.map((image) => image.file_path).filter(Boolean);
+    if (completedPaths.length) {
+      await HairSubmissionAPI.removeHairSubmissionImagesFromStorage({
+        paths: completedPaths,
+        bucket: hairSubmissionStorageBucket,
+      }).catch(() => {});
+    }
+    throw failedUpload.reason;
+  }
+
+  return completedImages;
+};
+
 const rollbackHairSubmissionSave = async ({
   userId,
   submissionId = null,
@@ -214,7 +266,6 @@ const rollbackHairSubmissionSave = async ({
   hasImageReferences = false,
   hasLogistics = false,
   hasScreening = false,
-  hasRecommendations = false,
 }) => {
   if (!submissionId && !detailId && !uploadedPaths.length) return;
 
@@ -226,15 +277,9 @@ const rollbackHairSubmissionSave = async ({
     hasImageReferences,
     hasLogistics,
     hasScreening,
-    hasRecommendations,
   }, 'warn');
 
   const rollbackSteps = [
-    async () => {
-      if (!hasRecommendations || !submissionId) return;
-      const { error } = await HairSubmissionAPI.deleteDonorRecommendationsBySubmissionId(submissionId);
-      if (error) throw error;
-    },
     async () => {
       if (!hasScreening || !submissionId) return;
       const { error } = await HairSubmissionAPI.deleteAiScreeningsBySubmissionId(submissionId);
@@ -281,11 +326,10 @@ const rollbackHairSubmissionSave = async ({
   }
 };
 
-const buildRecommendationRows = ({ submissionId, recommendations = [] }) => (
+const normalizePersistedCareTips = (recommendations = []) => (
   recommendations
     .filter((item) => item?.recommendation_text)
     .map((item, index) => ({
-      submission_id: submissionId,
       title: item.title || null,
       recommendation_text: item.recommendation_text,
       priority_order: Number(item.priority_order) || index + 1,
@@ -369,6 +413,124 @@ const buildLogisticsRowPayload = ({ submissionId, donationMode, logisticsSetting
   };
 };
 
+export const saveHairScreeningFlow = async ({
+  userId,
+  databaseUserId = null,
+  photos,
+  aiAnalysis,
+}) => {
+  let uploadedScreeningPaths = [];
+  try {
+    if (!userId && !databaseUserId) throw new Error('Your session is not ready.');
+    if (!photos?.length) throw new Error('Please upload at least one photo.');
+    if (!aiAnalysis) throw new Error('Run the AI analysis before saving.');
+
+    const persistedCareTips = normalizePersistedCareTips(
+      Array.isArray(aiAnalysis.recommendations) ? aiAnalysis.recommendations : aiAnalysis.care_tips
+    );
+    const completeAnalysisResult = {
+      ...aiAnalysis,
+      recommendations: persistedCareTips,
+      care_tips: persistedCareTips,
+    };
+    const normalizedEstimatedLength = Number(aiAnalysis?.estimated_length);
+    const normalizedConfidenceScore = Number(aiAnalysis?.confidence_score);
+    const screeningImages = await uploadScreeningImages({ userId, photos });
+    uploadedScreeningPaths = screeningImages.map((image) => image.file_path).filter(Boolean);
+    const screeningResult = await HairSubmissionAPI.createAiScreening({
+      user_id: userId,
+      database_user_id: databaseUserId,
+      submission_id: null,
+      estimated_length: Number.isFinite(normalizedEstimatedLength) ? normalizedEstimatedLength : null,
+      detected_color: aiAnalysis.detected_color || null,
+      detected_texture: aiAnalysis.detected_texture || null,
+      detected_density: aiAnalysis.detected_density || null,
+      detected_condition: aiAnalysis.detected_condition || null,
+      visible_damage_notes: aiAnalysis.visible_damage_notes || null,
+      confidence_score: resolveAiScreeningConfidenceForDb({
+        confidenceScore: Number.isFinite(normalizedConfidenceScore) ? normalizedConfidenceScore : null,
+        estimatedLength: Number.isFinite(normalizedEstimatedLength) ? normalizedEstimatedLength : null,
+        detectedColor: aiAnalysis.detected_color,
+        detectedTexture: aiAnalysis.detected_texture,
+        detectedDensity: aiAnalysis.detected_density,
+      }),
+      shine_level: aiAnalysis.shine_level ?? null,
+      frizz_level: aiAnalysis.frizz_level ?? null,
+      dryness_level: aiAnalysis.dryness_level ?? null,
+      oiliness_level: aiAnalysis.oiliness_level ?? null,
+      damage_level: aiAnalysis.damage_level ?? null,
+      bald_spots_present: aiAnalysis.bald_spots_present === true,
+      affected_regions: Array.isArray(aiAnalysis.affected_regions) ? aiAnalysis.affected_regions : [],
+      hair_density_score: aiAnalysis.hair_density_score ?? null,
+      shedding_level: aiAnalysis.shedding_level || null,
+      visible_scalp_area: aiAnalysis.visible_scalp_area || null,
+      scalp_coverage_notes: aiAnalysis.scalp_coverage_notes || null,
+      dandruff_detected: aiAnalysis.dandruff_detected === true,
+      dandruff_severity: aiAnalysis.dandruff_severity || null,
+      dandruff_notes: aiAnalysis.dandruff_notes || null,
+      lice_detected: aiAnalysis.lice_detected === true,
+      lice_confidence: aiAnalysis.lice_confidence || null,
+      lice_notes: aiAnalysis.lice_notes || null,
+      improvement_tracking_status: aiAnalysis.improvement_tracking_status || null,
+      improvement_recommendation: aiAnalysis.improvement_recommendation || null,
+      decision: aiAnalysis.decision || null,
+      summary: aiAnalysis.summary || null,
+      length_assessment: aiAnalysis.length_assessment || null,
+      donation_readiness_note: aiAnalysis.donation_readiness_note || null,
+      history_assessment: aiAnalysis.history_assessment || null,
+      screening_images: screeningImages,
+      analysis_result: completeAnalysisResult,
+    });
+
+    if (screeningResult.error || !screeningResult.data?.ai_screening_id) {
+      throw new Error(screeningResult.error?.message || 'Unable to save the AI screening result.');
+    }
+
+    const screening = screeningResult.data;
+    const notificationEvents = buildImmediateNotificationEvents({
+      role: 'donor',
+      payload: { screening, recommendations: persistedCareTips },
+    });
+    if (notificationEvents.length) {
+      void recordNotifications({
+        userId,
+        role: 'donor',
+        notifications: notificationEvents,
+      }).catch(() => {});
+    }
+
+    void writeAuditLog({
+      authUserId: userId,
+      action: 'hair_screening.create',
+      description: `Created independent AI screening ${screening.ai_screening_id}.`,
+      resource: 'ai_screenings',
+      status: 'success',
+    });
+
+    return {
+      screening,
+      submission: null,
+      detail: null,
+      recommendations: persistedCareTips,
+      error: null,
+    };
+  } catch (error) {
+    if (uploadedScreeningPaths.length) {
+      await HairSubmissionAPI.removeHairSubmissionImagesFromStorage({
+        paths: uploadedScreeningPaths,
+        bucket: hairSubmissionStorageBucket,
+      }).catch(() => {});
+    }
+    return {
+      screening: null,
+      submission: null,
+      detail: null,
+      recommendations: [],
+      error: error.message || 'Unable to save the AI screening result.',
+    };
+  }
+};
+
 export const saveHairSubmissionFlow = async ({
   userId,
   databaseUserId = null,
@@ -379,13 +541,24 @@ export const saveHairSubmissionFlow = async ({
   donationModeValue = '',
   logisticsSettings = null,
 }) => {
+  // Backward-compatible entry point for older callers. Hair analysis is now
+  // screening-only; an explicit event check-in or logistics start creates the
+  // donation later.
+  if (typeof saveHairScreeningFlow === 'function') {
+    return saveHairScreeningFlow({
+      userId,
+      databaseUserId,
+      photos,
+      aiAnalysis,
+    });
+  }
+
   let createdSubmission = null;
   let createdDetail = null;
   let uploadedImageRows = [];
   let hasImageReferences = false;
   let hasLogistics = false;
   let hasScreening = false;
-  let hasRecommendations = false;
 
   try {
     if (!userId && !databaseUserId) throw new Error('Your session is not ready.');
@@ -434,6 +607,14 @@ export const saveHairSubmissionFlow = async ({
       confirmedValues.detailNotes || '',
       hasTreatmentHistory ? 'Questionnaire noted prior chemical processing.' : '',
     ].filter(Boolean).join(' ');
+    const persistedCareTips = normalizePersistedCareTips(
+      Array.isArray(aiAnalysis.recommendations) ? aiAnalysis.recommendations : aiAnalysis.care_tips
+    );
+    const completeAnalysisResult = {
+      ...aiAnalysis,
+      recommendations: persistedCareTips,
+      care_tips: persistedCareTips,
+    };
     const submissionPayload = {
       user_id: userId,
       database_user_id: databaseUserId,
@@ -547,7 +728,7 @@ export const saveHairSubmissionFlow = async ({
       length_assessment: aiAnalysis.length_assessment || null,
       donation_readiness_note: aiAnalysis.donation_readiness_note || null,
       history_assessment: aiAnalysis.history_assessment || null,
-      analysis_result: aiAnalysis,
+      analysis_result: completeAnalysisResult,
     });
 
     logAppEvent('hair_submission.save', 'AI screening payload prepared.', {
@@ -589,6 +770,7 @@ export const saveHairSubmissionFlow = async ({
         'analysis_result',
       ],
       recommendationCount: Array.isArray(aiAnalysis?.recommendations) ? aiAnalysis.recommendations.length : 0,
+      careTipCount: persistedCareTips.length,
     });
 
     if (screeningError) {
@@ -630,36 +812,21 @@ export const saveHairSubmissionFlow = async ({
       });
     }
 
-    let recommendationRows = [];
-    const displayRecommendationRows = buildRecommendationRows({
-      submissionId: submission.submission_id,
-      recommendations: aiAnalysis.recommendations,
-    });
-
-    if (displayRecommendationRows.length) {
-      const { data: savedRecommendations, error: recommendationError } = await HairSubmissionAPI.createDonorRecommendations(
-        displayRecommendationRows
-      );
-
-      if (recommendationError) {
-        throw new Error(recommendationError.message || 'Unable to save the hair-care recommendations.');
-      }
-
-      recommendationRows = savedRecommendations || [];
-      hasRecommendations = recommendationRows.length > 0;
-      logAppEvent('hair_submission.save', 'AI recommendations saved for hair-log replay.', {
-        userId,
-        submissionId: submission?.submission_id || null,
-        recommendationCount: recommendationRows.length,
-      }, 'info');
-    }
+    logAppEvent('hair_submission.save', 'AI-generated care tips saved inside the AI screening result.', {
+      userId,
+      submissionId: submission?.submission_id || null,
+      screeningId: screening?.ai_screening_id || null,
+      recommendationCount: persistedCareTips.length,
+      storageTable: 'AI_Screenings',
+      storageColumn: 'Analysis_Result',
+    }, 'info');
 
     const notificationEvents = buildImmediateNotificationEvents({
       role: 'donor',
       payload: {
         submission,
         screening,
-        recommendations: recommendationRows,
+        recommendations: persistedCareTips,
       },
     });
 
@@ -726,7 +893,7 @@ export const saveHairSubmissionFlow = async ({
       submission,
       detail,
       screening,
-      recommendations: recommendationRows,
+      recommendations: persistedCareTips,
       error: null,
     };
   } catch (error) {
@@ -738,7 +905,6 @@ export const saveHairSubmissionFlow = async ({
       hasImageReferences,
       hasLogistics,
       hasScreening,
-      hasRecommendations,
     });
 
     logAppEvent('hair_submission.save', 'Hair submission save failed.', {
